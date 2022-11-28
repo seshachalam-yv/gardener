@@ -3,7 +3,7 @@
 set -o errexit
 set -o nounset
 set -o pipefail
-
+set -x 
 echo "> E2E Tests"
 
 source "$(dirname "$0")/test-e2e-local.env"
@@ -56,4 +56,4 @@ if [[ "$1" != "operator" ]]; then
   fi
 fi
 
-GO111MODULE=on ginkgo run --timeout=1h $ginkgo_flags --v --progress "$@"
+GO111MODULE=on ginkgo run --timeout=1h $ginkgo_flags --v  "$@"
