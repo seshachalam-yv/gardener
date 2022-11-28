@@ -47,7 +47,7 @@ make gardener-ha-single-zone-up
 cd -
 # run gardener pre-upgrade tests
 echo "Running gardener pre-upgrade tests"
-make test-gardener-pre-upgrade-ha
+make test-gardener-pre-upgrade-ha-single-zone
 
 echo "Upgrading gardener version to $GARDENER_CURRENT_RELEASE"
 make gardener-ha-single-zone-up
@@ -59,6 +59,6 @@ kubectl wait seed local-ha-single-zone --timeout=5m \
     --for=condition=bootstrapped 
 
 echo "Running gardener post-upgrade tests"
-make test-gardener-post-upgrade-ha
+make test-gardener-post-upgrade-ha-single-zone
 
 make gardener-ha-single-zone-down

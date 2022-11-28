@@ -21,7 +21,7 @@ spec:
         - |
           set -ex
           cd
-          apk add bash bash-completion curl fzf g++ git jq less lsof make mandoc mc procps tmux tmux-doc yq vim
+          apk add bash bash-completion curl fzf g++ git jq less lsof make mandoc mc procps tmux tmux-doc yq vim k9s
           apk add --repository=http://dl-cdn.alpinelinux.org/alpine/edge/main mount
           echo golang            && curl -sLO "https://go.dev/dl/$(curl -sL https://golang.org/VERSION?m=text).linux-amd64.tar.gz" && tar -C /usr/local -xzf go1.*.linux-amd64.tar.gz
           echo helm              && curl -sLO "https://get.helm.sh/helm-$(curl -sL https://api.github.com/repos/helm/helm/releases/latest | jq .tag_name -r)-linux-amd64.tar.gz" && tar -xzf helm-*-linux-amd64.tar.gz && mv linux-amd64/helm /usr/local/bin/helm
@@ -32,18 +32,20 @@ spec:
           echo kubectl           && curl -sL  "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
           echo tmux-completion   && curl -sL  "https://raw.githubusercontent.com/imomaliev/tmux-bash-completion/master/completions/tmux" -o /usr/share/bash-completion/completions/tmux
           echo docker-completion && curl -sL  "https://raw.githubusercontent.com/docker/docker-ce/master/components/cli/contrib/completion/bash/docker" -o /usr/share/bash-completion/completions/docker
-          bash -c "echo api.{e2e-managedseed.garden,{local,e2e-{managedseed,hibernated,unpriv,wake-up,migrate,rotate,default,upgrade-node,upgrade-zone}}.local}.{internal,external}.local.gardener.cloud \
+          bash -c "echo api.{e2e-managedseed.garden,{local,test-{1,2,3},e2e-{managedseed,hibernated,unpriv,wake-up,migrate,rotate,default,upgrade-node,upgrade-zone}}.local}.{internal,external}.local.gardener.cloud \
                    | sed 's/ /\n/g' | sed 's/^/127.0.0.1 /' | sort >> /etc/hosts"
           echo 'source ~/.bashrc' > ~/.bash_profile
           cat > ~/.bashrc <<"EOF"
             export PATH=$PATH:/usr/local/go/bin
-            export KUBECONFIG=~/gardener/example/gardener-local/kind/local/kubeconfig:/tmp/kubeconfig-shoot-local.yaml
+            export KUBECONFIG=~/go/src/github.com/gardener/gardener/example/gardener-local/kind/local/kubeconfig:/tmp/kubeconfig-shoot-local.yaml
             source <(kubectl completion bash)
             alias k=kubectl
             complete -o default -F __start_kubectl k
             source ~/.kube-ps1.sh
             export PS1='[\w $(printf "$(kube_ps1)")]\$ '
-            cd ~/gardener
+            
+            
+            cd ~/go/src/github.com/gardener/gardener
           EOF
           cat > ~/.tmux.conf <<"EOF"
             set -g mouse on
@@ -52,22 +54,21 @@ spec:
             set -g pane-border-status top
             set -g pane-border-format " #{pane_index} #{pane_title} - #{pane_current_command} "
           EOF
-          git clone -q https://github.com/gardener/gardener.git
+          mkdir -p ~/go/src/github.com/gardener &&  cd ~/go/src/github.com/gardener/ && git clone -q https://github.com/seshachalam-yv/gardener.git && cd gardener &&  git checkout garden-upgrade-tests
+          
           dockerd-entrypoint.sh &
           until docker ps >/dev/null 2>&1; do sleep 1; done
           tmux new -d -s gardener -n gardener
           tmux select-pane -T top
           tmux send top Enter; sleep 1; tmux send 1; sleep 1; tmux send C; sleep 1; tmux send i; sleep 1; tmux send t; sleep 1; tmux send V; sleep 1; tmux send s; sleep 1; tmux send 5 Enter
-          tmux split-window \; select-pane -T kind     ; sleep 1; tmux send "make kind-up"                                       \; select-layout even-vertical
-          tmux split-window \; select-pane -T gardener ; sleep 1; tmux send "make gardener-up"                                   \; select-layout even-vertical
-          tmux split-window \; select-pane -T shoot    ; sleep 1; tmux send "kubectl apply -f example/provider-local/shoot.yaml" \; select-layout even-vertical
-          tmux split-window \; select-pane -T config   ; sleep 1; tmux send "kubectl -n garden-local get secret local.kubeconfig -o jsonpath={.data.kubeconfig} | base64 -d > /tmp/kubeconfig-shoot-local.yaml" \; select-layout even-vertical
-          tmux split-window \; select-pane -T config   ; sleep 1; tmux send "make test-e2e-local-simple" \; select-layout even-vertical
+          tmux split-window \; select-pane -T kind     ; sleep 1; tmux send "make ci-e2e-gardener-upgrade-kind" Enter  \;select-layout even-vertical
+          tmux split-window \; select-pane -T k9s     ; sleep 1; tmux send "k9s" Enter  \;select-layout even-vertical
+
           read
         stdin: true
         resources:
           requests: {cpu: 8, memory: 8G}
-          limits:   {cpu: 8, memory: 8G}
+          # limits:   {cpu: 8, memory: 8G}
         securityContext:
           privileged: true
         volumeMounts:
