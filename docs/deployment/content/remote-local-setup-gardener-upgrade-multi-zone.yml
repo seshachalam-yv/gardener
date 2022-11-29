@@ -61,7 +61,7 @@ spec:
           tmux new -d -s gardener -n gardener
           tmux select-pane -T top
           tmux send top Enter; sleep 1; tmux send 1; sleep 1; tmux send C; sleep 1; tmux send i; sleep 1; tmux send t; sleep 1; tmux send V; sleep 1; tmux send s; sleep 1; tmux send 5 Enter
-          tmux split-window \; select-pane -T kind     ; sleep 1; tmux send "make ci-e2e-gardener-upgrade-kind-ha-multi-zone" Enter  \;select-layout even-vertical
+          tmux split-window \; select-pane -T kind     ; sleep 1; tmux send "make ci-e2e-gardener-upgrade-kind-ha-multi-zone GARDENER_PREVIOUS_RELEASE=v1.60.0" Enter  \;select-layout even-vertical
           tmux split-window \; select-pane -T kind     ; sleep 1; tmux send "k9s" Enter  \;select-layout even-vertical
 
           read

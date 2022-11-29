@@ -104,9 +104,9 @@ var _ = Describe("Gardener upgrade Tests for", Label("gardener"), func() {
 			ctx, _ := context.WithTimeout(parentCtx, 20*time.Minute)
 			BeforeAll(func() {
 				Expect(f.GetShoot(ctx, shootTest1)).To(Succeed())
-				// f.ShootFramework, err = f.NewShootFramework(ctx, shootTest1)
-				// Expect(err).NotTo(HaveOccurred())
-				// Expect(f.ShootFramework.ShootClient.Client()).NotTo(BeNil())
+				f.ShootFramework, err = f.NewShootFramework(ctx, shootTest1)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(f.ShootFramework.ShootClient.Client()).NotTo(BeNil())
 			})
 
 			It("should be able to wake up a shoot which was hibernated in previous gardener release", func() {

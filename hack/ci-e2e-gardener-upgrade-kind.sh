@@ -31,11 +31,12 @@ trap "
     export_events_for_kind 'gardener-local'; export_events_for_shoots )
   ( make kind-down;)
 " EXIT
-
+export GARDENER_PREVIOUS_RELEASE=v1.60.0
+export GARDENER_CURRENT_RELEASE=v1.60.1
 
 # download gardener previous release to perform gardener upgrade tests
-$(dirname "${0}")/download_gardener_source_code.sh --gardener-version $GARDENER_PREVIOUS_RELEASE --download-path $DOWNLOAD_PATH
-cd $DOWNLOAD_PATH/gardener
+# $(dirname "${0}")/download_gardener_source_code.sh --gardener-version $GARDENER_PREVIOUS_RELEASE --download-path $DOWNLOAD_PATH
+cd dev/$GARDENER_PREVIOUS_RELEASE/gardener
  
 cp $KUBECONFIG example/provider-local/seed-kind/base/kubeconfig
 cp $KUBECONFIG example/gardener-local/kind/local/kubeconfig
@@ -49,6 +50,11 @@ cd -
 echo "Running gardener pre-upgrade tests"
 make test-gardener-pre-upgrade
 
+cd dev/$GARDENER_CURRENT_RELEASE/gardener
+ 
+cp $KUBECONFIG example/provider-local/seed-kind/base/kubeconfig
+cp $KUBECONFIG example/gardener-local/kind/local/kubeconfig
+
 echo "Upgrading gardener version to $GARDENER_CURRENT_RELEASE"
 make gardener-up
 
@@ -58,7 +64,8 @@ kubectl wait seed local --timeout=5m \
     --for=condition=gardenletready --for=condition=extensionsready \
     --for=condition=bootstrapped 
 
+cd -
 echo "Running gardener post-upgrade tests"
-make test-gardener-post-upgrade
+make test-gardener-post-upgrade GARDENER_CURRENT_RELEASE=$GARDENER_CURRENT_RELEASE
 
 make gardener-down
