@@ -36,6 +36,9 @@ export GARDENER_CURRENT_RELEASE=v1.60.1
 
 # download gardener previous release to perform gardener upgrade tests
 # $(dirname "${0}")/download_gardener_source_code.sh --gardener-version $GARDENER_PREVIOUS_RELEASE --download-path $DOWNLOAD_PATH
+
+mkdir -p dev/$GARDENER_PREVIOUS_RELEASE/gardener
+git clone --branch $GARDENER_PREVIOUS_RELEASE https://github.com/gardener/gardener.git dev/$GARDENER_PREVIOUS_RELEASE/gardener
 cd dev/$GARDENER_PREVIOUS_RELEASE/gardener
  
 cp $KUBECONFIG example/provider-local/seed-kind/base/kubeconfig
@@ -50,8 +53,10 @@ cd -
 echo "Running gardener pre-upgrade tests"
 make test-gardener-pre-upgrade
 
+mkdir -p dev/$GARDENER_CURRENT_RELEASE/gardener
+git clone --branch $GARDENER_CURRENT_RELEASE https://github.com/gardener/gardener.git dev/$GARDENER_CURRENT_RELEASE/gardener
+
 cd dev/$GARDENER_CURRENT_RELEASE/gardener
- 
 cp $KUBECONFIG example/provider-local/seed-kind/base/kubeconfig
 cp $KUBECONFIG example/gardener-local/kind/local/kubeconfig
 
