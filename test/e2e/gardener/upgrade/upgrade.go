@@ -172,7 +172,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 		})
 	})
 
-	Context("Shoot::e2e-upgrade-ha", Label("high-availability"), Label("debug"), func() {
+	Context("Shoot::e2e-upgrade-ha", Label("high-availability"), func() {
 		var (
 			parentCtx = context.Background()
 			f         = framework.NewShootCreationFramework(&framework.ShootCreationConfig{GardenerConfig: e2e.DefaultGardenConfig(projectNamespace)})
