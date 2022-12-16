@@ -222,6 +222,96 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 			})
 		})
 	})
+
+	Context("Shoot::e2e-upgrade-hib", Label("debug"), func() {
+		var (
+			parentCtx = context.Background()
+			f         = framework.NewShootCreationFramework(&framework.ShootCreationConfig{
+				GardenerConfig: e2e.DefaultGardenConfig(projectNamespace),
+			})
+			shootTest       = e2e.DefaultShoot("e2e-upgrade-hib")
+			err             error
+			etcdMainPodName = getEtcdMainMemberLastOrdinalPodName(shootTest)
+		)
+		shootTest.Namespace = projectNamespace
+		// TODO: (@seshachalam-yv): Remove this once next latest version of gardener is released.
+		// Due to recent PR https://github.com/gardener/gardener/pull/6999, by default we are expecting these Extensions "local-ext-seed", "local-ext-shoot".
+		// Excluding these extensions from the shoot spec and only include them in the next latest version of gardener.
+		shootTest.Spec.Extensions = nil
+		f.Shoot = shootTest
+
+		When("Pre-upgrade (version:'"+gardenerPreviousRelease+"')", Ordered, Label("pre-upgrade"), func() {
+			var (
+				ctx    context.Context
+				cancel context.CancelFunc
+			)
+
+			BeforeAll(func() {
+				ctx, cancel = context.WithTimeout(parentCtx, 20*time.Minute)
+				DeferCleanup(cancel)
+			})
+
+			It("should create a shoot", func() {
+				Expect(f.CreateShootAndWaitForCreation(ctx, false)).To(Succeed())
+				f.Verify()
+				Expect(f.ShootFramework.ShootClient.Client().Create(ctx, getSampleConfigMap())).To(Succeed())
+			})
+
+			It("should hibernate a shoot", func() {
+				Expect(f.GetShoot(ctx, shootTest)).To(Succeed())
+				f.ShootFramework, err = f.NewShootFramework(ctx, shootTest)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(f.HibernateShoot(ctx, f.Shoot)).To(Succeed())
+			})
+
+			It("should delete PVC, to trigger etcd restoration after gardener upgrade", Label("etcd"), func() {
+				Expect(f.GetShoot(ctx, shootTest)).To(Succeed())
+				f.ShootFramework, err = f.NewShootFramework(ctx, shootTest)
+				Expect(err).NotTo(HaveOccurred())
+
+				seedClient := f.ShootFramework.SeedClient.Client()
+				deletePVC(ctx, seedClient, &corev1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "main-etcd-" + etcdMainPodName,
+						Namespace: shootTest.Status.TechnicalID,
+					},
+				})
+			})
+		})
+
+		When("Post-upgrade (version:'"+gardenerCurrentRelease+"')", Ordered, Label("post-upgrade"), func() {
+			var (
+				ctx    context.Context
+				cancel context.CancelFunc
+			)
+
+			BeforeAll(func() {
+				ctx, cancel = context.WithTimeout(parentCtx, 20*time.Minute)
+				DeferCleanup(cancel)
+				Expect(f.GetShoot(ctx, shootTest)).To(Succeed())
+			})
+
+			It("should be able to wake up a shoot which was hibernated in previous gardener release", func() {
+				Expect(f.WakeUpShoot(ctx, shootTest)).To(Succeed())
+			})
+
+			It("should restore etcd when etcd node got corrupted in previous gardener release", Label("etcd"), func() {
+				By("Verifying etcd-main is restored  PVC ")
+				cm := &corev1.ConfigMap{}
+				Expect(
+					f.ShootFramework.ShootClient.Client().Get(
+						ctx, client.ObjectKeyFromObject(getSampleConfigMap()), cm,
+					),
+				).To(Succeed())
+				Expect(cm.Data).To(Equal(getSampleConfigMap().Data))
+			})
+
+			It("should delete a shoot which was created in previous gardener release", func() {
+				Expect(f.Shoot.Status.Gardener.Version).Should(Equal(gardenerPreviousRelease))
+				Expect(f.DeleteShootAndWaitForDeletion(ctx, shootTest)).To(Succeed())
+			})
+		})
+	})
 })
 
 // scaleDownOrUpStsEtcdMain scales down or scales up replica size of etcd main for given shoot.
