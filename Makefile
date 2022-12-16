@@ -421,9 +421,13 @@ test-e2e-local-operator: $(GINKGO)
 
 test-pre-upgrade: $(GINKGO)
 	./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter="pre-upgrade" ./test/e2e/gardener/...
+test-ha-pre-upgrade: $(GINKGO)
+	./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter="pre-upgrade || (pre-upgrade && high-availability)" ./test/e2e/gardener/...
 
 test-post-upgrade: $(GINKGO)
 	./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter="post-upgrade" ./test/e2e/gardener/...
+test-ha-post-upgrade: $(GINKGO)
+	./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter="post-upgrade || (post-upgrade && high-availability)" ./test/e2e/gardener/...
 
 ci-e2e-kind: $(KIND) $(YQ)
 	./hack/ci-e2e-kind.sh
