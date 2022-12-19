@@ -122,9 +122,9 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 				By("Scaling down ETCD StatefulSet shoot")
 				expectedReplicas := 1
 				if gardencorev1beta1helper.IsHAControlPlaneConfigured(f.Shoot) {
-
 					expectedReplicas = 3
 				}
+				
 				scaleDownOrUpStsEtcdMain(ctx, seedClient, shootTest.Status.TechnicalID, int32(expectedReplicas-1))
 				deletePVC(ctx, seedClient, &corev1.PersistentVolumeClaim{
 					ObjectMeta: metav1.ObjectMeta{
@@ -233,7 +233,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 	})
 })
 
-// scaleDownEtcdMain scales down or up replica size of etcd main for given shoot.
+// scaleDownOrUpStsEtcdMain scales down or scales up replica size of etcd main for given shoot.
 func scaleDownOrUpStsEtcdMain(ctx context.Context, seedClient client.Client, namespace string, replicaSize int32) {
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -246,14 +246,14 @@ func scaleDownOrUpStsEtcdMain(ctx context.Context, seedClient client.Client, nam
 	Expect(seedClient.Update(ctx, sts)).To(Succeed())
 	Eventually(func() error {
 		if err := seedClient.Get(ctx, client.ObjectKeyFromObject(sts), sts); err != nil {
-			return fmt.Errorf("error occurred while get sts %q error: %v", sts.Name, err)
+			return fmt.Errorf("error occurred while getting statefulset %q error: %v", sts.Name, err)
 		}
+
 		if sts.Status.Replicas != replicaSize {
-			return fmt.Errorf("statefulset replicas: %v  but it's not expected size as %v", sts.Status.Replicas, replicaSize)
+			return fmt.Errorf("statefulset replicas %v, is not same as the expected replica size %v", sts.Status.Replicas, replicaSize)
 		}
 		return nil
 	}, time.Minute*5, time.Millisecond*500).Should(Succeed())
-
 }
 
 func getEtcdMainMemberLastOrdinalPodName(shoot *gardencorev1beta1.Shoot) string {
@@ -262,7 +262,6 @@ func getEtcdMainMemberLastOrdinalPodName(shoot *gardencorev1beta1.Shoot) string 
 		etcdMainPodName = "etcd-main-2"
 	}
 	return etcdMainPodName
-
 }
 
 func getSampleConfigMap() *corev1.ConfigMap {
@@ -306,7 +305,7 @@ func checkEtcdReady(ctx context.Context, cl client.Client, etcd *v1alpha1.Etcd) 
 		}
 
 		if *etcd.Status.ClusterSize != etcd.Spec.Replicas {
-			return fmt.Errorf("etcd %s cluster size is %v, but it's not expected size as %v",
+			return fmt.Errorf("etcd %s cluster size %v, is not same as the expected cluster size %v",
 				etcd.Name, etcd.Status.ClusterSize, etcd.Spec.Replicas)
 		}
 
@@ -319,6 +318,7 @@ func checkEtcdReady(ctx context.Context, cl client.Client, etcd *v1alpha1.Etcd) 
 			if etcd.Spec.Backup.Store == nil && c.Type == v1alpha1.ConditionTypeBackupReady {
 				continue
 			}
+
 			if c.Status != v1alpha1.ConditionTrue {
 				return fmt.Errorf("etcd %q status %q condition %s is not True",
 					etcd.Name, c.Type, c.Status)
