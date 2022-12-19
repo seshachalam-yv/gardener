@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/gardener/etcd-druid/api/v1alpha1"
-	"github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/utils/test/matchers"
@@ -61,10 +60,6 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 		)
 
 		shootTest.Namespace = projectNamespace
-		// TODO: (@seshachalam-yv): Remove this once next latest version of gardener is released.
-		// Due to recent PR https://github.com/gardener/gardener/pull/6999, by default we are expecting these Extensions "local-ext-seed", "local-ext-shoot".
-		// Excluding these extensions from the shoot spec and only include them in the next latest version of gardener.
-		shootTest.Spec.Extensions = nil
 		f.Shoot = shootTest
 
 		When("Pre-Upgrade (Gardener version:'"+gardenerPreviousVersion+"', Git version:'"+gardenerPreviousGitVersion+"')", Ordered, Label("pre-upgrade"), func() {
@@ -182,10 +177,6 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 
 		shootTest.Namespace = projectNamespace
 		shootTest.Spec.ControlPlane = nil
-		// TODO: (@seshachalam-yv): Remove this once next latest version of gardener is released.
-		// Due to recent PR https://github.com/gardener/gardener/pull/6999, by default we are expecting these Extensions "local-ext-seed", "local-ext-shoot".
-		// Excluding these extensions from the shoot spec and only include them in the next latest version of gardener.
-		shootTest.Spec.Extensions = nil
 		f.Shoot = shootTest
 
 		When("Pre-upgrade (version:'"+gardenerPreviousRelease+"')", Ordered, Label("pre-upgrade"), func() {
@@ -222,7 +213,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 
 			It("should be able to upgrade a non-HA shoot which was created in previous gardener release to HA with failure tolerance type '"+
 				os.Getenv("SHOOT_FAILURE_TOLERANCE_TYPE")+"'", func() {
-				highavailability.UpgradeAndVerify(ctx, f.ShootFramework, v1beta1.FailureToleranceTypeZone)
+				highavailability.UpgradeAndVerify(ctx, f.ShootFramework, getFailureToleranceType())
 			})
 
 			It("should be able to delete a shoot which was created in previous gardener release", func() {
@@ -326,4 +317,16 @@ func checkEtcdReady(ctx context.Context, cl client.Client, etcd *v1alpha1.Etcd) 
 		}
 		return nil
 	}, time.Minute*5, time.Second*2).Should(BeNil())
+}
+
+// getFailureToleranceType returns a failureToleranceType based on env variable SHOOT_FAILURE_TOLERANCE_TYPE value
+func getFailureToleranceType() gardencorev1beta1.FailureToleranceType {
+	var failureToleranceType gardencorev1beta1.FailureToleranceType
+	switch os.Getenv("SHOOT_FAILURE_TOLERANCE_TYPE") {
+	case "zone":
+		failureToleranceType = gardencorev1beta1.FailureToleranceTypeZone
+	case "node":
+		failureToleranceType = gardencorev1beta1.FailureToleranceTypeNode
+	}
+	return failureToleranceType
 }
