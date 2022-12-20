@@ -119,7 +119,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 				if gardencorev1beta1helper.IsHAControlPlaneConfigured(f.Shoot) {
 					expectedReplicas = 3
 				}
-				
+
 				scaleDownOrUpStsEtcdMain(ctx, seedClient, shootTest.Status.TechnicalID, int32(expectedReplicas-1))
 				deletePVC(ctx, seedClient, &corev1.PersistentVolumeClaim{
 					ObjectMeta: metav1.ObjectMeta{
