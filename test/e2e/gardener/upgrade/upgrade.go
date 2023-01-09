@@ -179,7 +179,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 		shootTest.Spec.ControlPlane = nil
 		f.Shoot = shootTest
 
-		When("Pre-upgrade (version:'"+gardenerPreviousRelease+"')", Ordered, Label("pre-upgrade"), func() {
+		When("(Gardener version:'"+gardenerPreviousVersion+"', Git version:'"+gardenerPreviousGitVersion+"')", Ordered, Label("pre-upgrade"), func() {
 			var (
 				ctx    context.Context
 				cancel context.CancelFunc
@@ -197,7 +197,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 			})
 		})
 
-		When("Post-upgrade (version:'"+gardenerCurrentRelease+"')", Ordered, Label("post-upgrade"), func() {
+		When("Post-Upgrade (Gardener version:'"+gardenerCurrentVersion+"', Git version:'"+gardenerCurrentGitVersion+"')", Ordered, Label("post-upgrade"), func() {
 			var (
 				ctx    context.Context
 				cancel context.CancelFunc
@@ -217,7 +217,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 			})
 
 			It("should be able to delete a shoot which was created in previous gardener release", func() {
-				Expect(f.Shoot.Status.Gardener.Version).Should(Equal(gardenerPreviousRelease))
+				Expect(f.Shoot.Status.Gardener.Version).Should(Equal(gardenerPreviousVersion))
 				Expect(f.GardenerFramework.DeleteShootAndWaitForDeletion(ctx, f.Shoot)).To(Succeed())
 			})
 		})
