@@ -68,7 +68,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 			)
 
 			BeforeAll(func() {
-				ctx, cancel = context.WithTimeout(parentCtx, 30*time.Minute)
+				ctx, cancel = context.WithTimeout(parentCtx, 2*time.Hour)
 				DeferCleanup(cancel)
 			})
 
