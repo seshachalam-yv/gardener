@@ -21,6 +21,15 @@ import (
 	"time"
 
 	"github.com/gardener/etcd-druid/api/v1alpha1"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/pointer"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/utils/test/matchers"
@@ -28,16 +37,6 @@ import (
 	"github.com/gardener/gardener/test/framework"
 	shootupdatesuite "github.com/gardener/gardener/test/utils/shoots/update"
 	"github.com/gardener/gardener/test/utils/shoots/update/highavailability"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
-
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Gardener upgrade Tests for", func() {
