@@ -27,7 +27,7 @@ images:
 - name: etcd-druid
   sourceRepository: github.com/gardener/etcd-druid
   repository: aaronfernandes/druid
-  tag: "etcdbr-pr564-2"
+  tag: "etcdbr-pr564-3"
 - name: dependency-watchdog
   sourceRepository: github.com/gardener/dependency-watchdog
   repository: eu.gcr.io/gardener-project/gardener/dependency-watchdog
