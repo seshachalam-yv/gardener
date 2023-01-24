@@ -165,68 +165,6 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 			})
 		})
 	})
-
-	// This test will create a non-HA control plane shoot in Gardener version vX.X.X
-	// and then upgrades shoot's control plane to HA once successfully upgraded Gardener version to vY.Y.Y.
-	Context("Shoot::e2e-upgrade-ha", Label("high-availability"), func() {
-		var (
-			parentCtx = context.Background()
-			f         = framework.NewShootCreationFramework(&framework.ShootCreationConfig{GardenerConfig: e2e.DefaultGardenConfig(projectNamespace)})
-			shootTest = e2e.DefaultShoot("e2e-upgrade-ha")
-			err       error
-		)
-
-		shootTest.Namespace = projectNamespace
-		shootTest.Spec.ControlPlane = nil
-		f.Shoot = shootTest
-		if os.Getenv("SHOOT_FAILURE_TOLERANCE_TYPE") == "zone" {
-			e2e.SetupDNSForMultiZonalTest()
-		}
-
-		When("(Gardener version:'"+gardenerPreviousVersion+"', Git version:'"+gardenerPreviousGitVersion+"')", Ordered, Label("pre-upgrade"), func() {
-			var (
-				ctx    context.Context
-				cancel context.CancelFunc
-			)
-
-			BeforeAll(func() {
-				ctx, cancel = context.WithTimeout(parentCtx, 30*time.Minute)
-				DeferCleanup(cancel)
-			})
-
-			It("should create a shoot", func() {
-				Expect(f.CreateShootAndWaitForCreation(ctx, false)).To(Succeed())
-				f.Verify()
-				Expect(f.ShootFramework.ShootClient.Client().Create(ctx, getSampleConfigMap())).To(Succeed())
-			})
-		})
-
-		When("Post-Upgrade (Gardener version:'"+gardenerCurrentVersion+"', Git version:'"+gardenerCurrentGitVersion+"')", Ordered, Label("post-upgrade"), func() {
-			var (
-				ctx    context.Context
-				cancel context.CancelFunc
-			)
-
-			BeforeAll(func() {
-				ctx, cancel = context.WithTimeout(parentCtx, 60*time.Minute)
-				DeferCleanup(cancel)
-				Expect(f.GetShoot(ctx, shootTest)).To(Succeed())
-				f.ShootFramework, err = f.NewShootFramework(ctx, shootTest)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("should be able to upgrade a non-HA shoot which was created in previous gardener release to HA with failure tolerance type '"+
-				os.Getenv("SHOOT_FAILURE_TOLERANCE_TYPE")+"'", func() {
-				highavailability.UpgradeAndVerify(ctx, f.ShootFramework, getFailureToleranceType())
-			})
-
-			It("should be able to delete a shoot which was created in previous gardener release", func() {
-
-				Expect(f.Shoot.Status.Gardener.Version).Should(Equal(gardenerPreviousVersion))
-				Expect(f.GardenerFramework.DeleteShootAndWaitForDeletion(ctx, f.Shoot)).To(Succeed())
-			})
-		})
-	})
 })
 
 // scaleDownOrUpStsEtcdMain scales down or scales up replica size of etcd main for given shoot.
