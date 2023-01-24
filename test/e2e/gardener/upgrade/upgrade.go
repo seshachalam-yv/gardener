@@ -68,7 +68,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 			)
 
 			BeforeAll(func() {
-				ctx, cancel = context.WithTimeout(parentCtx, 2*time.Hour)
+				ctx, cancel = context.WithTimeout(parentCtx, 30*time.Minute)
 				DeferCleanup(cancel)
 			})
 
@@ -168,7 +168,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 
 	// This test will create a non-HA control plane shoot in Gardener version vX.X.X
 	// and then upgrades shoot's control plane to HA once successfully upgraded Gardener version to vY.Y.Y.
-	Context("Shoot::e2e-upgrade-ha", Label("high-availability"), Label("sesha"), func() {
+	Context("Shoot::e2e-upgrade-ha", Label("high-availability"), func() {
 		var (
 			parentCtx = context.Background()
 			f         = framework.NewShootCreationFramework(&framework.ShootCreationConfig{GardenerConfig: e2e.DefaultGardenConfig(projectNamespace)})
@@ -190,7 +190,7 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 			)
 
 			BeforeAll(func() {
-				ctx, cancel = context.WithTimeout(parentCtx, 2*time.Hour)
+				ctx, cancel = context.WithTimeout(parentCtx, 30*time.Minute)
 				DeferCleanup(cancel)
 			})
 
