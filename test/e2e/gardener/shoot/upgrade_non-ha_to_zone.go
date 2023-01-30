@@ -32,8 +32,6 @@ var _ = Describe("Shoot Tests", Label("Shoot", "high-availability", "upgrade-to-
 	f.Shoot.Spec.ControlPlane = nil
 
 	It("Create, Upgrade (non-HA to HA with failure tolerance type 'zone') and Delete Shoot", func() {
-		e2e.SetupDNSForMultiZonalTest()
-
 		By("Create Shoot")
 		ctx, cancel := context.WithTimeout(parentCtx, 30*time.Minute)
 		defer cancel()

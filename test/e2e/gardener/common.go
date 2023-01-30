@@ -119,9 +119,9 @@ func DefaultShoot(name string) *gardencorev1beta1.Shoot {
 	}
 }
 
-// SetupDNSForMultiZonalTest will set golang DefaultResolver to coredns server which is portforwarded to host 127.0.0.1:5353
-// multi zonal test uses the in-cluster coredns for name resolution and can therefore resolve the api endpoint.
-func SetupDNSForMultiZonalTest() {
+// SetupDNSForTest will set golang DefaultResolver to coredns server which is portforwarded to host 127.0.0.1:5353
+// test uses the in-cluster coredns for name resolution and can therefore resolve the api endpoint.
+func SetupDNSForTest() {
 	net.DefaultResolver = &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {

@@ -179,9 +179,6 @@ var _ = Describe("Gardener upgrade Tests for", func() {
 		shootTest.Namespace = projectNamespace
 		shootTest.Spec.ControlPlane = nil
 		f.Shoot = shootTest
-		if os.Getenv("SHOOT_FAILURE_TOLERANCE_TYPE") == "zone" {
-			e2e.SetupDNSForMultiZonalTest()
-		}
 
 		When("(Gardener version:'"+gardenerPreviousVersion+"', Git version:'"+gardenerPreviousGitVersion+"')", Ordered, Label("pre-upgrade"), func() {
 			var (
