@@ -50,7 +50,7 @@ setup_loopback_device() {
       exit 1
     fi
     echo "Skipping loopback device setup because 'ip' command is not available..."
-    return
+    apt-get update -y && apt-get -y install iproute2
   fi
   LOOPBACK_DEVICE=$(ip address | grep LOOPBACK | sed "s/^[0-9]\+: //g" | awk '{print $1}' | sed "s/:$//g")
   LOOPBACK_IP_ADDRESSES=(127.0.0.10 127.0.0.11 127.0.0.12)
