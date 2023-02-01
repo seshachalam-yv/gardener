@@ -3,7 +3,7 @@
 set -o errexit
 set -o nounset
 set -o pipefail
-
+set -x
 CLUSTER_NAME=""
 PATH_CLUSTER_VALUES=""
 PATH_KUBECONFIG=""
