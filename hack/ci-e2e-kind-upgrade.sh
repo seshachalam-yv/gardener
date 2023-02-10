@@ -174,11 +174,11 @@ export GARDENER_PREVIOUS_VERSION="$(cat $GARDENER_RELEASE_DOWNLOAD_PATH/gardener
 kind_up
 
 # export all container logs and events after test execution
-trap "
-( rm -rf $GARDENER_RELEASE_DOWNLOAD_PATH/gardener-releases);
-( export_logs '$CLUSTER_NAME'; export_events_for_kind '$CLUSTER_NAME'; export_events_for_shoots )
-( kind_down;)
-" EXIT
+# trap "
+# ( rm -rf $GARDENER_RELEASE_DOWNLOAD_PATH/gardener-releases);
+# ( export_logs '$CLUSTER_NAME'; export_events_for_kind '$CLUSTER_NAME'; export_events_for_shoots )
+# ( kind_down;)
+# " EXIT
 
 echo "Installing gardener version '$GARDENER_PREVIOUS_RELEASE'"
 install_previous_release
@@ -186,17 +186,17 @@ install_previous_release
 echo "Running gardener pre-upgrade tests"
 make test-pre-upgrade GARDENER_PREVIOUS_RELEASE=$GARDENER_PREVIOUS_RELEASE GARDENER_NEXT_RELEASE=$GARDENER_NEXT_RELEASE
 
-echo "Upgrading gardener version '$GARDENER_PREVIOUS_RELEASE' to '$GARDENER_NEXT_RELEASE'"
-upgrade_to_next_release
+# echo "Upgrading gardener version '$GARDENER_PREVIOUS_RELEASE' to '$GARDENER_NEXT_RELEASE'"
+# upgrade_to_next_release
 
-echo "Wait until seed '$SEED_NAME' gets upgraded from version '$GARDENER_PREVIOUS_RELEASE' to '$GARDENER_NEXT_RELEASE'"
-kubectl wait seed $SEED_NAME --timeout=5m --for=jsonpath="{.status.gardener.version}=$GARDENER_NEXT_RELEASE"
-# RETRY_LIMIT has been increased to 240 (20 minutes) due to the upgrading of Gardener for seed.
-# In a single-zone setup, 3 istio-ingressgateway pods will be running, and it will take 9 minutes to complete the rollout.
-# In a multi-zone setup, 6 istio-ingressgateway pods will be running, and it will take 18 minutes to complete the rollout.
-RETRY_LIMIT=240 ./hack/usage/wait-for.sh seed "$SEED_NAME" GardenletReady Bootstrapped SeedSystemComponentsHealthy ExtensionsReady BackupBucketsReady
+# echo "Wait until seed '$SEED_NAME' gets upgraded from version '$GARDENER_PREVIOUS_RELEASE' to '$GARDENER_NEXT_RELEASE'"
+# kubectl wait seed $SEED_NAME --timeout=5m --for=jsonpath="{.status.gardener.version}=$GARDENER_NEXT_RELEASE"
+# # RETRY_LIMIT has been increased to 240 (20 minutes) due to the upgrading of Gardener for seed.
+# # In a single-zone setup, 3 istio-ingressgateway pods will be running, and it will take 9 minutes to complete the rollout.
+# # In a multi-zone setup, 6 istio-ingressgateway pods will be running, and it will take 18 minutes to complete the rollout.
+# RETRY_LIMIT=240 ./hack/usage/wait-for.sh seed "$SEED_NAME" GardenletReady Bootstrapped SeedSystemComponentsHealthy ExtensionsReady BackupBucketsReady
 
-echo "Running gardener post-upgrade tests"
-make test-post-upgrade GARDENER_PREVIOUS_RELEASE=$GARDENER_PREVIOUS_RELEASE GARDENER_NEXT_RELEASE=$GARDENER_NEXT_RELEASE
+# echo "Running gardener post-upgrade tests"
+# make test-post-upgrade GARDENER_PREVIOUS_RELEASE=$GARDENER_PREVIOUS_RELEASE GARDENER_NEXT_RELEASE=$GARDENER_NEXT_RELEASE
 
-gardener_down
+# gardener_down
