@@ -375,8 +375,9 @@ func (e *etcd) Deploy(ctx context.Context) error {
 
 		if e.values.BackupConfig != nil {
 			var (
-				provider            = druidv1alpha1.StorageProvider(e.values.BackupConfig.Provider)
-				deltaSnapshotPeriod = metav1.Duration{Duration: 5 * time.Minute}
+				provider                     = druidv1alpha1.StorageProvider(e.values.BackupConfig.Provider)
+				deltaSnapshotPeriod          = metav1.Duration{Duration: 5 * time.Minute}
+				deltaSnapshotRetentionPeriod = metav1.Duration{Duration: 15 * 24 * time.Hour}
 			)
 
 			e.etcd.Spec.Backup.Store = &druidv1alpha1.StoreSpec{
@@ -388,6 +389,7 @@ func (e *etcd) Deploy(ctx context.Context) error {
 			e.etcd.Spec.Backup.FullSnapshotSchedule = e.computeFullSnapshotSchedule(existingEtcd)
 			e.etcd.Spec.Backup.DeltaSnapshotPeriod = &deltaSnapshotPeriod
 			e.etcd.Spec.Backup.DeltaSnapshotMemoryLimit = utils.QuantityPtr(resource.MustParse("100Mi"))
+			e.etcd.Spec.Backup.DeltaSnapshotRetentionPeriod = &deltaSnapshotRetentionPeriod
 
 			if e.values.BackupConfig.LeaderElection != nil {
 				e.etcd.Spec.Backup.LeaderElection = &druidv1alpha1.LeaderElectionSpec{

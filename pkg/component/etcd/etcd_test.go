@@ -312,6 +312,7 @@ var _ = Describe("Etcd", func() {
 
 				provider := druidv1alpha1.StorageProvider(backupConfig.Provider)
 				deltaSnapshotPeriod := metav1.Duration{Duration: 5 * time.Minute}
+				deltaSnapshotRetentionPeriod := metav1.Duration{Duration: 15 * 24 * time.Hour}
 				deltaSnapshotMemoryLimit := resource.MustParse("100Mi")
 
 				obj.Spec.Backup.Store = &druidv1alpha1.StoreSpec{
@@ -322,6 +323,7 @@ var _ = Describe("Etcd", func() {
 				}
 				obj.Spec.Backup.FullSnapshotSchedule = &fullSnapshotSchedule
 				obj.Spec.Backup.DeltaSnapshotPeriod = &deltaSnapshotPeriod
+				obj.Spec.Backup.DeltaSnapshotRetentionPeriod = &deltaSnapshotRetentionPeriod
 				obj.Spec.Backup.DeltaSnapshotMemoryLimit = &deltaSnapshotMemoryLimit
 
 				if backupConfig.LeaderElection != nil {
