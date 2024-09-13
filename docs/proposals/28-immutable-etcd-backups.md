@@ -1,6 +1,19 @@
+---
+title: Immutable etcd Backups
+gep-number: 28
+creation-date: 2024-09-11
+status: implementable
+authors:
+- "@seshachalam-yv"
+- "@renormalize"
+reviewers:
+- "@unmarshall"
+---
+
 # GEP-28: Immutable ETCD Backups
 
 ## Table of Contents
+
 - [GEP-28: Immutable ETCD Backups](#gep-28-immutable-etcd-backups)
   - [Table of Contents](#table-of-contents)
   - [Motivation](#motivation)
@@ -20,20 +33,25 @@
   - [Operational Considerations](#operational-considerations)
 
 ## Motivation
-To enhance the reliability and integrity of ETCD backups by preventing unauthorized modifications, ensuring that backups are consistently available and intact for restoration.
+
+To enhance the reliability and integrity of etcd database backups, ensuring that backups are consistently available and intact for restoration of the cluster.
 
 ## Goal
-Implement immutable backup support in Gardener's ETCD clusters to secure backup data against unintended or malicious modifications post-creation.
+
+Implement immutable backup support in the Gardener ecosystem by adapting all components involved the process of backing up the data of the etcd cluster, to secure the backup data against unintended or unauthorized modifications post-creation.
 
 ## Proposal
 
 ### Overview
-Introduce immutability in backup storage to prevent data alterations using cloud provider features that support a write-once-read-many (WORM) model.
+
+Introduce functionality which enables creation and lifecycle management of snapshots triggered by etcd-backup-restore to be "immutable", i.e. use functionality provided by various cloud providers to create objects which follow the write-once-read-many (WORM) model. Using this WORM model would guarantee no data alterations occur after the initial upload of the backup.
 
 ### Detailed Design
 
-#### Bucket Lock Mechanism
-The Bucket Lock feature configures a retention policy for a Cloud Storage bucket, governing how long objects in the bucket must be retained. It also allows for the locking of the bucket's retention policy, permanently preventing the policy from being reduced or removed.
+#### Bucket Level Immutability
+
+Bucket level immutability configures a retention policy for a bucket, governing how long objects uploaded to the bucket can not be modified for. All objects that are uploaded to the bucket will inherit this retention policy, i.e. the duration for which the object will be immutable (WORM). In this duration, objects can neither be modified (write/append) nor deleted.
+Once this policy is enabled for the bucket, it can not be removed from the bucket until all objects in the bucket "expire", i.e. the duration for which they are to be immutable passes (functionality varies slightly provider to provider).
 
 - **Supported by major providers:**
   - GCS: [Bucket Lock](https://cloud.google.com/storage/docs/bucket-lock)
@@ -41,23 +59,29 @@ The Bucket Lock feature configures a retention policy for a Cloud Storage bucket
   - ABS: [Immutable Blob Storage](https://learn.microsoft.com/en-us/azure/storage/blobs/immutable-policy-configure-container-scope?tabs=azure-portal)
 
 #### Gardener Seed Backup Configuration
+
 ```yaml
 backup:
   providerConfig:
     immutableSettings:
-      retentionType: "Bucket"
+      retentionType: "bucket"
       retentionPeriod: "96h"
 ```
+
 This configuration under the `providerConfig` in the seed's backup section enables Gardener to create the required backup bucket specifications that enforce the immutability policy.
 
 #### Gardener Extension Provider
+
 The Gardener extension provider updates the bucket based on the `immutableSettings`:
+
 - **If the bucket does not exist:** It is created with the immutable settings.
 - **If the bucket exists without immutable settings:** The bucket is updated to include the immutable settings.
 - **If the bucket has immutable settings with a shorter retention period:** The retention period is adjusted to match the new settings.
 
 #### Admission Validation
+
 A new admission webhook will ensure that once immutability settings are enabled:
+
 - They cannot be disabled.
 - The retention period cannot be reduced.
 
@@ -80,22 +104,30 @@ There are two suggested approaches to manage this:
 Additionally, to provide operational flexibility, the annotation `shoot.gardener.cloud/skip-hibernation-backup` can be used. Allows operators to skip the backup process during hibernation if set to "true".
 
 ### Lifecycle of Immutable Settings
+
 - **Creation:** Specified upon creating a backup configuration and embedded into the backup bucket specifications.
 - **Modification:** Immutable settings cannot be disabled or reduced once set.
 - **Deletion:** Ensures data remains protected for the entire retention period, even if the shoot is deleted. Backup entries are removed after the `controllers.backupEntry.deletionGracePeriodHours`.
 
-### Excluding Snapshots Under Specific Circumstances:
+### Excluding Snapshots Under Specific Circumstances
 
 Given that immutable backups cannot be deleted, there are scenarios, such as corrupted snapshots or other anomalies, where certain snapshots must be skipped during the restoration process. To facilitate this:
 
 - **Custom Metadata Tags**: Utilize custom metadata to mark specific objects (snapshots) that should be bypassed. To exclude a snapshot from the restoration process, attach custom metadata to it with the key `x-etcd-snapshot-exclude` and value `true`. This method is officially supported as demonstrated in the [etcd-backup-restore PR](https://github.com/gardener/etcd-backup-restore/pull/776).
 
 ## Rationale for a Four-Day Immutability Period
+
 The policy maintains four days of delta snapshots and thirty days of full snapshots. A four-day immutability period ensures all objects are protected for at least this duration, balancing protection with operational flexibility.
 
 ## Compatibility
+
 Updates will be required in the [Seed backup section](https://github.com/gardener/gardener/blob/master/pkg/apis/core/v1beta1/types_seed.go#L119-L132) of the Gardener API under `providerConfig`, ensuring backwards compatibility with existing setups where immutability is not enabled.
 
 ## Implementation Steps
+
 1. Implement admission webhooks for validating immutability settings at the seed level.
 2. Develop mechanisms to manage backup processes for hibernated shoots, considering the new immutability constraints.
+
+## Operational Considerations
+
+It has to be noted that once immutability is enabled for a seed, disabling is not allowed.
