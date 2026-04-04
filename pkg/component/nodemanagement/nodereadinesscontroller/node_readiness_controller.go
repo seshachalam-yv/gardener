@@ -222,9 +222,10 @@ func (c *nodeReadinessController) computeResourcesData() (map[string][]byte, err
 		return nil, err
 	}
 
-	// NodeReadinessRule CR is not a vendored type; add it as raw YAML using AddSerialized.
-	// The filename follows the convention: <group>/<version>/<kind>__<namespace>__<name>.yaml
-	// For cluster-scoped resources namespace is empty.
+	// The NodeReadinessRule CRD and CR are not vendored types; add them as raw YAML using AddSerialized.
+	// The CRD must be added before the CR so the API server accepts the CR on first apply.
+	registry.AddSerialized("apiextensions.k8s.io/v1/CustomResourceDefinition____nodereadinessrules.readiness.node.x-k8s.io.yaml", nodeReadinessRuleCRDYAML)
+
 	nrcRuleYAML := fmt.Sprintf(`apiVersion: %s
 kind: %s
 metadata:
@@ -237,6 +238,8 @@ spec:
     key: "%s"
     effect: "NoSchedule"
   enforcementMode: "bootstrap-only"
+  nodeSelector:
+    matchLabels: {}
 `,
 		nrcAPIVersion,
 		nrcRuleKind,

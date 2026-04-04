@@ -200,6 +200,8 @@ spec:
     key: "readiness.k8s.io/gardener-critical-components-not-ready"
     effect: "NoSchedule"
   enforcementMode: "bootstrap-only"
+  nodeSelector:
+    matchLabels: {}
 `
 		)
 
@@ -246,7 +248,11 @@ spec:
 		})
 
 		It("should successfully deploy all resources", func() {
-			Expect(manifests).To(ConsistOf(expectedManifests))
+			// There are 6 manifests total: 5 known + 1 CRD (large, checked by content substring).
+			Expect(manifests).To(HaveLen(6))
+			Expect(manifests).To(ContainElements(expectedManifests))
+			// Verify the CRD manifest is present and has the correct name.
+			Expect(manifests).To(ContainElement(ContainSubstring("nodereadinessrules.readiness.node.x-k8s.io")))
 		})
 	})
 
