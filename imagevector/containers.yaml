@@ -603,6 +603,23 @@ images:
         value:
           - type: 'githubTeam'
             teamname: 'gardener/mcm-maintainers'
+  - name: node-readiness-controller
+    sourceRepository: github.com/kubernetes-sigs/node-readiness-controller
+    repository: registry.k8s.io/node-readiness-controller/controller
+    tag: "v0.3.0"
+    labels:
+      - name: 'gardener.cloud/cve-categorisation'
+        value:
+          network_exposure: 'private'
+          authentication_enforced: false
+          user_interaction: 'end-user'
+          confidentiality_requirement: 'low'
+          integrity_requirement: 'high'
+          availability_requirement: 'low'
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/gardener-core-networking-maintainers'
   # Shoot optional addons
   - name: kubernetes-dashboard
     sourceRepository: github.com/kubernetes/dashboard

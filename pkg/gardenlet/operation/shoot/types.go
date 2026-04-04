@@ -175,6 +175,8 @@ type SystemComponents struct {
 	Namespaces          component.DeployWaiter
 	NodeLocalDNS        nodelocaldns.Interface
 	NodeProblemDetector component.DeployWaiter
+	// NodeReadinessController is the component for deploying the upstream Node Readiness Controller.
+	NodeReadinessController component.DeployWaiter
 	NodeExporter        component.DeployWaiter
 	Resources           shootsystem.Interface
 	VPNShoot            vpnshoot.Interface

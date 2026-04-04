@@ -204,6 +204,10 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 		if err != nil {
 			return nil, err
 		}
+		o.Shoot.Components.SystemComponents.NodeReadinessController, err = b.DefaultNodeReadinessController()
+		if err != nil {
+			return nil, err
+		}
 		o.Shoot.Components.SystemComponents.NodeExporter, err = b.DefaultNodeExporter()
 		if err != nil {
 			return nil, err

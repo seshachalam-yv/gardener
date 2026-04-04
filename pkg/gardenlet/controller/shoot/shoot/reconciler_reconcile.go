@@ -717,6 +717,15 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 			Dependencies: flow.NewTaskIDs(waitUntilControlPlaneReady, waitUntilExtensionResourcesAfterKAPIReady, // Extensions might deploy webhooks for system components
 				deployGardenerResourceManager, waitUntilOperatingSystemConfigReady, waitUntilShootNamespacesReady),
 		})
+		deployNodeReadinessController = g.Add(flow.Task{
+			Name: "Deploying node-readiness-controller system component",
+			Fn: flow.TaskFn(func(ctx context.Context) error {
+				return botanist.Shoot.Components.SystemComponents.NodeReadinessController.Deploy(ctx)
+			}).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			SkipIf: o.Shoot.IsWorkerless || o.Shoot.HibernationEnabled,
+			Dependencies: flow.NewTaskIDs(waitUntilControlPlaneReady, waitUntilExtensionResourcesAfterKAPIReady, // Extensions might deploy webhooks for system components
+				deployGardenerResourceManager, waitUntilOperatingSystemConfigReady, waitUntilShootNamespacesReady),
+		})
 		deployKubeProxy = g.Add(flow.Task{
 			Name:   "Deploying kube-proxy system component",
 			Fn:     flow.TaskFn(botanist.DeployKubeProxy).RetryUntilTimeout(defaultInterval, defaultTimeout),
@@ -794,6 +803,7 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 			deployMetricsServer,
 			deployVPNShoot,
 			deployNodeProblemDetector,
+			deployNodeReadinessController,
 			deployKubeProxy,
 			deployBlackboxExporter,
 			deployKubernetesDashboard,
