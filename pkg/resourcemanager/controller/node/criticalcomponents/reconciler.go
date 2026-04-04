@@ -253,7 +253,7 @@ func objectKeysToString(objKeys []client.ObjectKey) string {
 // NodeConditionCriticalComponentsReady condition to True. This is used when the
 // NodeReadinessController feature gate is enabled — the upstream NRC reacts to
 // this condition and removes the taint instead of this controller doing it directly.
-func WriteNodeConditionCriticalComponentsReady(ctx context.Context, w client.Client, node *corev1.Node) error {
+func WriteNodeConditionCriticalComponentsReady(ctx context.Context, w client.StatusClient, node *corev1.Node) error {
 	patch := client.MergeFromWithOptions(node.DeepCopy(), client.MergeFromWithOptimisticLock{})
 
 	now := metav1.NewTime(time.Now())
@@ -268,14 +268,18 @@ func WriteNodeConditionCriticalComponentsReady(ctx context.Context, w client.Cli
 	for i, existing := range node.Status.Conditions {
 		if existing.Type == newCondition.Type {
 			if existing.Status == newCondition.Status {
-				return nil // already set, nothing to do
+				// Status unchanged: preserve LastTransitionTime, but always update LastHeartbeatTime.
+				newCondition.LastTransitionTime = existing.LastTransitionTime
+			} else {
+				// Status changed: set LastTransitionTime to now.
+				newCondition.LastTransitionTime = now
 			}
-			newCondition.LastTransitionTime = existing.LastTransitionTime // preserve
 			node.Status.Conditions[i] = newCondition
 			return w.Status().Patch(ctx, node, patch)
 		}
 	}
 
+	// Condition not found: new condition, set both timestamps to now.
 	newCondition.LastTransitionTime = now
 	node.Status.Conditions = append(node.Status.Conditions, newCondition)
 	return w.Status().Patch(ctx, node, patch)

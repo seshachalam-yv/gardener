@@ -50,7 +50,7 @@ var _ = Describe("WriteNodeConditionCriticalComponentsReady", func() {
 		Expect(cond.LastTransitionTime).NotTo(BeZero())
 	})
 
-	It("should be a no-op if condition is already True", func() {
+	It("should preserve LastTransitionTime when condition is already True", func() {
 		// Truncate to seconds since JSON serialization loses sub-second precision.
 		transitionTime := metav1.NewTime(time.Now().Truncate(time.Second))
 		node.Status.Conditions = []corev1.NodeCondition{{
@@ -70,11 +70,11 @@ var _ = Describe("WriteNodeConditionCriticalComponentsReady", func() {
 		Expect(fakeClient.Get(testCtx, client.ObjectKeyFromObject(node), updated)).To(Succeed())
 		cond := findCriticalComponentsCondition(updated.Status.Conditions)
 		Expect(cond).NotTo(BeNil())
-		// Transition time should be unchanged (no-op path)
+		// Status unchanged: LastTransitionTime must be preserved, but heartbeat is always updated.
 		Expect(cond.LastTransitionTime).To(Equal(transitionTime))
 	})
 
-	It("should update the condition and preserve LastTransitionTime when status changes", func() {
+	It("should update the condition and set LastTransitionTime to now when status changes", func() {
 		// Truncate to seconds since JSON serialization loses sub-second precision.
 		originalTransitionTime := metav1.NewTime(time.Now().Add(-5 * time.Minute).Truncate(time.Second))
 		node.Status.Conditions = []corev1.NodeCondition{{
@@ -95,8 +95,9 @@ var _ = Describe("WriteNodeConditionCriticalComponentsReady", func() {
 		cond := findCriticalComponentsCondition(updated.Status.Conditions)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(corev1.ConditionTrue))
-		// LastTransitionTime should be preserved from original
-		Expect(cond.LastTransitionTime).To(Equal(originalTransitionTime))
+		// Status changed: LastTransitionTime must be updated to now, not preserved from original.
+		Expect(cond.LastTransitionTime).NotTo(Equal(originalTransitionTime))
+		Expect(cond.LastTransitionTime).NotTo(BeZero())
 	})
 })
 
