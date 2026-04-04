@@ -112,6 +112,14 @@ const (
 	// owner: @rrhubenov
 	// alpha: v1.140.0
 	RemoveVali featuregate.Feature = "RemoveVali"
+
+	// NodeReadinessController enables integration with the upstream Kubernetes Node Readiness Controller
+	// (github.com/kubernetes-sigs/node-readiness-controller) as a replacement for Gardener's
+	// node-critical-components controller. When enabled, the resource-manager writes a node condition
+	// instead of removing the taint directly, and NRC is deployed to the shoot cluster to manage taints.
+	// owner: @seshachalam-yv
+	// alpha: v1.141.0
+	NodeReadinessController featuregate.Feature = "NodeReadinessController"
 )
 
 // DefaultFeatureGate is the central feature gate map used by all gardener components.
@@ -154,6 +162,7 @@ var AllFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	PrometheusHealthChecks:         {Default: false, PreRelease: featuregate.Alpha},
 	VersionClassificationLifecycle: {Default: false, PreRelease: featuregate.Alpha},
 	RemoveVali:                     {Default: false, PreRelease: featuregate.Alpha},
+	NodeReadinessController:        {Default: false, PreRelease: featuregate.Alpha},
 }
 
 // GetFeatures returns a feature gate map with the respective specifications. Non-existing feature gates are ignored.

@@ -1075,6 +1075,13 @@ const (
 
 	// TaintNodeCriticalComponentsNotReady is the key for the gardener-managed node components taint.
 	TaintNodeCriticalComponentsNotReady = "node.gardener.cloud/critical-components-not-ready"
+	// TaintNodeReadinessControllerNotReady is the taint key managed by the upstream Node Readiness Controller
+	// when the NodeReadinessController feature gate is enabled. Uses the readiness.k8s.io/ prefix required by NRC.
+	TaintNodeReadinessControllerNotReady = "readiness.k8s.io/gardener-critical-components-not-ready"
+	// NodeConditionCriticalComponentsReady is the node condition type written by the resource-manager's
+	// node-critical-components controller when the NodeReadinessController feature gate is enabled.
+	// The upstream NRC reacts to this condition to manage the taint.
+	NodeConditionCriticalComponentsReady = "node.gardener.cloud/CriticalComponentsReady"
 	// LabelNodeCriticalComponent is the label key for marking node-critical component pods.
 	LabelNodeCriticalComponent = "node.gardener.cloud/critical-component"
 	// AnnotationPrefixWaitForCSINode is the annotation key for csi-driver-node pods, indicating they use the driver
