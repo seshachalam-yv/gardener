@@ -69,7 +69,7 @@ The upstream Kubernetes project recently released the [Node Readiness Controller
 | Dry run | ❌ | ✅ | NRC is strictly better |
 | Validation webhook | ❌ | ✅ | NRC is strictly better |
 | Declarative CRD config | ❌ | ✅ | NRC is strictly better |
-| Runs in seed (remote watch) | ✅ | ❌ Must run in shoot | Architecture difference — see Phase 1 |
+| Runs in seed (remote watch) | ✅ | ❌ Must run inside shoot cluster | NRC uses standard controller-runtime with no remote kubeconfig support — deploying it in the seed would require forking/patching upstream NRC |
 
 ### Critical Gaps to Address Before Full Replacement
 
@@ -77,9 +77,48 @@ The upstream Kubernetes project recently released the [Node Readiness Controller
 2. **No native pod/CSI checks** — NRC only reacts to node conditions. Something must write those conditions. Options: gardener-node-agent, a new condition-reporter DaemonSet, or keeping the resource-manager logic as a "condition writer".
 3. **Alpha maturity** — NRC is v0.1.1. Gardener should deploy it with a feature gate and maintain a fallback path until NRC reaches stable.
 
+## 3. Deployment Location Decision
+
+**NRC must run inside the shoot cluster (shoot dataplane), not in the seed's shoot control plane namespace.**
+
+Two options were evaluated:
+
+| | Option A: Shoot Dataplane | Option B: Seed Control Plane Namespace |
+|-|--------------------------|---------------------------------------|
+| How | ManagedResource → NRC Deployment in shoot `kube-system` | NRC Deployment in seed `shoot--project--name` ns with kubeconfig to shoot |
+| Upstream NRC compatible | ✅ Yes — standard controller-runtime, no changes needed | ❌ No — NRC has no `--kubeconfig` flag; would require forking |
+| Latency | ✅ Local watches, millisecond reaction | ❌ Seed→shoot network hop per event |
+| Gardener precedent | ✅ NPD, CoreDNS, kube-proxy (all use ManagedResource) | ⚠️ MCM pattern, but MCM was explicitly built for dual-cluster |
+| Shoot resource usage | Uses shoot CPU/memory | Uses seed CPU/memory |
+| Survives network partition | ✅ Yes (local to shoot) | ❌ No (depends on seed→shoot connectivity) |
+
+**Decision: Option A — shoot dataplane via ManagedResource.**
+
+Reasons:
+1. NRC uses standard `ctrl.NewManager()` with no remote kubeconfig support — Option B requires patching upstream NRC, defeating the adoption goal.
+2. Taint management is latency-sensitive (nodes boot and need scheduling quickly) — local is always better.
+3. Aligns with Gardener's established pattern for node-level components (NPD, CSI drivers).
+4. Enables zero-diff adoption of official NRC releases.
+
+**Deployment flow (follows NPD/CoreDNS pattern):**
+```
+Seed: gardenlet (botanist)
+  └─ Creates ManagedResource "shoot-core-node-readiness-controller"
+       └─ Secret: NRC Deployment + NodeReadinessRule CRD + RBAC manifests
+            (serialized via managedresources.NewRegistry(kubernetes.ShootScheme, ...))
+
+Seed: gardener-resource-manager (instance for shoot)
+  └─ Reads ManagedResource, applies manifests INTO shoot cluster via TargetClient
+
+Shoot cluster (kube-system):
+  └─ NRC Deployment (official upstream image)
+     ├─ Watches: Node objects + NodeReadinessRule CRDs (local, direct)
+     └─ Patches: Node.Spec.Taints based on NodeReadinessRule conditions
+```
+
 ---
 
-## 3. Architecture
+## 4. Architecture
 
 ### Current Architecture
 
