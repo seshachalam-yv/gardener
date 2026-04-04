@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -27,6 +29,7 @@ import (
 	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/node/criticalcomponents/helper"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 )
@@ -96,8 +99,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{RequeueAfter: backoff}, nil
 	}
 
-	log.Info("All node-critical components got ready, removing taint")
-	r.Recorder.Eventf(node, nil, corev1.EventTypeNormal, "NodeCriticalComponentsReady", gardencorev1beta1.EventActionReconcile, "All node-critical components got ready, removing taint")
+	log.Info("All node-critical components got ready")
+	r.Recorder.Eventf(node, nil, corev1.EventTypeNormal, "NodeCriticalComponentsReady", gardencorev1beta1.EventActionReconcile, "All node-critical components got ready")
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.NodeReadinessController) {
+		// When NRC integration is enabled, write a node condition that the upstream NRC will react to.
+		// NRC manages the taint; we no longer remove it directly.
+		return reconcile.Result{}, WriteNodeConditionCriticalComponentsReady(ctx, r.TargetClient, node)
+	}
+
+	log.Info("Removing taint (legacy mode)")
 	return reconcile.Result{}, RemoveTaint(ctx, r.TargetClient, node)
 }
 
@@ -236,4 +247,36 @@ func objectKeysToString(objKeys []client.ObjectKey) string {
 	}
 
 	return strings.Join(keys, ", ")
+}
+
+// WriteNodeConditionCriticalComponentsReady patches the node's status to set the
+// NodeConditionCriticalComponentsReady condition to True. This is used when the
+// NodeReadinessController feature gate is enabled — the upstream NRC reacts to
+// this condition and removes the taint instead of this controller doing it directly.
+func WriteNodeConditionCriticalComponentsReady(ctx context.Context, w client.Client, node *corev1.Node) error {
+	patch := client.MergeFromWithOptions(node.DeepCopy(), client.MergeFromWithOptimisticLock{})
+
+	now := metav1.NewTime(time.Now())
+	newCondition := corev1.NodeCondition{
+		Type:              corev1.NodeConditionType(v1beta1constants.NodeConditionCriticalComponentsReady),
+		Status:            corev1.ConditionTrue,
+		Reason:            "AllCriticalComponentsReady",
+		Message:           "All node-critical DaemonSet pods are scheduled and ready, and all required CSI drivers are registered.",
+		LastHeartbeatTime: now,
+	}
+
+	for i, existing := range node.Status.Conditions {
+		if existing.Type == newCondition.Type {
+			if existing.Status == newCondition.Status {
+				return nil // already set, nothing to do
+			}
+			newCondition.LastTransitionTime = existing.LastTransitionTime // preserve
+			node.Status.Conditions[i] = newCondition
+			return w.Status().Patch(ctx, node, patch)
+		}
+	}
+
+	newCondition.LastTransitionTime = now
+	node.Status.Conditions = append(node.Status.Conditions, newCondition)
+	return w.Status().Patch(ctx, node, patch)
 }
