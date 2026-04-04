@@ -39,6 +39,9 @@ func (b *Botanist) DefaultResourceManager() (resourcemanager.Interface, error) {
 			HighAvailabilityConfigWebhookEnabled:      true,
 			DefaultNotReadyToleration:                 defaultNotReadyTolerationSeconds,
 			DefaultUnreachableToleration:              defaultUnreachableTolerationSeconds,
+			FeatureGates: map[string]bool{
+				string(features.NodeReadinessController): features.DefaultFeatureGate.Enabled(features.NodeReadinessController),
+			},
 			IsWorkerless:                              b.Shoot.IsWorkerless,
 			KubernetesServiceHost:                     ptr.To(b.Shoot.ComputeOutOfClusterAPIServerAddress(true)),
 			LogLevel:                                  logger.InfoLevel,

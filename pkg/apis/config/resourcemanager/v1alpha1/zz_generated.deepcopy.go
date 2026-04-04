@@ -479,6 +479,13 @@ func (in *ResourceManagerConfiguration) DeepCopyInto(out *ResourceManagerConfigu
 		*out = new(configv1alpha1.DebuggingConfiguration)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.FeatureGates != nil {
+		in, out := &in.FeatureGates, &out.FeatureGates
+		*out = make(map[string]bool, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	in.Controllers.DeepCopyInto(&out.Controllers)
 	in.Webhooks.DeepCopyInto(&out.Webhooks)
 	return

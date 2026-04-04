@@ -304,6 +304,8 @@ type Values struct {
 	DefaultSeccompProfileEnabled bool
 	// EndpointSliceHintsEnabled specifies if the EndpointSlice hints webhook of GRM should be enabled or not.
 	EndpointSliceHintsEnabled bool
+	// FeatureGates is a map of feature names to bools that enable or disable alpha/experimental features.
+	FeatureGates map[string]bool
 	// KubernetesServiceHost specifies the FQDN of the API server of the target cluster. If it is non-nil, the GRM's
 	// kubernetes-service-host webhook will be enabled.
 	KubernetesServiceHost *string
@@ -570,6 +572,7 @@ func (r *resourceManager) ensureConfigMap(ctx context.Context, configMap *corev1
 		},
 		LogLevel:  r.values.LogLevel,
 		LogFormat: r.values.LogFormat,
+		FeatureGates: r.values.FeatureGates,
 		Controllers: resourcemanagerconfigv1alpha1.ResourceManagerControllerConfiguration{
 			ClusterID:     r.values.ClusterIdentity,
 			ResourceClass: r.values.ResourceClass,
