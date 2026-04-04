@@ -337,6 +337,19 @@ var _ = Describe("Config", func() {
 		),
 	)
 
+	It("should use the legacy taint key when NodeReadinessController feature gate is disabled", func() {
+		cfg := kubelet.Config(semver.MustParse("1.30.0"), []string{"10.0.0.10"}, "cluster.local", nil, components.ConfigurableKubeletConfigParameters{})
+
+		Expect(cfg.RegisterWithTaints).To(ContainElement(corev1.Taint{
+			Key:    v1beta1constants.TaintNodeCriticalComponentsNotReady,
+			Effect: corev1.TaintEffectNoSchedule,
+		}))
+		Expect(cfg.RegisterWithTaints).NotTo(ContainElement(corev1.Taint{
+			Key:    v1beta1constants.TaintNodeReadinessControllerNotReady,
+			Effect: corev1.TaintEffectNoSchedule,
+		}))
+	})
+
 	It("should use the NRC taint key when NodeReadinessController feature gate is enabled", func() {
 		DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.NodeReadinessController, true))
 

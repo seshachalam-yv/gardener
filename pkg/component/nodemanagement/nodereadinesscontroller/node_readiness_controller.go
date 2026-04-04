@@ -36,8 +36,10 @@ const (
 
 	// nrcAPIGroup is the API group for Node Readiness Controller custom resources.
 	nrcAPIGroup = "readiness.node.x-k8s.io"
+	// nrcVersion is the API version string for NodeReadinessRule CR.
+	nrcVersion = "v1alpha1"
 	// nrcAPIVersion is the API version for NodeReadinessRule CR.
-	nrcAPIVersion = "readiness.node.x-k8s.io/v1alpha1"
+	nrcAPIVersion = nrcAPIGroup + "/" + nrcVersion
 	// nrcRuleKind is the kind for NodeReadinessRule CR.
 	nrcRuleKind = "NodeReadinessRule"
 	// nrcRuleName is the name for the gardener NodeReadinessRule CR.
@@ -244,7 +246,7 @@ spec:
 	)
 
 	registry.AddSerialized(
-		fmt.Sprintf("%s/%s/%s____%s.yaml", nrcAPIGroup, "v1alpha1", nrcRuleKind, nrcRuleName),
+		fmt.Sprintf("%s/%s/%s____%s.yaml", nrcAPIGroup, nrcVersion, nrcRuleKind, nrcRuleName),
 		[]byte(nrcRuleYAML),
 	)
 

@@ -11,7 +11,6 @@ import (
 	"github.com/Masterminds/semver/v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 	"k8s.io/utils/ptr"
 
@@ -30,7 +29,7 @@ func Config(kubernetesVersion *semver.Version, clusterDNSAddresses []string, clu
 	setConfigDefaults(&params)
 
 	criticalComponentsTaintKey := v1beta1constants.TaintNodeCriticalComponentsNotReady
-	if utilfeature.DefaultFeatureGate.Enabled(features.NodeReadinessController) {
+	if features.DefaultFeatureGate.Enabled(features.NodeReadinessController) {
 		criticalComponentsTaintKey = v1beta1constants.TaintNodeReadinessControllerNotReady
 	}
 	nodeTaints := append(taints, corev1.Taint{
