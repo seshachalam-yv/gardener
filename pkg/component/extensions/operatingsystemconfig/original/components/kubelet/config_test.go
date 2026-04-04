@@ -15,10 +15,13 @@ import (
 	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 	"k8s.io/utils/ptr"
 
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
@@ -333,4 +336,19 @@ var _ = Describe("Config", func() {
 			},
 		),
 	)
+
+	It("should use the NRC taint key when NodeReadinessController feature gate is enabled", func() {
+		DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.NodeReadinessController, true))
+
+		cfg := kubelet.Config(semver.MustParse("1.30.0"), []string{"10.0.0.10"}, "cluster.local", nil, components.ConfigurableKubeletConfigParameters{})
+
+		Expect(cfg.RegisterWithTaints).To(ContainElement(corev1.Taint{
+			Key:    v1beta1constants.TaintNodeReadinessControllerNotReady,
+			Effect: corev1.TaintEffectNoSchedule,
+		}))
+		Expect(cfg.RegisterWithTaints).NotTo(ContainElement(corev1.Taint{
+			Key:    v1beta1constants.TaintNodeCriticalComponentsNotReady,
+			Effect: corev1.TaintEffectNoSchedule,
+		}))
+	})
 })

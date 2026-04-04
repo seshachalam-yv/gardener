@@ -11,11 +11,13 @@ import (
 	"github.com/Masterminds/semver/v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 	"k8s.io/utils/ptr"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
+	"github.com/gardener/gardener/pkg/features"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/version"
 )
@@ -27,8 +29,12 @@ var FilePathKubernetesManifests = filepath.Join(string(filepath.Separator), "etc
 func Config(kubernetesVersion *semver.Version, clusterDNSAddresses []string, clusterDomain string, taints []corev1.Taint, params components.ConfigurableKubeletConfigParameters) *kubeletconfigv1beta1.KubeletConfiguration {
 	setConfigDefaults(&params)
 
+	criticalComponentsTaintKey := v1beta1constants.TaintNodeCriticalComponentsNotReady
+	if utilfeature.DefaultFeatureGate.Enabled(features.NodeReadinessController) {
+		criticalComponentsTaintKey = v1beta1constants.TaintNodeReadinessControllerNotReady
+	}
 	nodeTaints := append(taints, corev1.Taint{
-		Key:    v1beta1constants.TaintNodeCriticalComponentsNotReady,
+		Key:    criticalComponentsTaintKey,
 		Effect: corev1.TaintEffectNoSchedule,
 	})
 
