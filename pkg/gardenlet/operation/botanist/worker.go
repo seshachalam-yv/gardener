@@ -187,11 +187,16 @@ var (
 )
 
 func getTimeoutWaitOperatingSystemConfigUpdated(shoot *shootpkg.Shoot) time.Duration {
-	return shoot.OSCSyncJitterPeriod.Duration + controllerutils.DefaultReconciliationTimeout
+	reconciliationTimeout := controllerutils.DefaultReconciliationTimeout
+	if shoot.IsSelfHosted() && !shoot.HasManagedInfrastructure() {
+		reconciliationTimeout = 10 * time.Minute
+	}
+	return shoot.OSCSyncJitterPeriod.Duration + reconciliationTimeout
 }
 
-// WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools waits for a maximum of 6 minutes until all the nodes for all
-// the worker pools in the Shoot have successfully applied the desired version of their operating system config.
+// WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools waits for a maximum of 2*GetTimeoutWaitOperatingSystemConfigUpdated
+// until all the nodes for all the worker pools in the Shoot have successfully applied the desired version of their
+// operating system config.
 func (b *Botanist) WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools(ctx context.Context, tolerateErrors bool) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, GetTimeoutWaitOperatingSystemConfigUpdated(b.Shoot))
 	defer cancel()
