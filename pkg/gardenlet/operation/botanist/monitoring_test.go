@@ -19,6 +19,7 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	mockalertmanager "github.com/gardener/gardener/pkg/component/observability/monitoring/alertmanager/mock"
+	mockprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/mock"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	. "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
 	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
@@ -36,6 +37,7 @@ var _ = Describe("Monitoring", func() {
 
 		botanist              *Botanist
 		alertManager          *mockalertmanager.MockInterface
+		prometheus            *mockprometheus.MockInterface
 		controlPlaneNamespace = "shoot--foo--bar"
 
 		ingressAuthSecret     *corev1.Secret
@@ -49,6 +51,7 @@ var _ = Describe("Monitoring", func() {
 		fakeSecretManager = fakesecretsmanager.New(fakeSeedClient, controlPlaneNamespace)
 
 		alertManager = mockalertmanager.NewMockInterface(ctrl)
+		prometheus = mockprometheus.NewMockInterface(ctrl)
 
 		botanist = &Botanist{
 			Operation: &operation.Operation{
@@ -60,6 +63,7 @@ var _ = Describe("Monitoring", func() {
 					Components: &shootpkg.Components{
 						ControlPlane: &shootpkg.ControlPlane{
 							Alertmanager: alertManager,
+							Prometheus:   prometheus,
 						},
 					},
 					WantsAlertmanager: true,
@@ -126,6 +130,19 @@ var _ = Describe("Monitoring", func() {
 			alertManager.EXPECT().WaitCleanup(ctx).Return(nil)
 
 			Expect(botanist.WaitForAlertManager(ctx)).To(Succeed())
+		})
+	})
+
+	Describe("#WaitForPrometheus", func() {
+		It("should successfully wait for prometheus", func() {
+			prometheus.EXPECT().Wait(ctx)
+			Expect(botanist.WaitForPrometheus(ctx)).To(Succeed())
+		})
+
+		It("should successfully wait for prometheus cleanup", func() {
+			botanist.Shoot.Purpose = gardencorev1beta1.ShootPurposeTesting
+			prometheus.EXPECT().WaitCleanup(ctx)
+			Expect(botanist.WaitForPrometheus(ctx)).To(Succeed())
 		})
 	})
 })
