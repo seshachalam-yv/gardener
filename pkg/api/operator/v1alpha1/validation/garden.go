@@ -74,6 +74,13 @@ func ValidateGarden(garden *operatorv1alpha1.Garden, extensions []operatorv1alph
 	opts := gardencorevalidation.KubeAPIServerValidationOptions{
 		AllowInvalidAcceptedIssuers: false,
 		AllowInvalidEventTTL:        false,
+		// Skip validation for auto rotation of etcd encryption key, since the rotation cannot be automated for the Garden API.
+		// Unlike Shoots, the Garden resource does not have a maintenance controller
+		// that can automatically trigger key rotations when the rotation period has passed.
+		// It is the responsibility of the Garden operator to perform manual rotations.
+		ETCDEncryptionConfigValidationOptions: gardencorevalidation.ETCDEncryptionConfigValidationOptions{
+			SkipAESGCMAutoRotationValidation: true,
+		},
 	}
 
 	return ValidateGardenWithOps(garden, extensions, opts)
@@ -116,6 +123,13 @@ func ValidateGardenUpdate(oldGarden, newGarden *operatorv1alpha1.Garden, extensi
 			apiequality.Semantic.DeepEqual(oldGarden.Spec.VirtualCluster.Kubernetes.KubeAPIServer.ServiceAccountConfig.AcceptedIssuers, newGarden.Spec.VirtualCluster.Kubernetes.KubeAPIServer.ServiceAccountConfig.AcceptedIssuers),
 		AllowInvalidEventTTL: oldGarden.Spec.VirtualCluster.Kubernetes.KubeAPIServer != nil && newGarden.Spec.VirtualCluster.Kubernetes.KubeAPIServer != nil &&
 			apiequality.Semantic.DeepEqual(oldGarden.Spec.VirtualCluster.Kubernetes.KubeAPIServer.EventTTL, newGarden.Spec.VirtualCluster.Kubernetes.KubeAPIServer.EventTTL),
+		// Skip validation for auto rotation of etcd encryption key, since the rotation cannot be automated for the Garden API.
+		// Unlike Shoots, the Garden resource does not have a maintenance controller
+		// that can automatically trigger key rotations when the rotation period has passed.
+		// It is the responsibility of the Garden operator to perform manual rotations.
+		ETCDEncryptionConfigValidationOptions: gardencorevalidation.ETCDEncryptionConfigValidationOptions{
+			SkipAESGCMAutoRotationValidation: true,
+		},
 	}
 
 	allErrs = append(allErrs, validateRuntimeClusterUpdate(oldGarden, newGarden)...)
@@ -879,6 +893,7 @@ func validateEncryptionConfigUpdate(oldGarden, newGarden *operatorv1alpha1.Garde
 		allErrs                              = field.ErrorList{}
 		currentEncryptedKubernetesResources  = sets.New[schema.GroupResource]()
 		currentEncryptedGardenerResources    = sets.New[schema.GroupResource]()
+		currentEncryptionProviderType        = helper.GetEncryptionProviderTypeInStatus(newGarden.Status)
 		oldKubeAPIServerEncryptionConfig     = &gardencore.EncryptionConfig{}
 		newKubeAPIServerEncryptionConfig     = &gardencore.EncryptionConfig{}
 		oldGAPIServerEncryptionConfig        = &gardencore.EncryptionConfig{}
@@ -922,12 +937,12 @@ func validateEncryptionConfigUpdate(oldGarden, newGarden *operatorv1alpha1.Garde
 	for _, r := range utils.FilterEntriesByFilterFn(helper.GetEncryptedResourcesInStatus(newGarden.Status), operator.IsServedByKubeAPIServer) {
 		currentEncryptedKubernetesResources.Insert(schema.ParseGroupResource(r))
 	}
-	allErrs = append(allErrs, gardencorevalidation.ValidateEncryptionConfigUpdate(newKubeAPIServerEncryptionConfig, oldKubeAPIServerEncryptionConfig, currentEncryptedKubernetesResources, etcdEncryptionKeyRotation, false, kubeAPIServerEncryptionConfigFldPath)...)
+	allErrs = append(allErrs, gardencorevalidation.ValidateEncryptionConfigUpdate(newKubeAPIServerEncryptionConfig, oldKubeAPIServerEncryptionConfig, currentEncryptedKubernetesResources, gardencore.EncryptionProviderType(currentEncryptionProviderType), etcdEncryptionKeyRotation, false, kubeAPIServerEncryptionConfigFldPath)...)
 
 	for _, r := range utils.FilterEntriesByFilterFn(helper.GetEncryptedResourcesInStatus(newGarden.Status), operator.IsServedByGardenerAPIServer) {
 		currentEncryptedGardenerResources.Insert(schema.ParseGroupResource(r))
 	}
-	allErrs = append(allErrs, gardencorevalidation.ValidateEncryptionConfigUpdate(newGAPIServerEncryptionConfig, oldGAPIServerEncryptionConfig, currentEncryptedGardenerResources, etcdEncryptionKeyRotation, false, gAPIServerEncryptionConfigFldPath)...)
+	allErrs = append(allErrs, gardencorevalidation.ValidateEncryptionConfigUpdate(newGAPIServerEncryptionConfig, oldGAPIServerEncryptionConfig, currentEncryptedGardenerResources, gardencore.EncryptionProviderType(currentEncryptionProviderType), etcdEncryptionKeyRotation, false, gAPIServerEncryptionConfigFldPath)...)
 
 	return allErrs
 }
