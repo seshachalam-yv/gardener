@@ -125,3 +125,60 @@ After core implementation, check if these also need updates:
 | API field addition | (documented) | pkg/apis/[group]/[versions], validation, conversion, defaults | 8-step checklist adherence |
 | New component deployer | (documented) | pkg/component/[name]/, imagevector/containers.yaml | DeployWaiter interface, ManagedResource, component-checklist.md |
 | K8s version support change | (documented) | supported-kubernetes-versions.yaml, 35+ version-gated files | Multi-file coordination |
+
+## Repeating Tasks
+
+### Drop Kubernetes Version (~every 3 months)
+
+| Instance | PR | Title | Files |
+|----------|-----|-------|-------|
+| Most recent | [#14615](https://github.com/gardener/gardener/pull/14615) | Drop support for K8s 1.31 | 200 files |
+| Previous | [#14501](https://github.com/gardener/gardener/pull/14501) | Drop support for K8s <= 1.30 | 100 files |
+| Earlier | [#13487](https://github.com/gardener/gardener/pull/13487) | Drop support for K8s <= 1.29 | 54 files |
+
+To use as guide:
+```bash
+gh pr diff 14615 --repo gardener/gardener
+gh api repos/gardener/gardener/pulls/14615/comments
+```
+Files that always change: `supported-kubernetes-versions.yaml`, `pkg/utils/version/version.go`, `imagevector/containers.yaml`, `pkg/api/core/validation/shoot.go`, version-gated `pkg/component/` files, OIDC/settings API group (if removed), charts, docs, examples.
+Commit sequence: remove version constraints → remove dead API groups → `make generate` → `make verify`.
+
+### Promote Feature Gate (~monthly)
+
+| Instance | PR | Title | Files |
+|----------|-----|-------|-------|
+| Most recent | [#14531](https://github.com/gardener/gardener/pull/14531) | Promote NewWorkerPoolHash to GA | 8 files |
+| Previous | [#14422](https://github.com/gardener/gardener/pull/14422) | Promote UseUnifiedHTTPProxyPort to Beta | 6 files |
+| Earlier | [#14145](https://github.com/gardener/gardener/pull/14145) | Promote VPAInPlaceUpdates to Beta | 11 files |
+
+To use as guide:
+```bash
+gh pr diff 14531 --repo gardener/gardener
+```
+Files that always change: `pkg/features/features.go`, per-component `features/features.go`, conditional check sites. For GA: remove `Enabled()` guards, add `LockToDefault: true`.
+
+### Mock-to-Fake Migration (ongoing, issue #14572)
+
+| Instance | PR | Title | Files |
+|----------|-----|-------|-------|
+| Most recent | [#14633](https://github.com/gardener/gardener/pull/14633) | Replace mock clients Part 2 | 27 files |
+| Previous | [#14569](https://github.com/gardener/gardener/pull/14569) | Replace mock clients Part 1 | 24 files |
+
+To use as guide:
+```bash
+gh pr diff 14633 --repo gardener/gardener
+```
+Pattern: replace `gomock.NewController` + `MockClient` with `fakeclient.NewClientBuilder()` + `interceptor.Funcs` for error injection. Net line reduction expected.
+
+### Add New Feature Gate
+
+| Instance | PR | Title | Files |
+|----------|-----|-------|-------|
+| Most recent | [#14279](https://github.com/gardener/gardener/pull/14279) | RemoveVali FeatureGate | 15 files |
+
+To use as guide:
+```bash
+gh pr diff 14279 --repo gardener/gardener
+```
+Files that always change: `pkg/features/features.go`, per-component registration, gated code paths, docs/deployment/feature_gates.md.

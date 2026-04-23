@@ -25,7 +25,23 @@ user-invocable: true
 
 ## Steps
 
-### Step 0: Find Similar Work
+### Step 0: Check Repeating Tasks
+
+Before searching, check if this is a **repeating task** documented in AGENTS.md:
+
+- **Drop K8s version**: guide PRs #14615, #14501, #13487
+- **Promote feature gate**: guide PRs #14531, #14422, #14145
+- **Mock-to-fake migration**: guide PRs #14633, #14569
+- **Add new feature gate**: guide PR #14279
+
+If it matches a repeating task, read the guide PR diff first:
+```bash
+gh pr diff [guide-pr-number] --repo gardener/gardener
+```
+
+Then state: "This is a repeating task ([type], done N times). Most recent: PR #NNNN. I've read its diff ([N] files). Follow the same pattern?"
+
+### Step 1: Find Similar Work (if not a repeating task)
 
 Search for similar merged PRs:
 
