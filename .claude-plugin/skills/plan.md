@@ -34,10 +34,15 @@ Before searching, check if this is a **repeating task** documented in AGENTS.md:
 - **Mock-to-fake migration**: guide PRs #14633, #14569
 - **Add new feature gate**: guide PR #14279
 
-If it matches a repeating task, read the guide PR diff first:
+If it matches a repeating task, read the guide PR **file list** first:
+```bash
+gh pr diff [guide-pr-number] --repo gardener/gardener --name-only
+```
+If the guide PR has **fewer than 50 files**, also read the full diff for patterns:
 ```bash
 gh pr diff [guide-pr-number] --repo gardener/gardener
 ```
+If **50+ files**, do NOT read the full diff — it will exhaust context. Use the file list to plan, then implement file-by-file.
 
 Then state: "This is a repeating task ([type], done N times). Most recent: PR #NNNN. I've read its diff ([N] files). Follow the same pattern?"
 

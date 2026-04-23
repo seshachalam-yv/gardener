@@ -71,16 +71,22 @@ if features.DefaultFeatureGate.Enabled(features.MyFeature) {
 }
 ```
 
-Identify ALL code paths that need gating. Search for the component/resource being gated:
+Identify ALL code paths that need gating. Search broadly for the component/resource being gated:
 ```bash
-grep -rn "componentName\|ComponentName" pkg/ --include="*.go" | grep -v _test.go | grep -v mock
+grep -rn "componentName\|ComponentName\|component-name\|component_name" pkg/ --include="*.go" | grep -v _test.go | grep -v mock
+```
+
+Also search in non-obvious locations:
+```bash
+grep -rn "componentName" pkg/component/shared/ pkg/gardenlet/controller/seed/seed/components.go dev-setup/ example/ --include="*.go" --include="*.yaml" 2>/dev/null
 ```
 
 Common locations that need gating:
-- **Component deployment**: `pkg/component/` Deploy/Destroy methods
+- **Component deployment**: `pkg/component/<name>/` Deploy/Destroy methods
+- **Shared component factories**: `pkg/component/shared/` — shared constructors used by multiple reconcilers
 - **Botanist wiring**: `pkg/gardenlet/operation/botanist/`
+- **Seed components**: `pkg/gardenlet/controller/seed/seed/components.go`
 - **Reconciler flows**: `reconciler_reconcile.go`, `reconciler_delete.go` flow tasks
-- **Shared component factories**: `pkg/component/shared/`
 - **Validation**: `pkg/api/core/validation/` if the gate affects API field semantics
 - **Maintenance**: `pkg/controllermanager/controller/shoot/maintenance/` if the gate affects shoot maintenance
 

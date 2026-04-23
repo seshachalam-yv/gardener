@@ -33,6 +33,13 @@ ls pkg/component/extensions/
 ```
 If a component with `Deploy`/`Destroy`/`Wait`/`WaitCleanup` already exists for the resource type, **REUSE it** by wiring it into `components.go` via `New()`. Do NOT write inline `GetAndCreateOrMergePatch` + `WaitUntilExtensionObjectReady` code when a component abstraction exists.
 
+When reusing an existing component, you typically need ALL of these:
+1. **Modify the component's Values/Interface** if new fields needed (e.g., add `SetSecretRef`, `Class` field)
+2. **Add it to the `components` struct** in `components.go` (e.g., `backupEntry backupentry.Interface`)
+3. **Add a constructor method** (e.g., `newBackupEntry()`) in `components.go`
+4. **Call it from `instantiateComponents()`** in `components.go`
+5. **Reference `c.backupEntry` in reconcile/delete flows** — do NOT construct objects inline in the reconciler
+
 Read the component checklist:
 ```bash
 cat docs/development/component-checklist.md
