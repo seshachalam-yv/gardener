@@ -31,8 +31,6 @@ function detect_scenario() {
     export SCENARIO="remote"
   elif [[ $(echo "$nodes" | wc -l) -eq 1 ]]; then
     export SCENARIO="single-node"
-  elif grep -q "gardener-local-multi-node2" <<< "$nodes"; then
-    export SCENARIO="multi-node2"
   elif [[ $(echo "$zones" | wc -l) -eq 1 ]]; then
     export SCENARIO="multi-node"
   elif [[ $(echo "$zones" | wc -l) -eq 3 ]]; then
@@ -40,6 +38,10 @@ function detect_scenario() {
   else
     echo "Error: Unable to detect scenario. Please ensure you have a valid Kubernetes cluster with correctly labeled nodes with their availability zone." >&2
     exit 1
+  fi
+
+  if grep -q "gardener-local2" <<< "$nodes"; then
+    export SCENARIO="${SCENARIO}2"
   fi
 
   if [[ "$IPFAMILY" == "ipv6" ]]; then
@@ -59,6 +61,9 @@ function skaffold_profile() {
   case "$1" in
     single-node)
       export SKAFFOLD_PROFILE="single-node"
+      ;;
+    single-node2)
+      export SKAFFOLD_PROFILE="single-node2"
       ;;
     multi-node)
       export SKAFFOLD_PROFILE="multi-node"

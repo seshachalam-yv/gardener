@@ -24,10 +24,10 @@ if ! $valid_scenario; then
   exit 1
 fi
 
-garden_runtime_cluster_kubeconfig="$KUBECONFIG"
+garden_runtime_cluster_kubeconfig="$KUBECONFIG_RUNTIME_CLUSTER"
 if [[ "$SCENARIO" == "connect" ]]; then
-  garden_runtime_cluster_kubeconfig="$(dirname "$0")/kubeconfigs/self-hosted-shoot/kubeconfig"
-  ./hack/usage/generate-admin-kubeconfig-local.sh self-hosted-shoot > "$garden_runtime_cluster_kubeconfig"
+  garden_runtime_cluster_kubeconfig="$KUBECONFIG_SELFHOSTEDSHOOT_CLUSTER"
+  ./hack/usage/generate-kubeconfig.sh self-hosted-shoot > "$garden_runtime_cluster_kubeconfig"
 fi
 
 case "$COMMAND" in
@@ -78,7 +78,7 @@ case "$COMMAND" in
         # In the 'connect-kind' scenario, the istio-ingressgateway runs directly on the KinD cluster and gets exposed
         # via a dynamic load balancer provisioned by cloud-controller-manager-local, hence, no need to patch this
         # Service in this scenario.
-        kubectl --kubeconfig "$garden_runtime_cluster_kubeconfig" apply -k "$(dirname "$0")/../dev-setup/gardenadm/loadbalancer-services" --server-side
+        kubectl --kubeconfig "$garden_runtime_cluster_kubeconfig" apply -k "$(dirname "$0")/gardenadm/loadbalancer-services" --server-side
         if ! kubectl --kubeconfig "$KUBECONFIG" -n gardenadm-unmanaged-infra get service control-plane-machine \
           -o jsonpath='{.spec.ports[*].name}' | grep -qw virtual-garden-apiserver; then
           kubectl --kubeconfig "$KUBECONFIG" -n gardenadm-unmanaged-infra patch service control-plane-machine \
@@ -92,7 +92,7 @@ case "$COMMAND" in
         KUBECONFIG="$garden_runtime_cluster_kubeconfig"
 
       echo "Creating global resources in the virtual garden cluster as preparation for running 'gardenadm connect'..."
-      kubectl --kubeconfig="$VIRTUAL_GARDEN_KUBECONFIG" apply -f "$(dirname "$0")/gardenadm/resources/generated/connect/manifests.yaml"
+      kubectl --kubeconfig="$KUBECONFIG_VIRTUAL_GARDEN_CLUSTER" apply -f "$(dirname "$0")/gardenadm/resources/generated/connect/manifests.yaml"
     fi
     ;;
 
