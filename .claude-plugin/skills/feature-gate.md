@@ -111,7 +111,12 @@ Common locations that need gating:
    grep -rn '"MyFeatureName"' pkg/ docs/ --include="*.go" --include="*.md" 2>/dev/null
    ```
    Remove or update ALL references: conditional checks, documentation mentions, example configs, feature gate tables in docs.
-5. Add release note: `noteworthy operator`
+5. **Move rows in `docs/deployment/feature_gates.md`** from the active feature gates table to the "Graduated or Removed Feature Gates" section. Do NOT leave GA gates in the active table.
+6. **Remove explicit enablement from example configs**: check `example/gardener-local/gardenlet/values.yaml`, `example/operator/10-componentconfig.yaml` for `.featureGates.MyFeatureName: true` entries and remove them (the gate is now on by default).
+7. **Simplify conditional doc language**: grep `docs/` for "if.*MyFeatureName.*enabled" or "when.*feature gate" phrasing and rewrite as unconditional statements.
+8. **var→const conversion**: if removing the gate check leaves a function that always returns a literal value (e.g., `var X = func() int { return 2 }`), convert to an unexported `const` and update ALL call sites: `grep -rn "FuncName" pkg/<package>/ --include="*.go"`
+9. **Do NOT remove the gate from component registration.** GA+locked gates stay registered. Removal is a separate cleanup PR after 2+ releases.
+10. Add release note: `noteworthy operator`
 
 ## Removing a Feature Gate
 

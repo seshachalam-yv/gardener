@@ -144,6 +144,10 @@ State which of these apply:
 - [ ] Does this affect the local provider extension? (new extension type = pkg/provider-local/ registration)
 - [ ] Are integration tests needed? (check test/integration/ for existing test suites covering this area)
 - [ ] Do Skaffold configs need updating? (new dependencies or deployment changes)
+- [ ] **Flow dependencies**: Does the PR description mention ordering constraints ("waits for", "after rollout", "before X can use Y")? If yes, grep for all consumers of the changed value and list each downstream task that needs a new dependency.
+- [ ] **Shoot flow alignment**: If aligning garden controller with shoot flow patterns, inspect how the shoot controller instantiates the component (`pkg/gardenlet/operation/botanist/`) and replicate the same `components.go` pattern.
+- [ ] **Error handling scope**: If fixing an error for one operation type (e.g., List), check if the same error can occur on other operation types (Get, Patch, Delete, Watch) for the same resource. Grep for ALL operations on the affected CRD/resource type.
+- [ ] **Security-sensitive paths**: If changing error handling in encryption, credential, or RBAC paths, verify that tolerating errors does not skip security operations. Add safety checks that confirm skipped resources don't require the security operation.
 
 ### Step 3: State assumptions with evidence
 

@@ -116,6 +116,35 @@ Use the secrets manager for all credential lifecycle. Never create Secret object
 ### Unique immutable ConfigMaps/Secrets
 Use unique names (with content hash) for immutable ConfigMaps and Secrets. Do not use mutable ConfigMaps with checksum annotations.
 
+## Wiring Rules
+
+### Use `components.go` struct — not inline creation
+
+When deploying extension objects (BackupBucket, BackupEntry, DNSRecord, etc.) in the garden or shoot controller, use the existing component package via the `components` struct in `components.go`:
+
+```go
+// CORRECT: component wired through components.go
+c.backupEntry = backupentry.New(...)
+c.backupEntry.Deploy(ctx)
+
+// WRONG: inline object creation in reconciler
+obj := &extensionsv1alpha1.BackupEntry{...}
+client.GetAndCreateOrMergePatch(ctx, obj, ...)
+```
+
+If a component with `Deploy`/`Destroy`/`Wait`/`WaitCleanup` already exists in `pkg/component/extensions/<type>/`, REUSE it. Check with:
+```bash
+ls pkg/component/extensions/
+```
+
+### Check `cmd/` app wiring for extension class changes
+
+When modifying extension class support in `pkg/provider-local/controller/<type>/add.go`, also check `cmd/gardener-extension-provider-local/app/app.go` for extension class option wiring.
+
+### Wait behavior for rolling updates
+
+When deploying changes that add new labels and require rollout before downstream consumption, `WaitUntilHealthy` is insufficient — use `WaitUntilHealthyAndNotProgressing` to ensure rollout is complete before dependents read the new labels.
+
 ## Checklist
 
 - [ ] Read `docs/development/component-checklist.md`

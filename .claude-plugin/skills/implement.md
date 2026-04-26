@@ -86,6 +86,8 @@ Before claiming implementation is done, check:
 - [ ] If API change: api-change skill checklist completed
 - [ ] If feature gate: feature-gate skill checklist completed (all components registered)
 - [ ] If new component: component skill checklist completed
+- [ ] If changing labels/selectors consumed by downstream components: verify all consumers get updated values. Gardener deployers sometimes mutate their Values struct during Deploy to affect downstream consumers (side-effect pattern). Read the Deploy function to check for in-place map mutations.
+- [ ] If fixing error handling for one operation (e.g., List), verify the same error is handled for ALL operation types (Get, Patch, Delete) on the same resource
 
 ### Step 4: Pre-commit checks
 
