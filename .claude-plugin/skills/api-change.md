@@ -70,6 +70,27 @@ Check that:
 - `zz_generated.conversion.go` includes conversion if types differ
 - CRD YAML in `example/` reflects the new field
 
+### Step 4b: Find the consumer
+
+After generating types, search for who reads or writes the new/changed field:
+
+```bash
+# Search for the field name in component deployers, controllers, and operator
+grep -rn "FieldName\|\.FieldName" pkg/component/ pkg/gardenlet/ pkg/operator/ pkg/resourcemanager/ --include="*.go" | grep -v _test.go | grep -v "zz_generated"
+
+# Search in botanist wiring and shared components
+grep -rn "FieldName" pkg/gardenlet/operation/botanist/ pkg/component/shared/ --include="*.go" | grep -v _test.go
+
+# Search in admission plugins
+grep -rn "FieldName" plugin/ --include="*.go" | grep -v _test.go
+```
+
+If no consumer exists yet, the field needs component wiring — add the consumer code to the implementation plan. A new API field with no consumer is incomplete. Common consumer locations:
+- **Component deployer** (`pkg/component/<name>/`): reads the field from the API object and renders it into Kubernetes resources
+- **Botanist** (`pkg/gardenlet/operation/botanist/`): passes the field value to the component constructor
+- **Shared factories** (`pkg/component/shared/`): shared constructors used by multiple reconcilers
+- **Operator components** (`pkg/operator/controller/garden/`): wires the field into operator-managed components
+
 ### Step 5: Implement/adapt validation
 
 File: `pkg/apis/[group]/validation/validation_[resource].go`

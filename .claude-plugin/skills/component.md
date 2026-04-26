@@ -129,6 +129,35 @@ Use unique names (with content hash) for immutable ConfigMaps and Secrets. Do no
 - [ ] Unit tests with fake clients
 - [ ] License header on all new files
 
+## Ecosystem Wiring (New Extension Types in Operator)
+
+When adding a new extension type (BackupEntry, ContainerRuntime, etc.) to the operator reconciler, ALL of these must be wired:
+
+```bash
+# Use this checklist when adding an extension type to pkg/operator/controller/garden/
+```
+
+- [ ] **RBAC**: `charts/gardener/operator/templates/clusterrole.yaml` — add verbs for the new API resource
+- [ ] **CRD registration**: `pkg/operator/controller/garden/garden/crds.go` — register CRD for the extension type
+- [ ] **Component constructor**: add to `components.go` struct + `New()` method + `instantiateComponents()`
+- [ ] **Reconcile flow**: reference component in `reconciler_reconcile.go` flow tasks
+- [ ] **Delete flow**: reference component in `reconciler_delete.go` flow tasks
+- [ ] **Local provider**:
+  - `pkg/provider-local/controller/extension/add.go` — register controller
+  - `pkg/provider-local/controller/extension/` — add reconciler
+  - `pkg/provider-local/charts/` — deployment resources
+  - `example/provider-local/garden/base/` — example manifests
+- [ ] **Skaffold**: `skaffold-operator.yaml` — if new deployment dependency
+- [ ] **Operator util**: `pkg/operator/controller/garden/garden/garden.go` or similar — accessor for garden config
+- [ ] **Integration tests**: `test/integration/operator/garden/` — existing test suite covers the new type
+- [ ] **Docs**: `docs/concepts/` or `docs/extensions/` — if the extension type is new to the extension contract
+
+Search for the previous extension type wiring as a template:
+```bash
+# Find how an existing type (e.g., BackupBucket) is wired
+grep -rn "BackupBucket\|backupBucket" pkg/operator/ charts/gardener/operator/ pkg/provider-local/ --include="*.go" --include="*.yaml" | grep -v _test.go | head -30
+```
+
 ## Handoff
 
 Component implementation complete → return to implement skill, then invoke verify skill.

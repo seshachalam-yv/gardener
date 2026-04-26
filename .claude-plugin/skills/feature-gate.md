@@ -103,7 +103,15 @@ Common locations that need gating:
 1. Update `AllFeatureGates`: `Default: true, PreRelease: featuregate.GA, LockToDefault: true`
 2. Update version comment: `// ga: v1.NNN.0`
 3. Review all `features.DefaultFeatureGate.Enabled(features.X)` checks — remove them so code executes unconditionally
-4. Add release note: `noteworthy operator`
+4. **Search broadly for the gate NAME** — not just `Enabled()` calls:
+   ```bash
+   # Find all references including docs, examples, comments, and indirect usage
+   grep -rn "MyFeatureName" pkg/ docs/ example/ --include="*.go" --include="*.yaml" --include="*.md" 2>/dev/null
+   # Find string-form references (e.g., in feature gate documentation tables)
+   grep -rn '"MyFeatureName"' pkg/ docs/ --include="*.go" --include="*.md" 2>/dev/null
+   ```
+   Remove or update ALL references: conditional checks, documentation mentions, example configs, feature gate tables in docs.
+5. Add release note: `noteworthy operator`
 
 ## Removing a Feature Gate
 

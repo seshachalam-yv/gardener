@@ -82,19 +82,52 @@ If a similar PR is found:
 
 If no similar work found: state "No similar merged PRs found." and proceed.
 
-### Step 1: Ask scope and approach questions
+### Step 1b: Blast radius search
+
+After identifying the primary change area, grep for all consumers/callers:
+
+```bash
+# Function or type being changed
+grep -rn "FunctionName\|TypeName" pkg/ --include="*.go" | grep -v _test.go | grep -v mock | grep -v "zz_generated"
+
+# Error pattern being added or fixed
+grep -rn "error message string\|ErrorType" pkg/ --include="*.go" | grep -v _test.go
+
+# For feature gates: search for the GATE NAME as a string (catches docs, examples, indirect usage)
+grep -rn "FeatureGateName" pkg/ docs/ example/ --include="*.go" --include="*.yaml" --include="*.md" 2>/dev/null
+```
+
+For each call site found, ask: "Does this caller need to change too?" Add any secondary files to the plan.
+
+**For migration tasks** (mock→fake, K8s version drop, deprecated API removal): enumerate ALL target files before starting.
+```bash
+# Example: mock→fake migration
+grep -rln "gomock\|NewController\|MockClient" pkg/ --include="*_test.go" | wc -l
+grep -rln "gomock\|NewController\|MockClient" pkg/ --include="*_test.go"
+
+# Example: K8s version drop
+grep -rn "k8sGreaterEqual129\|VersionConstraintK8s129" pkg/ --include="*.go" | grep -v _test.go
+```
+
+State the total count and full file list. For >10 files, group by package area.
+
+### Step 1c: Ask scope and approach questions
 
 Before finalizing the plan, identify and ask about:
 
-- **Multi-cluster scope:** "Does this change target garden cluster, seed cluster, shoot cluster, or multiple? Which reconciler(s) are impacted?"
-- **API scope:** "Does this touch an external API (core/v1beta1, extensions/v1alpha1, operator/v1alpha1)? If so, all 8 API change steps apply."
-- **Test layer:** "The change impact table says run integration tests. Is this correct, or is this unit-test-only?"
-- **Backward compatibility:** "This modifies an external API field. Is this additive (new optional field) or a breaking change requiring deprecation?"
-- **Feature gate:** "Does this change need to be gated behind a feature gate? If so, which component binaries need to register it?"
-- **Component pattern:** "Is this a new component (needs DeployWaiter implementation) or modification of an existing one?"
-- **Extension contract:** "Does this change `pkg/apis/extensions/v1alpha1`? If so, all provider extensions are affected."
+- **Migration scope:** If this is a repeating/migration task, how many files total? List them ALL. Plan processing in batches of 5.
 
-Do NOT proceed with unresolved ambiguity when questions can be asked.
+- **Multi-cluster scope:** Which cluster(s) does this target? (garden/seed/shoot)
+- **API scope:** Does this touch an external API (core/v1beta1, extensions/v1alpha1, operator/v1alpha1)? If so, all 8 API change steps apply.
+- **Test layer:** Does the change impact table require integration tests?
+- **Backward compatibility:** Is this additive (new optional field) or a breaking change?
+- **Feature gate:** Does this need a feature gate? Which component binaries register it?
+- **Component pattern:** New component (DeployWaiter needed) or modifying an existing one?
+- **Extension contract:** Does this change `pkg/apis/extensions/v1alpha1`?
+
+**Benchmark mode** (`.benchmark-context` exists): answer all questions from the task spec. Do NOT ask the user. Make the best judgment call from the PR description and linked issue context.
+
+**Normal mode**: Do NOT proceed with unresolved ambiguity when questions can be asked.
 
 ### Step 2: Domain checklist (pre-coding)
 
@@ -131,8 +164,10 @@ Present the full plan:
 - Assumptions
 - Affected packages and test plan
 
-**STOP. Wait for the developer to reply "approved" before writing any code.**
+**Benchmark mode** (`.benchmark-context` exists in the worktree): auto-approve the plan.
+State: "BENCHMARK MODE — auto-approving plan. Proceeding to implement." Then continue immediately.
 
+**Normal mode**: STOP. Wait for the developer to reply "approved" before writing any code.
 "Looks good" or "ok" is NOT approval. The word "approved" is required.
 
 *(Skip gate with `--auto-approve-plan`)*

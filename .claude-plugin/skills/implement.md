@@ -6,6 +6,14 @@ user-invocable: true
 
 # Implement with TDD and Self-Review
 
+## Benchmark Mode
+
+If `.benchmark-context` exists in the working directory:
+- **Skip the plan-confirmed gate.** The plan was auto-approved by the benchmark skill.
+- **Skip all user confirmation prompts.** Make decisions autonomously using Gardener conventions.
+- **Use `$WORKTREE_PATH` as the working root** for all file writes and make commands.
+- After implementation, return to the benchmark skill (Step 4 onward) — do NOT invoke verify or submit-pr.
+
 ## Iron Law
 
 **NO IMPLEMENTATION BEFORE THE PLAN IS CONFIRMED AND TEST APPROACH IS DECIDED.**
@@ -50,6 +58,17 @@ If the plan identified a similar PR, follow the same file change patterns:
 ```bash
 gh pr diff [PR-number] --repo gardener/gardener
 ```
+
+#### Migration tasks (mock→fake, K8s version drop, bulk refactor)
+
+If the plan identified >5 target files, process in batches:
+
+1. **Batch size**: 5 files per iteration
+2. **Per batch**: apply the pattern, run targeted tests (`go test ./pkg/<batch-package>/...`), confirm green
+3. **Between batches**: `git add` and verify no regressions with broader test (`make test` or `go test ./pkg/...`)
+4. **Track progress**: maintain a checklist of all target files from the plan, mark each as done
+
+Do NOT attempt all files at once for large migrations — context exhaustion causes incomplete transformations and missed files.
 
 ### Step 3: Self-review checklist (from Phase 3 reviewer standards)
 
