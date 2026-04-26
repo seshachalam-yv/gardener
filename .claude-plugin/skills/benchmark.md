@@ -232,7 +232,7 @@ Write `$RESULTS_DIR/gap-report.md` with:
 - MISSED_GENERATE list
 - MISSED_PERIPHERAL list
 - PATTERN_MISMATCH list
-- **Skill improvement map**: each gap → target skill file → specific line-level fix
+- **Skill improvement suggestions**: each gap → target skill file → what could be improved (do NOT edit skill files)
 
 Print summary to terminal:
 ```
@@ -248,18 +248,7 @@ Gap report           : /tmp/benchmark-results/pr-N/gap-report.md
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-### Step 7: Apply skill improvements
-
-For each gap in the report, edit the relevant skill file in `$REPO_ROOT/.claude/skills/` AND `$REPO_ROOT/.claude-plugin/skills/` (keep both in sync):
-
-| Gap | Target skill file | What to add |
-|-----|------------------|-------------|
-| MISSED_FILE | `plan.md` → domain checklist | New checklist item with trigger condition |
-| MISSED_GENERATE | `api-change.md` step 4 | Strengthen trigger wording |
-| PATTERN_MISMATCH (gomock) | `implement.md` step 1 | Red flag before test writing |
-| MISSED_PERIPHERAL | `plan.md` → peripheral checklist | Add the missed file with trigger |
-
-### Step 8: Cleanup worktree
+### Step 7: Cleanup worktree
 
 ```bash
 cd "$REPO_ROOT"
@@ -292,4 +281,4 @@ Results accumulate at `/tmp/benchmark-results/pr-<N>/gap-report.md`.
 
 ## Handoff
 
-Gap report → skill file edits in both `.claude/skills/` and `.claude-plugin/skills/` → commit improvements.
+Gap reports accumulate at `/tmp/benchmark-results/pr-<N>/gap-report.md`. Review them manually to decide which skill improvements to apply.
