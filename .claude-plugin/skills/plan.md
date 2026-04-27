@@ -99,6 +99,12 @@ grep -rn "FeatureGateName" pkg/ docs/ example/ --include="*.go" --include="*.yam
 
 For each call site found, ask: "Does this caller need to change too?" Add any secondary files to the plan.
 
+**Before defining a new constant, requirement, selector, or label key**, grep for similar existing ones in utility packages:
+```bash
+grep -rn "NoControlPlane\|gardenRole\|LabelSelector\|requirement" pkg/utils/ --include="*.go" | grep -v _test.go
+```
+Place new definitions alongside existing shared exports (e.g., `pkg/utils/gardener/secrets.go`), not locally in the reconciler. Reviewers reject local definitions when a shared utility already groups similar patterns.
+
 **For migration tasks** (mock→fake, K8s version drop, deprecated API removal): enumerate ALL target files before starting.
 ```bash
 # Example: mock→fake migration

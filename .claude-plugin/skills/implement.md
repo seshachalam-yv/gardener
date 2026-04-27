@@ -81,6 +81,7 @@ Before claiming implementation is done, check:
 - [ ] No deprecated API usage
 - [ ] No constants imported from unrelated packages
 - [ ] Test approach: fake clients preferred over gomock for new code (issue #14572)
+- [ ] If modifying a test file that uses gomock (`gomock.NewController`, `MockClient`), migrate it to fake clients while you're there. Don't leave gomock in place when you're already rewriting test logic in the same file.
 - [ ] License header on every new Go file: `// SPDX-FileCopyrightText: SAP SE or an SAP affiliate company and Gardener contributors`
 - [ ] No hard-coded container image references (must come from imagevector)
 - [ ] If API change: api-change skill checklist completed
