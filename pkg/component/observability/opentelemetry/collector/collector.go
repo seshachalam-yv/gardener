@@ -127,15 +127,17 @@ func (o *otelCollector) Deploy(ctx context.Context) error {
 		genericTokenKubeconfigSecretName string
 		loggingAgentShootAccessSecret    = o.newLoggingAgentShootAccessSecret()
 		kubeRBACProxyShootAccessSecret   = o.newKubeRBACProxyShootAccessSecret()
-		objects                          = []client.Object{}
+		shootObjects                     = []client.Object{}
+		seedObjects                      = []client.Object{}
 	)
 
-	if o.values.ShootNodeLoggingEnabled {
-		if err := loggingAgentShootAccessSecret.Reconcile(ctx, o.client); err != nil {
-			return err
-		}
-		if err := kubeRBACProxyShootAccessSecret.Reconcile(ctx, o.client); err != nil {
-			return err
+	if o.values.ClusterType == component.ClusterTypeShoot {
+		if o.values.WithRBACProxy {
+			if err := kubeRBACProxyShootAccessSecret.Reconcile(ctx, o.client); err != nil {
+				return err
+			}
+
+			shootObjects = append(shootObjects, o.getKubeRBACProxyClusterRoleBinding(kubeRBACProxyShootAccessSecret.ServiceAccountName))
 		}
 		ingressTLSSecret, err := o.secretsManager.Generate(ctx, &secrets.CertificateSecretConfig{
 			Name:                        "logging-tls",
@@ -161,19 +163,26 @@ func (o *otelCollector) Deploy(ctx context.Context) error {
 			return fmt.Errorf("failed to get istio resources: %w", err)
 		}
 
-		objects = append(objects, istioResources...)
+		seedObjects = append(seedObjects, istioResources...)
+	}
 
-		kubeRBACProxyClusterRoleBinding := o.getKubeRBACProxyClusterRoleBinding(kubeRBACProxyShootAccessSecret.ServiceAccountName)
+	if o.values.ShootNodeLoggingEnabled {
+		if err := loggingAgentShootAccessSecret.Reconcile(ctx, o.client); err != nil {
+			return err
+		}
+
 		loggingAgentClusterRole := o.getLoggingAgentClusterRole()
-		loggingAgentClusterRoleBinding := o.getLoggingAgentClusterRoleBinding(loggingAgentShootAccessSecret.ServiceAccountName, loggingAgentClusterRole.Name)
+		shootObjects = append(shootObjects, loggingAgentClusterRole)
+		shootObjects = append(shootObjects, o.getLoggingAgentClusterRoleBinding(loggingAgentShootAccessSecret.ServiceAccountName, loggingAgentClusterRole.Name))
+	} else {
+		if err := kubernetesutils.DeleteObject(ctx, o.client, loggingAgentShootAccessSecret.Secret); err != nil {
+			return err
+		}
+	}
 
-		resourcesTarget, err := managedresources.
-			NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer).
-			AddAllAndSerialize(
-				kubeRBACProxyClusterRoleBinding,
-				loggingAgentClusterRole,
-				loggingAgentClusterRoleBinding,
-			)
+	if len(shootObjects) != 0 {
+		shootRegistry := managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
+		resourcesTarget, err := shootRegistry.AddAllAndSerialize(shootObjects...)
 		if err != nil {
 			return err
 		}
@@ -185,21 +194,14 @@ func (o *otelCollector) Deploy(ctx context.Context) error {
 		if err := managedresources.DeleteForShoot(ctx, o.client, o.namespace, managedResourceNameTarget); err != nil {
 			return err
 		}
-
-		if err := kubernetesutils.DeleteObjects(ctx, o.client,
-			loggingAgentShootAccessSecret.Secret,
-			kubeRBACProxyShootAccessSecret.Secret,
-		); err != nil {
-			return err
-		}
 	}
 
-	objects = append(objects, o.openTelemetryCollector(o.namespace, o.values.LokiEndpoint, genericTokenKubeconfigSecretName))
-	objects = append(objects, o.serviceMonitor())
-	objects = append(objects, o.serviceAccount())
+	seedObjects = append(seedObjects, o.openTelemetryCollector(o.namespace, o.values.LokiEndpoint, genericTokenKubeconfigSecretName))
+	seedObjects = append(seedObjects, o.serviceMonitor())
+	seedObjects = append(seedObjects, o.serviceAccount())
 
-	registry := managedresources.NewRegistry(kubernetes.SeedScheme, kubernetes.SeedCodec, kubernetes.SeedSerializer)
-	serializedResources, err := registry.AddAllAndSerialize(objects...)
+	seedRegistry := managedresources.NewRegistry(kubernetes.SeedScheme, kubernetes.SeedCodec, kubernetes.SeedSerializer)
+	serializedResources, err := seedRegistry.AddAllAndSerialize(seedObjects...)
 	if err != nil {
 		return err
 	}

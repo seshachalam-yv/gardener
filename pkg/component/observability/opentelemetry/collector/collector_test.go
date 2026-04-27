@@ -64,18 +64,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 		kubeRBACProxyImage                          = "kube-rbac-proxy:latest"
 		kubeRBACProxyShootAccessSecretName          = "shoot-access-rbac-proxy"
 		opentelemetryCollectorShootAccessSecretName = "shoot-access-opentelemetry-collector"
-		values                                      = Values{
-			Image:                   image,
-			KubeRBACProxyImage:      kubeRBACProxyImage,
-			LokiEndpoint:            lokiEndpoint,
-			Replicas:                1,
-			ShootNodeLoggingEnabled: true,
-			IngressHost:             ingressHost,
-			ValiHost:                valiHost,
-			SecretNameServerCA:      v1beta1constants.SecretNameCACluster,
-			PriorityClassName:       "gardener-system-100",
-			ClusterType:             "shoot",
-		}
+		values                                      Values
 
 		c         client.Client
 		component Interface
@@ -104,6 +93,19 @@ var _ = Describe("OpenTelemetry Collector", func() {
 		format.MaxLength = 100000
 		format.TruncateThreshold = 100000
 		c = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+		values = Values{
+			Image:                   image,
+			KubeRBACProxyImage:      kubeRBACProxyImage,
+			LokiEndpoint:            lokiEndpoint,
+			Replicas:                1,
+			ShootNodeLoggingEnabled: true,
+			WithRBACProxy:           true,
+			IngressHost:             ingressHost,
+			ValiHost:                valiHost,
+			SecretNameServerCA:      v1beta1constants.SecretNameCACluster,
+			PriorityClassName:       "gardener-system-100",
+			ClusterType:             "shoot",
+		}
 		fakeSecretManager = fakesecretsmanager.New(c, namespace)
 		component = New(c, namespace, values, fakeSecretManager)
 		consistOf = NewManagedResourceConsistOfObjectsMatcher(c, comptest.CmpOptsForIstio()...)
@@ -525,6 +527,16 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			},
 		}
 
+		openTelemetryCollector.Spec.AdditionalContainers = []corev1.Container{kubeRBACProxyValiContainer, kubeRBACProxyOTLPContainer}
+		openTelemetryCollector.Spec.Volumes = []corev1.Volume{volume}
+		openTelemetryCollector.Spec.Ports = append(openTelemetryCollector.Spec.Ports, otelv1beta1.PortsSpec{
+			ServicePort: kubeRBACValiServicePort,
+		})
+		openTelemetryCollector.Spec.Ports = append(openTelemetryCollector.Spec.Ports, otelv1beta1.PortsSpec{
+			ServicePort: kubeRBACOTLPServicePort,
+		})
+		metav1.SetMetaDataLabel(&openTelemetryCollector.ObjectMeta, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443", "allowed")
+
 	})
 
 	Describe("#Deploy", func() {
@@ -567,6 +579,10 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			Expect(customResourcesManagedResource).To(DeepEqual(expectedMr))
 
 			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
+			openTelemetryCollector.Spec.AdditionalContainers = nil
+			openTelemetryCollector.Spec.Volumes = nil
+			openTelemetryCollector.Spec.Ports = nil
+			delete(openTelemetryCollector.Labels, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443")
 			Expect(customResourcesManagedResource).To(consistOf(
 				openTelemetryCollector,
 				getGateway(),
@@ -579,6 +595,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 
 			// Expect(c.Get(ctx, client.ObjectKey{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(BeNotFoundError())
 			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResourceSecret), customResourcesManagedResourceSecret)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKey{Name: "logging-tls", Namespace: namespace}, &corev1.Secret{})).To(Succeed())
 			Expect(customResourcesManagedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
 			Expect(customResourcesManagedResourceSecret.Immutable).To(Equal(ptr.To(true)))
 			Expect(customResourcesManagedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
@@ -623,15 +640,6 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			Expect(customResourcesManagedResource).To(DeepEqual(expectedMr))
 
 			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
-			openTelemetryCollector.Spec.AdditionalContainers = []corev1.Container{kubeRBACProxyValiContainer, kubeRBACProxyOTLPContainer}
-			openTelemetryCollector.Spec.Volumes = []corev1.Volume{volume}
-			openTelemetryCollector.Spec.Ports = append(openTelemetryCollector.Spec.Ports, otelv1beta1.PortsSpec{
-				ServicePort: kubeRBACValiServicePort,
-			})
-			openTelemetryCollector.Spec.Ports = append(openTelemetryCollector.Spec.Ports, otelv1beta1.PortsSpec{
-				ServicePort: kubeRBACOTLPServicePort,
-			})
-			metav1.SetMetaDataLabel(&openTelemetryCollector.ObjectMeta, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443", "allowed")
 			Expect(customResourcesManagedResource).To(consistOf(
 				openTelemetryCollector,
 				getGateway(),
@@ -674,6 +682,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			managedResourceSecretTarget.Name = managedResourceTarget.Spec.SecretRefs[0].Name
 			Expect(c.Get(ctx, client.ObjectKey{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(Succeed())
 			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceSecretTarget), managedResourceSecretTarget)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKey{Name: "logging-tls", Namespace: namespace}, &corev1.Secret{})).To(Succeed())
 			Expect(managedResourceSecretTarget.Type).To(Equal(corev1.SecretTypeOpaque))
 			Expect(managedResourceSecretTarget.Immutable).To(Equal(ptr.To(true)))
 			Expect(managedResourceSecretTarget.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
@@ -681,12 +690,10 @@ var _ = Describe("OpenTelemetry Collector", func() {
 		})
 
 		It("should use custom CA secret name for certificate signing", func() {
-			customValues := values
-			customValues.SecretNameServerCA = "custom-ca-secret"
-			customValues.ShootNodeLoggingEnabled = false // Disable node logging for simpler test
-			customValues.PriorityClassName = "gardener-system-100"
+			values.SecretNameServerCA = "custom-ca-secret"
+			values.ShootNodeLoggingEnabled = false // Disable node logging for simpler test
 
-			component = New(c, namespace, customValues, fakeSecretManager)
+			component = New(c, namespace, values, fakeSecretManager)
 
 			// The main test is that deploy succeeds with a custom CA secret name
 			Expect(component.Deploy(ctx)).To(Succeed())
@@ -696,18 +703,44 @@ var _ = Describe("OpenTelemetry Collector", func() {
 		})
 
 		It("should use seed CA secret when SecretNameServerCA is set to SecretNameCASeed", func() {
-			customValues := values
-			customValues.SecretNameServerCA = v1beta1constants.SecretNameCASeed
-			customValues.ShootNodeLoggingEnabled = false // Disable node logging for simpler test
-			customValues.PriorityClassName = "gardener-system-100"
+			values.SecretNameServerCA = v1beta1constants.SecretNameCASeed
+			values.ShootNodeLoggingEnabled = false // Disable node logging for simpler test
 
-			component = New(c, namespace, customValues, fakeSecretManager)
+			component = New(c, namespace, values, fakeSecretManager)
 
 			// The main test is that deploy succeeds with the seed CA secret
 			Expect(component.Deploy(ctx)).To(Succeed())
 
 			// Verify that the component created the managed resource
 			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+		})
+
+		It("should create ingress and kubeRBACProxy resources when ShootNodeLoggingEnabled is false", func() {
+			values.ShootNodeLoggingEnabled = false
+			component = New(c, namespace, values, fakeSecretManager)
+
+			Expect(component.Deploy(ctx)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+			tlsSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "logging-tls",
+					Namespace: namespace,
+				},
+			}
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret)).To(Succeed())
+			Expect(c.Get(ctx, client.ObjectKey{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(Succeed())
+			Expect(customResourcesManagedResource).To(consistOf(
+				openTelemetryCollector,
+				getGateway(),
+				getVirtualService(),
+				getDestinationRule(),
+				getTLSSecret(tlsSecret),
+				serviceMonitor,
+				serviceAccount,
+			))
+			Expect(managedResourceTarget).To(consistOf(
+				getKubeRBACProxyClusterRoleBinding(),
+			))
 		})
 	})
 
