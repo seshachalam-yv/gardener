@@ -8,20 +8,214 @@ import (
 	"context"
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
+	extensionsworkercontroller "github.com/gardener/gardener/extensions/pkg/controller/worker"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 )
 
 var _ = Describe("ActuatorReconcile", func() {
+	Describe("#deployMachineDeployments", func() {
+		var (
+			ctx                        context.Context
+			log                        logr.Logger
+			seedClient                 client.Client
+			cluster                    *extensionscontroller.Cluster
+			worker                     *extensionsv1alpha1.Worker
+			existingMachineDeployments machinev1alpha1.MachineDeploymentList
+			testDeployment             *machinev1alpha1.MachineDeployment
+			returnedDeployment         machinev1alpha1.MachineDeployment
+			wantedMachineDeployments   extensionsworkercontroller.MachineDeployments
+			caUsed                     bool
+		)
+
+		BeforeEach(func() {
+			// Starting with controller-runtime v0.22.0, the default object tracker does not work with resources which include
+			// structs directly as pointer, e.g. *MachineConfiguration in Machine resource. Hence, use the old one instead.
+			seedClient = fakeclient.NewClientBuilder().
+				WithScheme(kubernetes.SeedScheme).
+				WithStatusSubresource(&extensionsv1alpha1.Worker{}, &machinev1alpha1.MachineDeployment{}).
+				WithObjectTracker(testing.NewObjectTracker(kubernetes.SeedScheme, scheme.Codecs.UniversalDecoder())).
+				Build()
+
+			ctx = context.Background()
+
+			worker = &extensionsv1alpha1.Worker{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "worker",
+					Namespace: "namespace",
+				},
+				Spec: extensionsv1alpha1.WorkerSpec{
+					Pools: []extensionsv1alpha1.WorkerPool{
+						{
+							Name:              "pool1",
+							UpdateStrategy:    ptr.To(gardencorev1beta1.AutoInPlaceUpdate),
+							KubernetesVersion: ptr.To("1.32.0"),
+						},
+					},
+				},
+			}
+			Expect(seedClient.Create(ctx, worker)).To(Succeed())
+
+			testDeployment = &machinev1alpha1.MachineDeployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "machine-deployment1",
+					Namespace: worker.Namespace,
+					Labels: map[string]string{
+						"worker.gardener.cloud/name": worker.Name,
+						"worker.gardener.cloud/pool": "pool1",
+					},
+					Annotations: map[string]string{
+						"autoscaler.gardener.cloud/scale-down-utilization-threshold":     "0.3",
+						"autoscaler.gardener.cloud/scale-down-gpu-utilization-threshold": "",
+						"autoscaler.gardener.cloud/scale-down-unneeded-time":             "10m",
+						"autoscaler.gardener.cloud/scale-down-unready-time":              "",
+						"autoscaler.gardener.cloud/max-node-provision-time":              "",
+					},
+				},
+			}
+
+			Expect(seedClient.Create(ctx, testDeployment)).To(Succeed())
+			wantedMachineDeployment := extensionsworkercontroller.MachineDeployment{
+				Name:                         testDeployment.Name,
+				PoolName:                     testDeployment.Labels["worker.gardener.cloud/pool"],
+				Labels:                       testDeployment.Labels,
+				ClusterAutoscalerAnnotations: testDeployment.Annotations,
+			}
+			wantedMachineDeployments = []extensionsworkercontroller.MachineDeployment{wantedMachineDeployment}
+
+			DeferCleanup(func() {
+				Expect(seedClient.Delete(ctx, worker)).To(Succeed())
+				Expect(seedClient.Delete(ctx, testDeployment)).To(Succeed())
+			})
+
+			cluster = &extensionscontroller.Cluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "cluster",
+				},
+				Shoot: &gardencorev1beta1.Shoot{
+					Status: gardencorev1beta1.ShootStatus{},
+				},
+			}
+		})
+
+		It("should remove cluster autoscaler annotations with no values", func() {
+			err := deployMachineDeployments(ctx, log, seedClient, cluster, worker, &existingMachineDeployments, wantedMachineDeployments, caUsed)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(worker), worker)).To(Succeed())
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.Annotations).To(Equal(map[string]string{
+				"autoscaler.gardener.cloud/scale-down-utilization-threshold": "0.3",
+				"autoscaler.gardener.cloud/scale-down-unneeded-time":         "10m",
+			}))
+		})
+
+		It("should remove all cluster autoscaler annotations", func() {
+			testDeployment.Annotations = map[string]string{
+				"autoscaler.gardener.cloud/scale-down-utilization-threshold":     "",
+				"autoscaler.gardener.cloud/scale-down-gpu-utilization-threshold": "",
+				"autoscaler.gardener.cloud/scale-down-unneeded-time":             "",
+				"autoscaler.gardener.cloud/scale-down-unready-time":              "",
+				"autoscaler.gardener.cloud/max-node-provision-time":              "",
+			}
+			wantedMachineDeployments[0].ClusterAutoscalerAnnotations = testDeployment.Annotations
+			err := deployMachineDeployments(ctx, log, seedClient, cluster, worker, &existingMachineDeployments, wantedMachineDeployments, caUsed)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(worker), worker)).To(Succeed())
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.Annotations).To(BeNil())
+		})
+
+		It("should not remove non-CA annotation and update CA annotations", func() {
+			// Set non CA annotation
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			metav1.SetMetaDataAnnotation(&returnedDeployment.ObjectMeta, "non-ca-annotation", "")
+			Expect(seedClient.Update(ctx, &returnedDeployment)).To(Succeed())
+			// Update existing CA annotation value and remove another CA annotation
+			wantedMachineDeployments[0].ClusterAutoscalerAnnotations = map[string]string{
+				"autoscaler.gardener.cloud/scale-down-utilization-threshold":     "",
+				"autoscaler.gardener.cloud/scale-down-gpu-utilization-threshold": "",
+				"autoscaler.gardener.cloud/scale-down-unneeded-time":             "20m",
+				"autoscaler.gardener.cloud/scale-down-unready-time":              "",
+				"autoscaler.gardener.cloud/max-node-provision-time":              "",
+			}
+			err := deployMachineDeployments(ctx, log, seedClient, cluster, worker, &existingMachineDeployments, wantedMachineDeployments, caUsed)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(worker), worker)).To(Succeed())
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.ObjectMeta.Annotations).To(Equal(map[string]string{
+				"non-ca-annotation": "",
+				"autoscaler.gardener.cloud/scale-down-unneeded-time": "20m",
+			}))
+		})
+
+		It("should not modify replicas of the existing machine deployment if they're within acceptable range", func() {
+			wantedMachineDeployments[0].Minimum = 2
+			wantedMachineDeployments[0].Maximum = 5
+			testDeployment.Spec.Replicas = 4
+			Expect(seedClient.Update(ctx, testDeployment)).To(Succeed())
+			existingMachineDeployments = machinev1alpha1.MachineDeploymentList{
+				Items: []machinev1alpha1.MachineDeployment{
+					*testDeployment,
+				},
+			}
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.Spec.Replicas).To(Equal(int32(4)))
+			err := deployMachineDeployments(ctx, log, seedClient, cluster, worker, &existingMachineDeployments, wantedMachineDeployments, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.Spec.Replicas).To(Equal(int32(4)))
+		})
+
+		It("should modify replicas of the existing machine deployment to the Minimum", func() {
+			wantedMachineDeployments[0].Minimum = 2
+			wantedMachineDeployments[0].Maximum = 5
+			existingMachineDeployments = machinev1alpha1.MachineDeploymentList{
+				Items: []machinev1alpha1.MachineDeployment{
+					*testDeployment,
+				},
+			}
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.Spec.Replicas).To(Equal(int32(0)))
+			err := deployMachineDeployments(ctx, log, seedClient, cluster, worker, &existingMachineDeployments, wantedMachineDeployments, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.Spec.Replicas).To(Equal(wantedMachineDeployments[0].Minimum))
+		})
+
+		It("should set deployment replicas to 0 when marked for hibernation", func() {
+			wantedMachineDeployments[0].Minimum = 0
+			wantedMachineDeployments[0].Maximum = 3
+			testDeployment.Spec.Replicas = 2
+			Expect(seedClient.Update(ctx, testDeployment)).To(Succeed())
+			existingMachineDeployments = machinev1alpha1.MachineDeploymentList{
+				Items: []machinev1alpha1.MachineDeployment{
+					*testDeployment,
+				},
+			}
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.Spec.Replicas).To(Equal(int32(2)))
+			cluster.Shoot.Spec.Hibernation = &gardencorev1beta1.Hibernation{Enabled: ptr.To(true)}
+			err := deployMachineDeployments(ctx, log, seedClient, cluster, worker, &existingMachineDeployments, wantedMachineDeployments, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(testDeployment), &returnedDeployment)).To(Succeed())
+			Expect(returnedDeployment.Spec.Replicas).To(Equal(int32(0)))
+		})
+	})
 	Describe("#updateWorkerStatusInPlaceUpdateWorkerPoolHash", func() {
 		var (
 			ctx        context.Context
@@ -36,9 +230,12 @@ var _ = Describe("ActuatorReconcile", func() {
 		)
 
 		BeforeEach(func() {
+			// Starting with controller-runtime v0.22.0, the default object tracker does not work with resources which include
+			// structs directly as pointer, e.g. *MachineConfiguration in Machine resource. Hence, use the old one instead.
 			seedClient = fakeclient.NewClientBuilder().
 				WithScheme(kubernetes.SeedScheme).
 				WithStatusSubresource(&extensionsv1alpha1.Worker{}, &machinev1alpha1.MachineDeployment{}).
+				WithObjectTracker(testing.NewObjectTracker(kubernetes.SeedScheme, scheme.Codecs.UniversalDecoder())).
 				Build()
 
 			ctx = context.Background()

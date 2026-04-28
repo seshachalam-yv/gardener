@@ -3,6 +3,12 @@ kind: EnvoyFilter
 metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
+  ownerReferences:
+  - apiVersion: v1
+    blockOwnerDeletion: true
+    kind: Namespace
+    name: {{ .ControlPlaneNamespace }}
+    uid: {{ .ControlPlaneNamespaceUID }}
 spec:
   workloadSelector:
     labels:
@@ -26,6 +32,14 @@ spec:
             typed_config:
               "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
               stat_prefix: {{ .TargetClusterAPIServerProxy }}
+              access_log:
+                - name: envoy.access_loggers.file
+                  typed_config:
+                    "@type": "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog"
+                    path: /dev/stdout
+                    log_format:
+                      text_format_source:
+                        inline_string: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" %RESPONSE_CODE% %RESPONSE_FLAGS% %RESPONSE_CODE_DETAILS% %CONNECTION_TERMINATION_DETAILS% \"%UPSTREAM_TRANSPORT_FAILURE_REASON%\" %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% \"%REQ(X-FORWARDED-FOR)%\" \"%REQ(USER-AGENT)%\" \"%REQ(X-REQUEST-ID)%\" \"%REQ(:AUTHORITY)%\" \"%UPSTREAM_HOST%\" %UPSTREAM_CLUSTER_RAW% %UPSTREAM_LOCAL_ADDRESS% %DOWNSTREAM_LOCAL_ADDRESS% %DOWNSTREAM_REMOTE_ADDRESS% %REQUESTED_SERVER_NAME% %ROUTE_NAME%\n"
               route_config:
                 name: {{ .TargetClusterAPIServerProxy }}
                 virtual_hosts:
@@ -73,44 +87,42 @@ spec:
                         for key, value in pairs(remove) do
                           request_handle:headers():remove(value)
                         end
-        
+
                         local streamInfo = request_handle:streamInfo()
                         local ssl = streamInfo:downstreamSslConnection()
-        
-                        -- TODO(oliver-goetz) switch to ssl:parsedSubjectPeerCertificate() once it is available.
-                        local cn = ssl:subjectPeerCertificate()
-                        if cn ~= "" then
+
+                        -- Parse client certificate subject.
+                        local parsedSubject = ssl:parsedSubjectPeerCertificate()
+                        if parsedSubject then
                           -- Set the authenticated shoot as dynamic metadata.
                           streamInfo:dynamicMetadata():set("envoy.filters.http.lua", "{{ .APIServerAuthenticationDynamicMetadataKey }}", "{{ .ControlPlaneNamespace }}")
-        
-                          -- Add request headers for kube-apiserver authentication.
-                          local remoteUserHeaderAdded = false
-                          -- Iterate over all substrings in cn that are separated by commas.
-                          for pair in string.gmatch(cn, "([^,]+)") do
-                              -- For each substring extract key and value that are separated by '='.
-                              local key, value = pair:match("([^=]+)=([^=]+)")
-                              -- Istio is an authenticating proxy in this case, so we must set the defined headers accordingly.
-                              -- https://kubernetes.io/docs/reference/access-authn-authz/authentication/#authenticating-proxy
-                              -- CN of the client certificate defines the username, O defines groups.
-                              -- see https://kubernetes.io/docs/setup/best-practices/certificates/#configure-certificates-for-user-accounts
-                              if key == "CN" then
-                                request_handle:headers():add("{{ .APIServerRequestHeaderUserName }}", value)
-                                remoteUserHeaderAdded = true
-                              elseif key == "O" then
-                                request_handle:headers():add("{{ .APIServerRequestHeaderGroup }}", value)
-                              end
-                          end
-        
-                          -- Kill request if remote user header was not added.
-                          if not remoteUserHeaderAdded then
+
+                          local cn = parsedSubject:commonName()
+                          -- Kill request if CN is empty.
+                          if cn == "" then
                             request_handle:respond({[":status"] = "400"}, "Invalid certificate subject")
                           end
+
+                          -- Add request headers for kube-apiserver authentication.
+                          -- Istio is an authenticating proxy in this case, so we must set the defined headers accordingly.
+                          -- https://kubernetes.io/docs/reference/access-authn-authz/authentication/#authenticating-proxy
+                          -- CN of the client certificate defines the username, O defines groups.
+                          -- see https://kubernetes.io/docs/setup/best-practices/certificates/#configure-certificates-for-user-accounts
+                          request_handle:headers():add("{{ .APIServerRequestHeaderUserName }}", cn)
+
+                          local os = parsedSubject:organizationName()
+                          for _, o in ipairs(os) do
+                            if o ~= "" then
+                              request_handle:headers():add("{{ .APIServerRequestHeaderGroup }}", o)
+                            end
+                          end
                         end
-        
-                        -- Route timeouts to upstream have to be disabled. Otherwise, watches would be terminated after 15 seconds.
+
+                        -- Route timeouts to upstream have a high timeout of 1d. This allows long sessions but, also prevents
+                        -- leaking connections like forgotten kubectl port-forward or exec commands.
                         -- See https://www.envoyproxy.io/docs/envoy/latest/faq/configuration/timeouts#route-timeouts
-                        request_handle:headers():add("x-envoy-upstream-rq-timeout-ms", "0")
-                        request_handle:headers():add("x-envoy-upstream-rq-per-try-timeout-ms", "0")
+                        request_handle:headers():add("x-envoy-upstream-rq-timeout-ms", "86400000")
+                        request_handle:headers():add("x-envoy-upstream-rq-per-try-timeout-ms", "86400000")
                       end
               - name: envoy.filters.http.router
                 typed_config:
@@ -144,7 +156,11 @@ spec:
       value:
         name: {{ .TargetClusterAPIServerProxy }}
         type: STATIC
-        connect_timeout: 1s
+        connect_timeout: 10s
+        upstream_connection_options:
+          tcp_keepalive:
+            keepalive_interval: 75
+            keepalive_time: 7200
         load_assignment:
           cluster_name: {{ .TargetClusterAPIServerProxy }}
           endpoints:

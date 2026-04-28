@@ -6,7 +6,6 @@ package gardener_test
 
 import (
 	"context"
-	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -21,128 +20,32 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
 	. "github.com/gardener/gardener/pkg/utils/gardener"
 )
 
 var _ = Describe("Garden", func() {
-	Describe("#GetDefaultDomains", func() {
-		It("should return all default domain", func() {
-			var (
-				provider = "aws"
-				domain   = "example.com"
-				data     = map[string][]byte{
-					"foo": []byte("bar"),
-				}
-
-				secret = &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Annotations: map[string]string{
-							DNSProvider: provider,
-							DNSDomain:   domain,
-						},
-					},
-					Data: data,
-				}
-				secrets = map[string]*corev1.Secret{
-					fmt.Sprintf("%s-%s", constants.GardenRoleDefaultDomain, domain): secret,
-				}
-			)
-
-			defaultDomains, err := GetDefaultDomains(secrets)
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(defaultDomains).To(Equal([]*Domain{
-				{
-					Domain:     domain,
-					Provider:   provider,
-					SecretData: data,
-				},
-			}))
-		})
-
-		It("should return an error", func() {
-			secrets := map[string]*corev1.Secret{
-				fmt.Sprintf("%s-%s", constants.GardenRoleDefaultDomain, "nip"): {
-					ObjectMeta: metav1.ObjectMeta{
-						Annotations: map[string]string{
-							DNSProvider: "aws",
-						},
-					},
-				},
-			}
-
-			_, err := GetDefaultDomains(secrets)
-
-			Expect(err).To(HaveOccurred())
-		})
-	})
-
-	Describe("#GetInternalDomain", func() {
-		It("should return the internal domain", func() {
-			var (
-				provider = "aws"
-				domain   = "example.com"
-				data     = map[string][]byte{
-					"foo": []byte("bar"),
-				}
-
-				secret = &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Annotations: map[string]string{
-							DNSProvider: provider,
-							DNSDomain:   domain,
-						},
-					},
-					Data: data,
-				}
-				secrets = map[string]*corev1.Secret{
-					constants.GardenRoleInternalDomain: secret,
-				}
-			)
-
-			internalDomain, err := GetInternalDomain(secrets)
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(internalDomain).To(Equal(&Domain{
-				Domain:     domain,
-				Provider:   provider,
-				SecretData: data,
-			}))
-		})
-
-		It("should return an error due to incomplete secrets map", func() {
-			_, err := GetInternalDomain(map[string]*corev1.Secret{})
-
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("should return an error", func() {
-			secrets := map[string]*corev1.Secret{
-				constants.GardenRoleInternalDomain: {
-					ObjectMeta: metav1.ObjectMeta{
-						Annotations: map[string]string{
-							DNSProvider: "aws",
-						},
-					},
-				},
-			}
-
-			_, err := GetInternalDomain(secrets)
-
-			Expect(err).To(HaveOccurred())
-		})
-	})
-
 	var (
+		ctx        = context.Background()
+		fakeClient client.Client
+
 		defaultDomainProvider   = "default-domain-provider"
 		defaultDomainSecretData = map[string][]byte{"default": []byte("domain")}
 		defaultDomain           = &Domain{
-			Domain:     "bar.com",
-			Provider:   defaultDomainProvider,
-			SecretData: defaultDomainSecretData,
+			Domain:   "bar.com",
+			Provider: defaultDomainProvider,
+			Credentials: &corev1.Secret{
+				Data: defaultDomainSecretData,
+			},
 		}
 	)
+
+	BeforeEach(func() {
+		fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetesscheme.Scheme).Build()
+	})
 
 	DescribeTable("#DomainIsDefaultDomain",
 		func(domain string, defaultDomains []*Domain, expected gomegatypes.GomegaMatcher) {
@@ -352,15 +255,11 @@ var _ = Describe("Garden", func() {
 
 	Describe("#GetGardenWildcardCertificate", func() {
 		var (
-			ctx          = context.Background()
-			fakeClient   client.Client
 			namespace    string
 			gardenSecret *corev1.Secret
 		)
 
 		BeforeEach(func() {
-			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetesscheme.Scheme).Build()
-
 			namespace = "garden"
 			gardenSecret = &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
@@ -398,15 +297,11 @@ var _ = Describe("Garden", func() {
 
 	Describe("#GetRequiredGardenWildcardCertificate", func() {
 		var (
-			ctx          = context.Background()
-			fakeClient   client.Client
 			namespace    string
 			gardenSecret *corev1.Secret
 		)
 
 		BeforeEach(func() {
-			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetesscheme.Scheme).Build()
-
 			namespace = "garden"
 			gardenSecret = &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
@@ -439,6 +334,691 @@ var _ = Describe("Garden", func() {
 			result, err := GetRequiredGardenWildcardCertificate(ctx, fakeClient, "garden")
 			Expect(result).To(Equal(gardenSecret))
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("#ReadGardenInternalDomain", func() {
+		var (
+			seedDNSProvider *gardencorev1beta1.SeedDNSProviderConfig
+			secret          *corev1.Secret
+			namespace       = "garden"
+			providerType    = "route-53"
+			domain          = "internal.example.com"
+			zone            = "zone-1"
+		)
+
+		BeforeEach(func() {
+			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+			seedDNSProvider = &gardencorev1beta1.SeedDNSProviderConfig{
+				Type:   providerType,
+				Domain: domain,
+				Zone:   ptr.To(zone),
+				CredentialsRef: corev1.ObjectReference{
+					APIVersion: "v1",
+					Kind:       "Secret",
+					Name:       "internal-domain",
+					Namespace:  namespace,
+				},
+			}
+			secret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "internal-domain",
+					Namespace: namespace,
+				},
+				Data: map[string][]byte{"foo": []byte("bar")},
+			}
+		})
+
+		It("should return domain information from SeedDNSProviderConf", func() {
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, err := ReadGardenInternalDomain(ctx, fakeClient, namespace, true, seedDNSProvider)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(&Domain{
+				Domain:      domain,
+				Provider:    providerType,
+				Zone:        zone,
+				Credentials: secret,
+			}))
+		})
+
+		It("should return domain information from a labeled secret", func() {
+			secret.Labels = map[string]string{
+				constants.GardenRole: constants.GardenRoleInternalDomain,
+			}
+			secret.Annotations = map[string]string{
+				"dns.gardener.cloud/provider": providerType,
+				"dns.gardener.cloud/domain":   domain,
+				"dns.gardener.cloud/zone":     zone,
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, err := ReadGardenInternalDomain(ctx, fakeClient, namespace, true, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(&Domain{
+				Domain:      domain,
+				Provider:    providerType,
+				Zone:        zone,
+				Credentials: secret,
+			}))
+		})
+
+		It("should return nil if no secret and enforceSecret is false", func() {
+			result, err := ReadGardenInternalDomain(ctx, fakeClient, namespace, false, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeNil())
+		})
+
+		It("should error if no secret and enforceSecret is true", func() {
+			result, err := ReadGardenInternalDomain(ctx, fakeClient, namespace, true, nil)
+			Expect(result).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("need an internal domain secret")))
+		})
+
+		It("should error if more than one secret is found", func() {
+			secret.Labels = map[string]string{
+				constants.GardenRole: constants.GardenRoleInternalDomain,
+			}
+			secret.Annotations = map[string]string{
+				"dns.gardener.cloud/provider": providerType,
+				"dns.gardener.cloud/domain":   domain,
+				"dns.gardener.cloud/zone":     zone,
+			}
+
+			secret2 := secret.DeepCopy()
+			secret2.Name = "internal-domain-2"
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+			Expect(fakeClient.Create(ctx, secret2)).To(Succeed())
+
+			result, err := ReadGardenInternalDomain(ctx, fakeClient, namespace, true, nil)
+			Expect(result).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("more than one internal domain secret")))
+		})
+
+		It("should error if secret is malformed", func() {
+			secret.Labels = map[string]string{
+				constants.GardenRole: constants.GardenRoleInternalDomain,
+			}
+			secret.Annotations = map[string]string{
+				"dns.gardener.cloud/provider": providerType,
+				// Missing domain annotation
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, err := ReadGardenInternalDomain(ctx, fakeClient, namespace, true, nil)
+			Expect(result).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("error constructing internal domain from secret")))
+		})
+
+		It("should allow WorkloadIdentity credentials", func() {
+			workloadIdentity := &securityv1alpha1.WorkloadIdentity{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "internal-domain",
+					Namespace: namespace,
+				},
+				Spec: securityv1alpha1.WorkloadIdentitySpec{
+					Audiences: []string{"test"},
+					TargetSystem: securityv1alpha1.TargetSystem{
+						Type: "test",
+					},
+				},
+			}
+			seedDNSProvider = &gardencorev1beta1.SeedDNSProviderConfig{
+				Type:   providerType,
+				Domain: domain,
+				Zone:   ptr.To(zone),
+				CredentialsRef: corev1.ObjectReference{
+					APIVersion: "security.gardener.cloud/v1alpha1",
+					Kind:       "WorkloadIdentity",
+					Name:       "internal-domain",
+					Namespace:  namespace,
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, workloadIdentity)).To(Succeed())
+			internalDomain, err := ReadGardenInternalDomain(ctx, fakeClient, namespace, false, seedDNSProvider)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(internalDomain).To(Equal(&Domain{
+				Domain:      domain,
+				Provider:    providerType,
+				Zone:        zone,
+				Credentials: workloadIdentity,
+			}))
+		})
+	})
+
+	Describe("#ReadInternalDomainSecret", func() {
+		var (
+			namespace    = "garden"
+			providerType = "route-53"
+			domain       = "internal.example.com"
+			zone         = "zone-1"
+			secret       *corev1.Secret
+		)
+
+		BeforeEach(func() {
+			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+			secret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "internal-domain",
+					Namespace: namespace,
+					Labels: map[string]string{
+						constants.GardenRole: constants.GardenRoleInternalDomain,
+					},
+					Annotations: map[string]string{
+						"dns.gardener.cloud/provider": providerType,
+						"dns.gardener.cloud/domain":   domain,
+						"dns.gardener.cloud/zone":     zone,
+					},
+				},
+				Data: map[string][]byte{"foo": []byte("bar")},
+			}
+		})
+
+		It("should return the internal domain secret", func() {
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, err := ReadInternalDomainSecret(ctx, fakeClient, namespace, true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeNil())
+			Expect(result.Name).To(Equal("internal-domain"))
+		})
+
+		It("should return nil if no secret and enforceSecret is false and no secret is found", func() {
+			result, err := ReadInternalDomainSecret(ctx, fakeClient, namespace, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeNil())
+		})
+
+		It("should return the secret if enforceSecret is false but secret is found", func() {
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, err := ReadInternalDomainSecret(ctx, fakeClient, namespace, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeNil())
+		})
+
+		It("should error if no secret and enforceSecret is true", func() {
+			result, err := ReadInternalDomainSecret(ctx, fakeClient, namespace, true)
+			Expect(result).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("need an internal domain secret")))
+		})
+
+		It("should error if more than one secret is found", func() {
+			secret2 := secret.DeepCopy()
+			secret2.Name = "internal-domain-2"
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+			Expect(fakeClient.Create(ctx, secret2)).To(Succeed())
+
+			result, err := ReadInternalDomainSecret(ctx, fakeClient, namespace, true)
+			Expect(result).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("more than one internal domain secret")))
+		})
+	})
+
+	Describe("#ReadGardenDefaultDomains", func() {
+		var (
+			namespace     = "garden"
+			providerType1 = "route-53"
+			domain1       = "default1.example.com"
+			zone1         = "zone-1"
+			providerType2 = "cloudflare"
+			domain2       = "default2.example.com"
+			zone2         = "zone-2"
+			providerType3 = "test-dns"
+			domain3       = "default3.example.com"
+			zone3         = "zone-3"
+		)
+
+		BeforeEach(func() {
+			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+		})
+
+		It("should return domain information from SeedDNSProviderConfig array", func() {
+			secret1 := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-domain-1",
+					Namespace: namespace,
+				},
+				Data: map[string][]byte{"foo": []byte("bar")},
+			}
+			secret2 := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-domain-2",
+					Namespace: namespace,
+				},
+				Data: map[string][]byte{"baz": []byte("qux")},
+			}
+			workloadIdentity := &securityv1alpha1.WorkloadIdentity{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-domain-3",
+					Namespace: namespace,
+				},
+				Spec: securityv1alpha1.WorkloadIdentitySpec{
+					Audiences: []string{"test"},
+					TargetSystem: securityv1alpha1.TargetSystem{
+						Type: "test",
+					},
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret1)).To(Succeed())
+			Expect(fakeClient.Create(ctx, secret2)).To(Succeed())
+			Expect(fakeClient.Create(ctx, workloadIdentity)).To(Succeed())
+
+			seedDNSDefaults := []gardencorev1beta1.SeedDNSProviderConfig{
+				{
+					Type:   providerType1,
+					Domain: domain1,
+					Zone:   ptr.To(zone1),
+					CredentialsRef: corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "default-domain-1",
+						Namespace:  namespace,
+					},
+				},
+				{
+					Type:   providerType2,
+					Domain: domain2,
+					Zone:   ptr.To(zone2),
+					CredentialsRef: corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "default-domain-2",
+						Namespace:  namespace,
+					},
+				},
+				{
+					Type:   providerType3,
+					Domain: domain3,
+					Zone:   ptr.To(zone3),
+					CredentialsRef: corev1.ObjectReference{
+						APIVersion: "security.gardener.cloud/v1alpha1",
+						Kind:       "WorkloadIdentity",
+						Name:       "default-domain-3",
+						Namespace:  namespace,
+					},
+				},
+			}
+
+			result, err := ReadGardenDefaultDomains(ctx, fakeClient, namespace, seedDNSDefaults)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal([]*Domain{
+				{
+					Domain:      domain1,
+					Provider:    providerType1,
+					Zone:        zone1,
+					Credentials: secret1,
+				},
+				{
+					Domain:      domain2,
+					Provider:    providerType2,
+					Zone:        zone2,
+					Credentials: secret2,
+				},
+				{
+					Domain:      domain3,
+					Provider:    providerType3,
+					Zone:        zone3,
+					Credentials: workloadIdentity,
+				},
+			}))
+		})
+
+		It("should return domain information from labeled secrets when no seedDNSDefaults provided", func() {
+			secret1 := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-domain-1",
+					Namespace: namespace,
+					Labels: map[string]string{
+						constants.GardenRole: constants.GardenRoleDefaultDomain,
+					},
+					Annotations: map[string]string{
+						"dns.gardener.cloud/provider": providerType1,
+						"dns.gardener.cloud/domain":   domain1,
+						"dns.gardener.cloud/zone":     zone1,
+					},
+				},
+				Data: map[string][]byte{"foo": []byte("bar")},
+			}
+			secret2 := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default-domain-2",
+					Namespace: namespace,
+					Labels: map[string]string{
+						constants.GardenRole: constants.GardenRoleDefaultDomain,
+					},
+					Annotations: map[string]string{
+						"dns.gardener.cloud/provider": providerType2,
+						"dns.gardener.cloud/domain":   domain2,
+						"dns.gardener.cloud/zone":     zone2,
+					},
+				},
+				Data: map[string][]byte{"baz": []byte("qux")},
+			}
+
+			Expect(fakeClient.Create(ctx, secret1)).To(Succeed())
+			Expect(fakeClient.Create(ctx, secret2)).To(Succeed())
+
+			result, err := ReadGardenDefaultDomains(ctx, fakeClient, namespace, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(result).To(ConsistOf(
+				&Domain{
+					Domain:      domain1,
+					Provider:    providerType1,
+					Zone:        zone1,
+					Credentials: secret1,
+				},
+				&Domain{
+					Domain:      domain2,
+					Provider:    providerType2,
+					Zone:        zone2,
+					Credentials: secret2,
+				},
+			))
+		})
+
+		It("should return empty slice when no default domains found", func() {
+			result, err := ReadGardenDefaultDomains(ctx, fakeClient, namespace, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeEmpty())
+		})
+
+		It("should return empty slice when empty seedDNSDefaults provided", func() {
+			result, err := ReadGardenDefaultDomains(ctx, fakeClient, namespace, []gardencorev1beta1.SeedDNSProviderConfig{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeEmpty())
+		})
+
+		It("should error if referenced secret in seedDNSDefaults is not found", func() {
+			seedDNSDefaults := []gardencorev1beta1.SeedDNSProviderConfig{
+				{
+					Type:   providerType1,
+					Domain: domain1,
+					Zone:   ptr.To(zone1),
+					CredentialsRef: corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "non-existent-secret",
+						Namespace:  namespace,
+					},
+				},
+			}
+
+			result, err := ReadGardenDefaultDomains(ctx, fakeClient, namespace, seedDNSDefaults)
+			Expect(result).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("cannot fetch default domain credentials")))
+		})
+
+		It("should error if default domain secret is malformed", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "malformed-secret",
+					Namespace: namespace,
+					Labels: map[string]string{
+						constants.GardenRole: constants.GardenRoleDefaultDomain,
+					},
+					Annotations: map[string]string{
+						"dns.gardener.cloud/provider": providerType1,
+						// Missing domain annotation
+					},
+				},
+				Data: map[string][]byte{"foo": []byte("bar")},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, err := ReadGardenDefaultDomains(ctx, fakeClient, namespace, nil)
+			Expect(result).To(BeNil())
+			Expect(err).To(MatchError(ContainSubstring("error constructing default domain from secret")))
+		})
+
+		It("should sort default domains by priority", func() {
+			// Create secrets with different priorities
+			secretHighPriority := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "high-priority-domain",
+					Namespace: namespace,
+					Labels: map[string]string{
+						constants.GardenRole: constants.GardenRoleDefaultDomain,
+					},
+					Annotations: map[string]string{
+						"dns.gardener.cloud/provider":                providerType1,
+						"dns.gardener.cloud/domain":                  "high.example.com",
+						"dns.gardener.cloud/zone":                    zone1,
+						"dns.gardener.cloud/domain-default-priority": "10",
+					},
+				},
+				Data: map[string][]byte{"high": []byte("priority")},
+			}
+			secretMediumPriority := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "medium-priority-domain",
+					Namespace: namespace,
+					Labels: map[string]string{
+						constants.GardenRole: constants.GardenRoleDefaultDomain,
+					},
+					Annotations: map[string]string{
+						"dns.gardener.cloud/provider":                providerType2,
+						"dns.gardener.cloud/domain":                  "medium.example.com",
+						"dns.gardener.cloud/zone":                    zone2,
+						"dns.gardener.cloud/domain-default-priority": "5",
+					},
+				},
+				Data: map[string][]byte{"medium": []byte("priority")},
+			}
+			secretLowPriority := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "low-priority-domain",
+					Namespace: namespace,
+					Labels: map[string]string{
+						constants.GardenRole: constants.GardenRoleDefaultDomain,
+					},
+					Annotations: map[string]string{
+						"dns.gardener.cloud/provider": "dns-provider",
+						"dns.gardener.cloud/domain":   "low.example.com",
+						"dns.gardener.cloud/zone":     "zone-3",
+					},
+				},
+				Data: map[string][]byte{"low": []byte("priority")},
+			}
+
+			Expect(fakeClient.Create(ctx, secretLowPriority)).To(Succeed())
+			Expect(fakeClient.Create(ctx, secretHighPriority)).To(Succeed())
+			Expect(fakeClient.Create(ctx, secretMediumPriority)).To(Succeed())
+
+			result, err := ReadGardenDefaultDomains(ctx, fakeClient, namespace, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(result).To(Equal([]*Domain{
+				{
+					Domain:      "high.example.com",
+					Provider:    providerType1,
+					Zone:        zone1,
+					Credentials: secretHighPriority,
+				},
+				{
+					Domain:      "medium.example.com",
+					Provider:    providerType2,
+					Zone:        zone2,
+					Credentials: secretMediumPriority,
+				},
+				{
+					Domain:      "low.example.com",
+					Provider:    "dns-provider",
+					Zone:        "zone-3",
+					Credentials: secretLowPriority,
+				},
+			}))
+		})
+	})
+
+	Describe("#ReadGardenDefaultDomainsSecrets", func() {
+		var namespace = "garden"
+
+		BeforeEach(func() {
+			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+		})
+
+		It("should return empty slice when no default domain secrets exist", func() {
+			result, err := ReadGardenDefaultDomainsSecrets(ctx, fakeClient, namespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeEmpty())
+		})
+
+		It("should return secrets sorted by priority descending", func() {
+			high := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "high",
+					Namespace:   namespace,
+					Labels:      map[string]string{constants.GardenRole: constants.GardenRoleDefaultDomain},
+					Annotations: map[string]string{DNSProvider: "p", DNSDomain: "high.example.com", DNSDefaultDomainPriority: "10"},
+				},
+			}
+			medium := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "medium",
+					Namespace:   namespace,
+					Labels:      map[string]string{constants.GardenRole: constants.GardenRoleDefaultDomain},
+					Annotations: map[string]string{DNSProvider: "p", DNSDomain: "medium.example.com", DNSDefaultDomainPriority: "5"},
+				},
+			}
+			invalid := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "invalid",
+					Namespace:   namespace,
+					Labels:      map[string]string{constants.GardenRole: constants.GardenRoleDefaultDomain},
+					Annotations: map[string]string{DNSProvider: "p", DNSDomain: "invalid.example.com", DNSDefaultDomainPriority: "abc"}, // invalid/missing priorities treated as 0
+				},
+			}
+			missing := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "missing",
+					Namespace:   namespace,
+					Labels:      map[string]string{constants.GardenRole: constants.GardenRoleDefaultDomain},
+					Annotations: map[string]string{DNSProvider: "p", DNSDomain: "missing.example.com"}, // invalid/missing priorities treated as 0
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, medium)).To(Succeed())
+			Expect(fakeClient.Create(ctx, invalid)).To(Succeed())
+			Expect(fakeClient.Create(ctx, high)).To(Succeed())
+			Expect(fakeClient.Create(ctx, missing)).To(Succeed())
+
+			result, err := ReadGardenDefaultDomainsSecrets(ctx, fakeClient, namespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(4))
+			Expect([]string{result[0].Name, result[1].Name, result[2].Name, result[3].Name}).To(Equal([]string{"high", "medium", "invalid", "missing"}))
+		})
+
+		It("should keep stable ordering for secrets with identical priorities", func() {
+			first := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "first",
+					Namespace:   namespace,
+					Labels:      map[string]string{constants.GardenRole: constants.GardenRoleDefaultDomain},
+					Annotations: map[string]string{DNSProvider: "p", DNSDomain: "first.example.com", DNSDefaultDomainPriority: "7"},
+				},
+			}
+			second := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "second",
+					Namespace:   namespace,
+					Labels:      map[string]string{constants.GardenRole: constants.GardenRoleDefaultDomain},
+					Annotations: map[string]string{DNSProvider: "p", DNSDomain: "second.example.com", DNSDefaultDomainPriority: "7"},
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, second)).To(Succeed())
+			Expect(fakeClient.Create(ctx, first)).To(Succeed())
+
+			result, err := ReadGardenDefaultDomainsSecrets(ctx, fakeClient, namespace)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(2))
+			Expect([]string{result[0].Name, result[1].Name}).To(Equal([]string{"first", "second"}))
+		})
+	})
+
+	Describe("#ReconcileGardenNamespace", func() {
+		var (
+			namespaceName = "garden"
+			zones         = []string{"1,2"}
+		)
+
+		When("metadata should not be managed", func() {
+			It("should create the garden namespace with the expected metadata", func() {
+				Expect(ReconcileGardenNamespace(ctx, fakeClient, namespaceName, zones, false, nil)).To(Succeed())
+
+				namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "garden"}}
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(namespace), namespace)).To(Succeed())
+				Expect(namespace.Annotations).To(BeEmpty())
+				Expect(namespace.Labels).To(BeEmpty())
+			})
+
+			It("should reconcile the garden namespace with the expected metadata", func() {
+				namespace := &corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "garden",
+					},
+				}
+				Expect(fakeClient.Create(ctx, namespace)).To(Succeed())
+
+				Expect(ReconcileGardenNamespace(ctx, fakeClient, namespaceName, zones, false, nil)).To(Succeed())
+
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(namespace), namespace)).To(Succeed())
+				Expect(namespace.Annotations).To(BeEmpty())
+				Expect(namespace.Labels).To(BeEmpty())
+			})
+		})
+
+		When("metadata should be managed", func() {
+			It("should create the garden namespace with the expected metadata", func() {
+				Expect(ReconcileGardenNamespace(ctx, fakeClient, namespaceName, zones, true, nil)).To(Succeed())
+
+				namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "garden"}}
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(namespace), namespace)).To(Succeed())
+				Expect(namespace.Annotations).To(HaveKeyWithValue("high-availability-config.resources.gardener.cloud/zones", "1,2"))
+				Expect(namespace.Labels).To(And(
+					HaveKeyWithValue("pod-security.kubernetes.io/enforce", "privileged"),
+					HaveKeyWithValue("high-availability-config.resources.gardener.cloud/consider", "true"),
+					HaveKeyWithValue("gardener.cloud/role", "garden"),
+				))
+			})
+
+			It("should reconcile the garden namespace with the expected metadata", func() {
+				namespace := &corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "garden",
+						Annotations: map[string]string{
+							"high-availability-config.resources.gardener.cloud/zones": "none",
+						},
+						Labels: map[string]string{
+							"pod-security.kubernetes.io/enforce":                         "unprivileged",
+							"high-availability-config.resources.gardener.cloud/consider": "",
+						},
+					},
+				}
+				Expect(fakeClient.Create(ctx, namespace)).To(Succeed())
+
+				Expect(ReconcileGardenNamespace(ctx, fakeClient, namespaceName, zones, true, func(namespace *corev1.Namespace) {
+					metav1.SetMetaDataLabel(&namespace.ObjectMeta, "foo", "bar")
+				})).To(Succeed())
+
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(namespace), namespace)).To(Succeed())
+				Expect(namespace.Annotations).To(HaveKeyWithValue("high-availability-config.resources.gardener.cloud/zones", "1,2"))
+				Expect(namespace.Labels).To(And(
+					HaveKeyWithValue("pod-security.kubernetes.io/enforce", "privileged"),
+					HaveKeyWithValue("high-availability-config.resources.gardener.cloud/consider", "true"),
+					HaveKeyWithValue("foo", "bar"),
+					HaveKeyWithValue("gardener.cloud/role", "garden"),
+				))
+			})
 		})
 	})
 })

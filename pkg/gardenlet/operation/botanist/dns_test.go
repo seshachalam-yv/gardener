@@ -20,13 +20,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	mockdnsrecord "github.com/gardener/gardener/pkg/component/extensions/dnsrecord/mock"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/garden"
@@ -187,7 +187,7 @@ var _ = Describe("dns", func() {
 		It("sets internal and external DNSRecords", func() {
 			b.Shoot.GetInfo().Status.ClusterIdentity = ptr.To("shoot-cluster-identity")
 			b.Shoot.GetInfo().Spec.DNS = &gardencorev1beta1.DNS{Domain: ptr.To("foo")}
-			b.Shoot.InternalClusterDomain = "bar"
+			b.Shoot.InternalClusterDomain = ptr.To("bar")
 			b.Shoot.ExternalClusterDomain = ptr.To("baz")
 			b.Shoot.ExternalDomain = &gardenerutils.Domain{Provider: "valid-provider"}
 			b.Garden.InternalDomain = &gardenerutils.Domain{Provider: "valid-provider"}

@@ -44,11 +44,7 @@ type BackupBucketSpec struct {
 	Provider BackupBucketProvider
 	// ProviderConfig is the configuration passed to BackupBucket resource.
 	ProviderConfig *runtime.RawExtension
-	// SecretRef is a reference to a secret that contains the credentials to access object store.
-	// Deprecated: This field will be removed after v1.123.0 has been released. Use `CredentialsRef` instead.
-	// Until removed, this field is synced with the `CredentialsRef` field when it refers to a secret.
-	SecretRef corev1.SecretReference
-	// SeedName holds the name of the seed allocated to BackupBucket for running controller.
+	// SeedName is the name of the Seed this BackupBucket is associated with. Mutually exclusive with ShootRef.
 	// This field is immutable.
 	SeedName *string
 	// CredentialsRef is reference to a resource holding the credentials used for
@@ -56,6 +52,9 @@ type BackupBucketSpec struct {
 	// Supported referenced resources are v1.Secrets and
 	// security.gardener.cloud/v1alpha1.WorkloadIdentity
 	CredentialsRef *corev1.ObjectReference
+	// ShootRef is the reference of the Shoot this BackupBucket is associated with. Mutually exclusive with SeedName.
+	// This field is immutable.
+	ShootRef *corev1.ObjectReference
 }
 
 // BackupBucketStatus holds the most recently observed status of the Backup Bucket.

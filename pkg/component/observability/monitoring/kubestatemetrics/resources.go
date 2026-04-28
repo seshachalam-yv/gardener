@@ -10,6 +10,7 @@ import (
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
+	"go.yaml.in/yaml/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -36,7 +37,6 @@ import (
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
-	"github.com/gardener/gardener/third_party/gopkg.in/yaml.v2"
 )
 
 func (k *kubeStateMetrics) serviceAccount() *corev1.ServiceAccount {
@@ -90,7 +90,7 @@ func (k *kubeStateMetrics) clusterRole() *rbacv1.ClusterRole {
 		},
 		{
 			APIGroups: []string{"operator.gardener.cloud"},
-			Resources: []string{"gardens"},
+			Resources: []string{"gardens", "extensions"},
 			Verbs:     []string{"list", "watch"},
 		},
 	}
@@ -306,7 +306,7 @@ func (k *kubeStateMetrics) deployment(
 func (k *kubeStateMetrics) verticalPodAutoscaler(deployment *appsv1.Deployment) *vpaautoscalingv1.VerticalPodAutoscaler {
 	var (
 		vpa              = &vpaautoscalingv1.VerticalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Name: "kube-state-metrics-vpa" + k.values.NameSuffix, Namespace: k.namespace}}
-		updateMode       = vpaautoscalingv1.UpdateModeAuto
+		updateMode       = vpaautoscalingv1.UpdateModeRecreate
 		controlledValues = vpaautoscalingv1.ContainerControlledValuesRequestsOnly
 	)
 
@@ -320,11 +320,15 @@ func (k *kubeStateMetrics) verticalPodAutoscaler(deployment *appsv1.Deployment) 
 		ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 				{
-					ContainerName:    "*",
+					ContainerName:    containerName,
 					ControlledValues: &controlledValues,
 					MinAllowed: corev1.ResourceList{
 						corev1.ResourceMemory: resource.MustParse("32Mi"),
 					},
+				},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 				},
 			},
 		},
@@ -388,6 +392,7 @@ func (k *kubeStateMetrics) standardScrapeConfigSpec() monitoringv1alpha1.ScrapeC
 
 var gardenMetricAllowlist = []string{
 	"^kube_pod_container_status_restarts_total$",
+	"^kube_pod_info$",
 	"^kube_pod_status_phase$",
 	"^kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu$",
 	"^kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_memory$",
@@ -404,6 +409,7 @@ var gardenMetricAllowlist = []string{
 	"^kube_customresource_verticalpodautoscaler_spec_updatepolicy_updatemode$",
 	"^garden_garden_condition$",
 	"^garden_garden_last_operation$",
+	"^garden_extension_condition$",
 }
 
 var cacheMetricAllowlist = []string{
@@ -426,6 +432,7 @@ var cacheMetricAllowlist = []string{
 	"^kube_horizontalpodautoscaler_status_desired_replicas$",
 	"^kube_horizontalpodautoscaler_status_condition$",
 	"^kube_namespace_annotations$",
+	"^kube_node_created$",
 	"^kube_node_info$",
 	"^kube_node_labels$",
 	"^kube_node_spec_taint$",
@@ -481,6 +488,7 @@ var shootMetricAllowlist = []string{
 	"^kube_deployment_status_replicas_available$",
 	"^kube_deployment_status_replicas_unavailable$",
 	"^kube_deployment_status_replicas_updated$",
+	"^kube_node_created$",
 	"^kube_node_info$",
 	"^kube_node_labels$",
 	"^kube_node_spec_taint$",
@@ -718,11 +726,10 @@ func (k *kubeStateMetrics) nameSuffix() string {
 func (k *kubeStateMetrics) customResourceStateConfigMap() (*corev1.ConfigMap, error) {
 	opts := []Option{WithVPAMetrics}
 	if k.values.NameSuffix == SuffixRuntime {
-		opts = append(opts, WithGardenResourceMetrics)
+		opts = append(opts, WithGardenResourceMetrics, WithOperatorExtensionMetrics)
 	}
 
 	customResourceStateConfig, err := yaml.Marshal(NewCustomResourceStateConfig(opts...))
-
 	if err != nil {
 		return nil, err
 	}

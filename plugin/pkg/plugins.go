@@ -37,8 +37,8 @@ const (
 	PluginNameManagedSeed = "ManagedSeed"
 	// PluginNameNamespacedCloudProfileValidator is the name of the NamespacedCloudProfileValidator admission plugin.
 	PluginNameNamespacedCloudProfileValidator = "NamespacedCloudProfileValidator"
-	// PluginNameProjectValidator is the name of the ProjectValidator admission plugin.
-	PluginNameProjectValidator = "ProjectValidator"
+	// PluginNameProjectMutator is the name of the ProjectMutator admission plugin.
+	PluginNameProjectMutator = "ProjectMutator"
 	// PluginNameSeedValidator is the name of the SeedValidator admission plugin.
 	PluginNameSeedValidator = "SeedValidator"
 	// PluginNameSeedMutator is the name of the SeedMutator admission plugin.
@@ -63,6 +63,8 @@ const (
 	PluginNameShootTolerationRestriction = "ShootTolerationRestriction"
 	// PluginNameShootValidator is the name of the ShootValidator admission plugin.
 	PluginNameShootValidator = "ShootValidator"
+	// PluginNameShootMutator is the name of the ShootMutator admission plugin.
+	PluginNameShootMutator = "ShootMutator"
 	// PluginNameShootVPAEnabledByDefault is the name of the ShootVPAEnabledByDefault admission plugin.
 	PluginNameShootVPAEnabledByDefault = "ShootVPAEnabledByDefault"
 	// PluginNameShootResourceReservation is the name of the ShootResourceReservation admission plugin.
@@ -71,8 +73,8 @@ const (
 	PluginNameBackupBucketValidator = "BackupBucketValidator"
 )
 
-// AllPluginNames returns the names of all plugins.
-func AllPluginNames() []string {
+// AllOrderedPluginNames returns the names of all plugins in order.
+func AllOrderedPluginNames() []string {
 	return []string{
 		lifecycle.PluginName,                        // NamespaceLifecycle
 		PluginNameResourceReferenceManager,          // ResourceReferenceManager
@@ -85,12 +87,13 @@ func AllPluginNames() []string {
 		PluginNameShootNodeLocalDNSEnabledByDefault, // ShootNodeLocalDNSEnabledByDefault
 		PluginNameShootDNSRewriting,                 // ShootDNSRewriting
 		PluginNameShootQuotaValidator,               // ShootQuotaValidator
+		PluginNameShootMutator,                      // ShootMutator
 		PluginNameShootValidator,                    // ShootValidator
 		PluginNameSeedValidator,                     // SeedValidator
 		PluginNameSeedMutator,                       // SeedMutator
 		PluginNameControllerRegistrationResources,   // ControllerRegistrationResources
 		PluginNameNamespacedCloudProfileValidator,   // NamespacedCloudProfileValidator
-		PluginNameProjectValidator,                  // ProjectValidator
+		PluginNameProjectMutator,                    // ProjectMutator
 		PluginNameDeletionConfirmation,              // DeletionConfirmation
 		PluginNameFinalizerRemoval,                  // FinalizerRemoval
 		PluginNameOpenIDConnectPreset,               // OpenIDConnectPreset
@@ -130,12 +133,14 @@ func DefaultOnPlugins() sets.Set[string] {
 		PluginNameShootManagedSeed,                // ShootManagedSeed
 		PluginNameShootResourceReservation,        // ShootResourceReservation
 		PluginNameShootQuotaValidator,             // ShootQuotaValidator
+		PluginNameShootMutator,                    // ShootMutator
 		PluginNameShootValidator,                  // ShootValidator
+		PluginNameShootVPAEnabledByDefault,        // ShootVPAEnabledByDefault
 		PluginNameSeedValidator,                   // SeedValidator
 		PluginNameSeedMutator,                     // SeedMutator
 		PluginNameControllerRegistrationResources, // ControllerRegistrationResources
 		PluginNameNamespacedCloudProfileValidator, // NamespacedCloudProfileValidator
-		PluginNameProjectValidator,                // ProjectValidator
+		PluginNameProjectMutator,                  // ProjectMutator
 		PluginNameDeletionConfirmation,            // DeletionConfirmation
 		PluginNameFinalizerRemoval,                // FinalizerRemoval
 		PluginNameOpenIDConnectPreset,             // OpenIDConnectPreset
@@ -147,8 +152,7 @@ func DefaultOnPlugins() sets.Set[string] {
 		PluginNameBackupBucketValidator,           // BackupBucketValidator
 		mutatingwebhook.PluginName,                // MutatingAdmissionWebhook
 		validatingwebhook.PluginName,              // ValidatingAdmissionWebhook
-		// TODO(ary1992): Ennable the plugin once our base clusters are updated to k8s >= 1.30
-		// validating.PluginName,                     // ValidatingAdmissionPolicy
-		resourcequota.PluginName, // ResourceQuota
+		validating.PluginName,                     // ValidatingAdmissionPolicy
+		resourcequota.PluginName,                  // ResourceQuota
 	)
 }

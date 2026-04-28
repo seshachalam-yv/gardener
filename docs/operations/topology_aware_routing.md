@@ -44,7 +44,7 @@ We reported the drawbacks related to the `TopologyAwareHints` feature in [kubern
 
 The `ServiceTrafficDistribution` allows expressing preferences for how traffic should be routed to Service endpoints. For more details, see [upstream documentation](https://kubernetes.io/docs/reference/networking/virtual-ips/#traffic-distribution) of the feature.
 
-The `PreferClose` strategy allows traffic to be routed to Service endpoints in topology-aware and predictable manner.
+The `PreferSameZone` strategy allows traffic to be routed to Service endpoints in topology-aware and predictable manner.
 It is simpler than `service.kubernetes.io/topology-mode: auto` - if there are Service endpoints which reside in the same zone as the client, traffic is routed to one of the endpoints within the same zone as the client. If the client's zone does not have any available Service endpoints, traffic is routed to any available endpoint within the cluster.
 
 ## How to make a Service topology-aware
@@ -82,15 +82,27 @@ spec:
   trafficDistribution: PreferClose
 ```
 
-### How to make a Service topology-aware in Kubernetes >= 1.32
+### How to make a Service topology-aware in Kubernetes 1.32 to 1.33
 
-In Kubernetes >= 1.32, `ServiceTrafficDistribution` is being used to make a Service topology-aware. The `.spec.trafficDistribution` field has to be set to `PreferClose`:
+In Kubernetes 1.32 to 1.33, `ServiceTrafficDistribution` is being used to make a Service topology-aware. The `.spec.trafficDistribution` field has to be set to `PreferClose`:
 
 ```yaml
 apiVersion: v1
 kind: Service
 spec:
   trafficDistribution: PreferClose
+```
+
+### How to make a Service topology-aware in Kubernetes 1.34 and later
+
+The value `PreferClose` has been deprecated in favor of `PreferSameZone` and `PreferSameNode`. `PreferSameZone` is an alias for the existing `PreferClose` to clarify its semantics. For more information, read the details in the [Kubernetes deprecation announcement](https://kubernetes.io/blog/2025/08/27/kubernetes-v1-34-release/#preferclose-traffic-distribution-is-deprecated).
+In Kubernetes 1.34 and later, `ServiceTrafficDistribution` is still used to make a Service topology-aware. The `.spec.trafficDistribution` field should be set to `PreferSameZone`:
+
+```yaml
+apiVersion: v1
+kind: Service
+spec:
+  trafficDistribution: PreferSameZone
 ```
 
 ## Prerequisites for making a Service topology-aware
@@ -109,7 +121,8 @@ The `etcd-main-client` and `etcd-events-client` Services are topology-aware. The
 
 ##### kube-apiserver
 
-The `kube-apiserver` Service is topology-aware. It is consumed by the controllers running in the Shoot control plane.
+The `kube-apiserver` Service is topology-aware if the shoot uses layer 4 load-balancing. If it is using layer 7 load-balancing it is not. It is consumed by the controllers running in the Shoot control plane.  
+Layer 7 load-balancing is active when `IstioTLSTermination` feature gate is active on the Seed and the Shoot did not opt out. Please see this [documentation](./kube_apiserver_loadbalancing.md) for more details.
 
 > Note: The `istio-ingressgateway` component routes traffic in topology-aware manner - if possible, it routes traffic to the target `kube-apiserver` Pods in the same zone. If there is no healthy `kube-apiserver` Pod available in the same zone, the traffic is routed to any of the healthy Pods in the other zones. This behaviour is unconditionally enabled.
 
@@ -129,9 +142,8 @@ The `virtual-garden-etcd-main-client` and `virtual-garden-etcd-events-client` Se
 
 ##### virtual-garden-kube-apiserver
 
-The `virtual-garden-kube-apiserver` Service is topology-aware. It is consumed by `virtual-garden-kube-controller-manager`, `gardener-controller-manager`, `gardener-scheduler`, `gardener-admission-controller`, extension admission components, `gardener-dashboard` and other components.
-
-> Note: Unlike the other Services, the `virtual-garden-kube-apiserver` Service is of type LoadBalancer. In-cluster components consuming the `virtual-garden-kube-apiserver` Service by its Service name will have benefit from the topology-aware routing. However, the TopologyAwareHints feature cannot help with external traffic routed to load balancer's address - such traffic won't be routed in a topology-aware manner and will be routed according to the cloud-provider specific implementation.
+The `virtual-garden-kube-apiserver` Service is topology-aware if it uses layer 4 load-balancing. If it is using layer 7 load-balancing it is not. It is consumed by `virtual-garden-kube-controller-manager`, `gardener-controller-manager`, `gardener-scheduler`, `gardener-admission-controller`, extension admission components, `gardener-dashboard` and other components.
+Layer 7 load-balancing is active when `IstioTLSTermination` feature gate is active in `gardener-operator`. Please see this [documentation](./kube_apiserver_loadbalancing.md) for more details.
 
 ##### gardener-apiserver
 

@@ -91,8 +91,8 @@ type Values struct {
 	ClusterType component.ClusterType
 	// IsGardenCluster specifies if the VPA is being deployed in a cluster registered as a Garden.
 	IsGardenCluster bool
-	// Enabled specifies if VPA is enabled.
-	Enabled bool
+	// IsManagedSeed specifies if the VPA is being deployed in a Managed Seed clusters.
+	IsManagedSeed bool
 	// SecretNameServerCA is the name of the server CA secret.
 	SecretNameServerCA string
 	// RuntimeKubernetesVersion is the Kubernetes version of the runtime cluster.
@@ -104,6 +104,8 @@ type Values struct {
 	Recommender ValuesRecommender
 	// Updater is a set of configuration values for the vpa-updater.
 	Updater ValuesUpdater
+	// FeatureGates is a map of feature gates for the vpa components.
+	FeatureGates map[string]bool
 }
 
 func (v *vpa) Deploy(ctx context.Context) error {
@@ -126,15 +128,12 @@ func (v *vpa) Deploy(ctx context.Context) error {
 	}
 	v.serverSecretName = serverSecret.Name
 
-	var allResources component.ResourceConfigs
-	if v.values.Enabled {
-		allResources = component.MergeResourceConfigs(
-			v.admissionControllerResourceConfigs(),
-			v.recommenderResourceConfigs(),
-			v.updaterResourceConfigs(),
-			v.generalResourceConfigs(),
-		)
-	}
+	allResources := component.MergeResourceConfigs(
+		v.admissionControllerResourceConfigs(),
+		v.recommenderResourceConfigs(),
+		v.updaterResourceConfigs(),
+		v.generalResourceConfigs(),
+	)
 
 	var registry *managedresources.Registry
 	if v.values.ClusterType == component.ClusterTypeSeed {
@@ -160,7 +159,7 @@ func (v *vpa) Deploy(ctx context.Context) error {
 			}
 		}
 
-		crdDeployer, err := NewCRD(v.client, nil, registry)
+		crdDeployer, err := NewCRD(v.client, registry)
 		if err != nil {
 			return fmt.Errorf("failed to create CRDDeployer: %w", err)
 		}
@@ -331,4 +330,8 @@ func (v *vpa) getPrometheusLabel() string {
 		return seed.Label
 	}
 	return shoot.Label
+}
+
+func (v *vpa) computeFeatureGates() string {
+	return kubernetesutils.FeatureGatesToCommandLineParameter(v.values.FeatureGates)
 }

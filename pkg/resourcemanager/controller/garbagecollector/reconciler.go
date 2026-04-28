@@ -18,15 +18,15 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
-	"github.com/gardener/gardener/pkg/controllerutils"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	errorsutils "github.com/gardener/gardener/pkg/utils/errors"
 )
@@ -40,18 +40,15 @@ type Reconciler struct {
 }
 
 // Reconcile performs the main reconciliation logic.
-func (r *Reconciler) Reconcile(reconcileCtx context.Context, _ reconcile.Request) (reconcile.Result, error) {
-	log := logf.FromContext(reconcileCtx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(reconcileCtx, r.Config.SyncPeriod.Duration)
-	defer cancel()
+func (r *Reconciler) Reconcile(ctx context.Context, _ reconcile.Request) (reconcile.Result, error) {
+	log := logf.FromContext(ctx)
 
 	log.Info("Starting garbage collection")
 	defer log.Info("Garbage collection finished")
 
 	var (
 		labels                  = client.MatchingLabels{references.LabelKeyGarbageCollectable: references.LabelValueGarbageCollectable}
-		objectsToGarbageCollect = map[objectId]struct{}{}
+		objectsToGarbageCollect = sets.New[objectId]()
 	)
 
 	for _, resource := range []struct {
@@ -73,7 +70,7 @@ func (r *Reconciler) Reconcile(reconcileCtx context.Context, _ reconcile.Request
 				continue
 			}
 
-			objectsToGarbageCollect[objectId{resource.kind, obj.Namespace, obj.Name}] = struct{}{}
+			objectsToGarbageCollect.Insert(objectId{resource.kind, obj.Namespace, obj.Name})
 		}
 	}
 
@@ -110,7 +107,7 @@ func (r *Reconciler) Reconcile(reconcileCtx context.Context, _ reconcile.Request
 			if objectKind == "" || objectName == "" {
 				continue
 			}
-			delete(objectsToGarbageCollect, objectId{objectKind, objectMeta.Namespace, objectName})
+			objectsToGarbageCollect.Delete(objectId{objectKind, objectMeta.Namespace, objectName})
 		}
 	}
 
@@ -161,7 +158,7 @@ func (r *Reconciler) Reconcile(reconcileCtx context.Context, _ reconcile.Request
 		}
 	}
 
-	return reconcile.Result{Requeue: true, RequeueAfter: r.Config.SyncPeriod.Duration}, errorList.ErrorOrNil()
+	return reconcile.Result{RequeueAfter: r.Config.SyncPeriod.Duration}, errorList.ErrorOrNil()
 }
 
 type objectId struct {

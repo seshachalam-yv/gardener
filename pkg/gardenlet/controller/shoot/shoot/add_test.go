@@ -19,8 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/shoot/shoot"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/shoot/shoot/helper"
 	"github.com/gardener/gardener/pkg/utils/test"
@@ -68,7 +68,7 @@ var _ = Describe("Add", func() {
 
 		It("should enqueue the object for Create events according to the calculated duration", func() {
 			duration := time.Minute
-			DeferCleanup(test.WithVar(&CalculateControllerInfos, func(*gardencorev1beta1.Shoot, clock.Clock, gardenletconfigv1alpha1.ShootControllerConfiguration) helper.ControllerInfos {
+			DeferCleanup(test.WithVar(&CalculateControllerInfos, func(*gardencorev1beta1.Seed, *gardencorev1beta1.Shoot, clock.Clock, gardenletconfigv1alpha1.ShootControllerConfiguration) helper.ControllerInfos {
 				return helper.ControllerInfos{
 					EnqueueAfter: duration,
 				}

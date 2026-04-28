@@ -148,16 +148,14 @@ global:
           -----END RSA PRIVATE KEY-----
     # speed-up re-deploying of gardener-apiserver
     minReadySeconds: 0
-    enableAdmissionPlugins:
-    - ShootVPAEnabledByDefault
     # disable audit log, it is enough to set path to empty string
     audit:
       log:
         path: ""
     featureGates:
-      CredentialsRotationWithoutWorkersRollout: true
       CloudProfileCapabilities: true
       InPlaceNodeUpdates: true
+      VersionClassificationLifecycle: true
     resources: {}
     podLabels:
       networking.resources.gardener.cloud/to-all-webhook-targets: allowed
@@ -165,7 +163,6 @@ global:
       token:
         issuer: https://issuer.gardener.cloud.local
         signing: {}
-
   # Gardener admission controller configuration values
   admission:
     enabled: true
@@ -256,7 +253,6 @@ global:
               -----END RSA PRIVATE KEY-----
     replicaCount: 2
     resources: {}
-
   # Gardener controller manager configuration values
   controller:
     config:
@@ -264,7 +260,6 @@ global:
         http:
           port: 2718
     resources: {}
-
   # General system configuration
   rbac:
     seedAuthorizer:

@@ -22,16 +22,18 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/component-base/version"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gardener/gardener/pkg/api/indexer"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	kubeletcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	healthcheckcontroller "github.com/gardener/gardener/pkg/nodeagent/controller/healthcheck"
 	fakedbus "github.com/gardener/gardener/pkg/nodeagent/dbus/fake"
 	"github.com/gardener/gardener/pkg/utils"
@@ -67,10 +69,11 @@ var _ = Describe("Reconciler", func() {
 			Build()
 
 		reconciler = &Reconciler{
-			Client:   c,
-			FS:       fs,
-			DBus:     fakeDBus,
-			Recorder: nil,
+			Client:    c,
+			FS:        fs,
+			DBus:      fakeDBus,
+			ConfigDir: "/var/lib/gardener-node-agent",
+			Recorder:  nil,
 		}
 
 		node = &corev1.Node{
@@ -104,7 +107,6 @@ contexts:
   name: test-context
 current-context: test-context
 kind: Config
-preferences: {}
 `
 
 		kubeletCertPath = filepath.Join(kubeletcomponent.PathKubeletDirectory, "pki", "kubelet-client-current.pem")
@@ -273,8 +275,8 @@ PRETTY_NAME="Garden Linux 1592Foo"
 			}
 
 			DeferCleanup(test.WithVars(
-				&OSUpdateRetryInterval, 1*time.Millisecond,
-				&OSUpdateRetryTimeout, 10*time.Millisecond,
+				&OSUpdateRetryInterval, 100*time.Millisecond,
+				&OSUpdateRetryTimeout, 1*time.Second,
 			))
 		})
 
@@ -366,8 +368,11 @@ PRETTY_NAME="Garden Linux 1592Foo"
 			oscChanges = &operatingSystemConfigChanges{}
 
 			DeferCleanup(test.WithVars(
-				&OSUpdateRetryInterval, 1*time.Millisecond,
-				&OSUpdateRetryTimeout, 10*time.Millisecond,
+				&OSUpdateRetryInterval, 100*time.Millisecond,
+				&OSUpdateRetryTimeout, 1*time.Second,
+				&GetOSVersion, func(*extensionsv1alpha1.InPlaceUpdates, afero.Afero) (*string, error) {
+					return ptr.To(osVersion), nil
+				},
 			))
 		})
 
@@ -378,6 +383,7 @@ PRETTY_NAME="Garden Linux 1592Foo"
 		It("should set the node to update-failed if the lastAttempted version is equal to the osc.Spec.InPlaceUpdates.OperatingSystemVersion", func() {
 			node.Annotations = map[string]string{"node-agent.gardener.cloud/updating-operating-system-version": "1.2.4"}
 			osc.Spec.InPlaceUpdates.OperatingSystemVersion = "1.2.4"
+			oscChanges.InPlaceUpdates.OperatingSystem = true
 
 			err := reconciler.performInPlaceUpdate(ctx, log, osc, oscChanges, node, &osVersion)
 			Expect(err).To(MatchError(ContainSubstring("OS update might have failed and rolled back to the previous version")))
@@ -394,6 +400,7 @@ PRETTY_NAME="Garden Linux 1592Foo"
 			node.Annotations[machinev1alpha1.AnnotationKeyMachineUpdateFailedReason] = "previous error"
 			node.Labels = map[string]string{machinev1alpha1.LabelKeyNodeUpdateResult: machinev1alpha1.LabelValueNodeUpdateFailed}
 			Expect(c.Update(ctx, node)).To(Succeed())
+			oscChanges.InPlaceUpdates.OperatingSystem = true
 
 			err := reconciler.performInPlaceUpdate(ctx, log, osc, oscChanges, node, &osVersion)
 			Expect(err).To(MatchError(ContainSubstring("OS update has failed with error")))
@@ -515,7 +522,7 @@ PRETTY_NAME="Garden Linux 1592Foo"
 				Expect(c.DeleteAllOf(ctx, &corev1.Pod{})).To(Or(Succeed(), BeNotFoundError()))
 			})
 
-			Expect(reconciler.performInPlaceUpdate(ctx, log, osc, oscChanges, node, &osVersion)).To(Succeed())
+			Expect(reconciler.performInPlaceUpdate(ctx, log, osc, oscChanges, node, &osc.Spec.InPlaceUpdates.OperatingSystemVersion)).To(Succeed())
 
 			Expect(c.Get(ctx, client.ObjectKeyFromObject(node), node)).To(Succeed())
 			Expect(node.Labels).To(HaveKeyWithValue(machinev1alpha1.LabelKeyNodeUpdateResult, machinev1alpha1.LabelValueNodeUpdateSuccessful))
@@ -556,7 +563,7 @@ PRETTY_NAME="Garden Linux 1592Foo"
 				Expect(c.DeleteAllOf(ctx, &corev1.Pod{})).To(Or(Succeed(), BeNotFoundError()))
 			})
 
-			Expect(reconciler.performInPlaceUpdate(ctx, log, osc, oscChanges, node, &osVersion)).To(Succeed())
+			Expect(reconciler.performInPlaceUpdate(ctx, log, osc, oscChanges, node, &osc.Spec.InPlaceUpdates.OperatingSystemVersion)).To(Succeed())
 
 			Expect(c.Get(ctx, client.ObjectKeyFromObject(node), node)).To(Succeed())
 			Expect(node.Labels).To(HaveKeyWithValue(machinev1alpha1.LabelKeyNodeUpdateResult, machinev1alpha1.LabelValueNodeUpdateSuccessful))
@@ -564,6 +571,53 @@ PRETTY_NAME="Garden Linux 1592Foo"
 			podList := &corev1.PodList{}
 			Expect(c.List(ctx, podList)).To(Succeed())
 			Expect(podList.Items).To(BeEmpty())
+		})
+
+		It("should not patch the node as update successful and delete the pods if the OS is not up-to-date", func() {
+			DeferCleanup(test.WithVars(
+				&GetOSVersion, func(*extensionsv1alpha1.InPlaceUpdates, afero.Afero) (*string, error) {
+					return ptr.To("1.1.0"), nil
+				},
+				&ExecCommandCombinedOutput, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+					return []byte("OS update successful, not yet restarted"), nil
+				},
+			))
+
+			oscChanges.InPlaceUpdates.OperatingSystem = true
+
+			metav1.SetMetaDataLabel(&node.ObjectMeta, machinev1alpha1.LabelKeyNodeUpdateResult, machinev1alpha1.LabelValueNodeUpdateFailed)
+			Expect(c.Update(ctx, node)).To(Succeed())
+
+			pods := []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pod-1",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pod-2",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+					},
+				},
+			}
+
+			for _, pod := range pods {
+				Expect(c.Create(ctx, pod)).To(Succeed())
+			}
+
+			DeferCleanup(func() {
+				Expect(c.DeleteAllOf(ctx, &corev1.Pod{})).To(Or(Succeed(), BeNotFoundError()))
+			})
+
+			err := reconciler.performInPlaceUpdate(ctx, log, osc, oscChanges, node, ptr.To("1.1.0"))
+			Expect(err).To(MatchError(ContainSubstring("stopping reconciliation until gardener-node-agent is restarted after the OS update. Current version: \"1.1.0\", Desired version: \"1.2.3\"")))
+			Expect(err).To(MatchError(reconcile.TerminalError(nil)))
 		})
 	})
 
@@ -696,7 +750,6 @@ contexts:
   name: test-context
 current-context: test-context
 kind: Config
-preferences: {}
 users:
 - name: default-auth
   user:
@@ -775,7 +828,7 @@ users:
 apiVersion: nodeagent.config.gardener.cloud/v1alpha1
 kind: NodeAgentConfiguration
 `)
-			Expect(fs.WriteFile(nodeagentconfigv1alpha1.ConfigFilePath, nodeAgentConfigFile, 0600)).To(Succeed())
+			Expect(fs.WriteFile(fmt.Sprintf("/var/lib/gardener-node-agent/config-%s.yaml", version.Get().GitVersion), nodeAgentConfigFile, 0600)).To(Succeed())
 
 			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				n, err := fmt.Fprintln(w, "OK")

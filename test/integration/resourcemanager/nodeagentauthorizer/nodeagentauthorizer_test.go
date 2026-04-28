@@ -5,11 +5,10 @@
 package nodeagentauthorizer_test
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/x509/pkix"
 	"fmt"
-	"net/http"
+	"time"
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
@@ -17,23 +16,14 @@ import (
 	certificatesv1 "k8s.io/api/certificates/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
-	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	certutil "k8s.io/client-go/util/cert"
-	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	controllerconfig "sigs.k8s.io/controller-runtime/pkg/config"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
-	"github.com/gardener/gardener/pkg/resourcemanager/webhook/nodeagentauthorizer"
 	"github.com/gardener/gardener/pkg/utils"
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
@@ -48,8 +38,7 @@ var _ = Describe("NodeAgentAuthorizer tests", func() {
 	)
 
 	var (
-		testRestConfigNodeAgent *rest.Config
-		testClientNodeAgent     client.Client
+		testClientNodeAgent client.Client
 
 		machineNamespace *string
 		machine          *machinev1alpha1.Machine
@@ -58,54 +47,6 @@ var _ = Describe("NodeAgentAuthorizer tests", func() {
 	)
 
 	runTests := func() {
-		BeforeEach(func() {
-			By("Setup manager")
-			mgr, err := manager.New(testRestConfig, manager.Options{
-				WebhookServer: webhook.NewServer(webhook.Options{
-					Port:    testEnv.WebhookInstallOptions.LocalServingPort,
-					Host:    testEnv.WebhookInstallOptions.LocalServingHost,
-					CertDir: testEnv.WebhookInstallOptions.LocalServingCertDir,
-				}),
-				Metrics: metricsserver.Options{BindAddress: "0"},
-				Cache: cache.Options{
-					DefaultNamespaces: map[string]cache.Config{testNamespace.Name: {}},
-				},
-				Controller: controllerconfig.Controller{
-					SkipNameValidation: ptr.To(true),
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Register webhook")
-			nodeAgentAuthorizer := &nodeagentauthorizer.Webhook{
-				Logger: log,
-				Config: resourcemanagerconfigv1alpha1.NodeAgentAuthorizerWebhookConfig{
-					Enabled:          true,
-					MachineNamespace: machineNamespace,
-				},
-			}
-			Expect(nodeAgentAuthorizer.AddToManager(mgr, testClient, testClient)).To(Succeed())
-
-			By("Start manager")
-			mgrContext, mgrCancel := context.WithCancel(ctx)
-
-			go func() {
-				defer GinkgoRecover()
-				Expect(mgr.Start(mgrContext)).To(Succeed())
-			}()
-
-			// Wait for the webhook server to start
-			Eventually(func() error {
-				checker := mgr.GetWebhookServer().StartedChecker()
-				return checker(&http.Request{})
-			}).Should(Succeed())
-
-			DeferCleanup(func() {
-				By("Stop manager")
-				mgrCancel()
-			})
-		})
-
 		Describe("#CertificateSigningRequests", func() {
 			var (
 				csr *certificatesv1.CertificateSigningRequest
@@ -180,49 +121,59 @@ var _ = Describe("NodeAgentAuthorizer tests", func() {
 
 		Describe("#Events", func() {
 			var (
-				recorder record.EventRecorder
+				recorder events.EventRecorder
 			)
 
 			BeforeEach(func() {
-				corev1Client, err := corev1client.NewForConfig(testRestConfigNodeAgent)
-				ExpectWithOffset(1, err).ToNot(HaveOccurred())
-				broadcaster := record.NewBroadcaster()
-				broadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: corev1Client.Events("")})
-				recorder = broadcaster.NewRecorder(testClientNodeAgent.Scheme(), corev1.EventSource{Component: "nodeagentauthorizer-test"})
-
+				recorder = mgrNode.GetEventRecorder("nodeagentauthorizer-test")
 				node.Name = fmt.Sprintf("event-node-%s", utils.ComputeSHA256Hex([]byte(uuid.NewUUID()))[:16])
 				createNode(node, machine)
 			})
 
 			It("should be able to create an event", func() {
-				recorder.Event(node, "Normal", "test-reason", "test-message")
+				recorder.Eventf(node, nil, "Normal", "test-reason", "test-action", "test-message")
 
 				Eventually(func(g Gomega) {
-					eventList := &corev1.EventList{}
-					g.ExpectWithOffset(1, testClient.List(ctx, eventList, client.MatchingFields{"involvedObject.name": node.Name})).To(Succeed())
+					eventList := &eventsv1.EventList{}
+					g.ExpectWithOffset(1, testClient.List(ctx, eventList, client.MatchingFields{"regarding.name": node.Name})).To(Succeed())
 					g.ExpectWithOffset(1, eventList.Items).To(HaveLen(1))
 					g.ExpectWithOffset(1, eventList.Items[0].Type).To(Equal("Normal"))
 					g.ExpectWithOffset(1, eventList.Items[0].Reason).To(Equal("test-reason"))
-					g.ExpectWithOffset(1, eventList.Items[0].Message).To(Equal("test-message"))
-					g.ExpectWithOffset(1, eventList.Items[0].Count).To(Equal(int32(1)))
+					g.ExpectWithOffset(1, eventList.Items[0].Action).To(Equal("test-action"))
+					g.ExpectWithOffset(1, eventList.Items[0].Note).To(Equal("test-message"))
+					g.ExpectWithOffset(1, eventList.Items[0].Series).To(BeNil())
 				}).Should(Succeed())
 			})
 
 			It("should be able to create and patch an event", func() {
-				// Recording the same event multiple times in a short period makes the event recorder patching the event.
-				for range 3 {
-					recorder.Event(node, "Normal", "test-reason", "test-message")
+				event := &eventsv1.Event{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "event-",
+						Namespace:    testNamespace.Name,
+					},
+					Regarding: corev1.ObjectReference{
+						Kind:      "Namespace",
+						Name:      testNamespace.Name,
+						Namespace: testNamespace.Name,
+					},
+					EventTime:           metav1.MicroTime{Time: time.Now()},
+					Reason:              "test-reason",
+					Action:              "test-action",
+					Note:                "test-message",
+					ReportingController: "test-controller",
+					ReportingInstance:   "test-instance",
+					Type:                "Normal",
 				}
 
-				Eventually(func(g Gomega) {
-					eventList := &corev1.EventList{}
-					g.ExpectWithOffset(1, testClient.List(ctx, eventList, client.MatchingFields{"involvedObject.name": node.Name})).To(Succeed())
-					g.ExpectWithOffset(1, eventList.Items).To(HaveLen(1))
-					g.ExpectWithOffset(1, eventList.Items[0].Type).To(Equal("Normal"))
-					g.ExpectWithOffset(1, eventList.Items[0].Reason).To(Equal("test-reason"))
-					g.ExpectWithOffset(1, eventList.Items[0].Message).To(Equal("test-message"))
-					g.ExpectWithOffset(1, eventList.Items[0].Count).To(Equal(int32(3)))
-				}).Should(Succeed())
+				Expect(testClient.Create(ctx, event)).To(Succeed())
+
+				patch := client.MergeFrom(event.DeepCopy())
+				event.Series = &eventsv1.EventSeries{
+					Count:            2,
+					LastObservedTime: metav1.MicroTime{Time: time.Now()},
+				}
+
+				Expect(testClient.Patch(ctx, event, patch)).To(Succeed())
 			})
 
 			It("should forbid to list events", func() {
@@ -690,8 +641,6 @@ var _ = Describe("NodeAgentAuthorizer tests", func() {
 	When("machine namespace is set", func() {
 		BeforeEach(func() {
 			testClientNodeAgent = testClientNodeAgentMachine
-			testRestConfigNodeAgent = testRestConfigNodeAgentMachine
-
 			machineNamespace = &testNamespace.Name
 
 			machine = &machinev1alpha1.Machine{
@@ -750,8 +699,6 @@ var _ = Describe("NodeAgentAuthorizer tests", func() {
 	When("machine namespace is unset", func() {
 		BeforeEach(func() {
 			testClientNodeAgent = testClientNodeAgentNode
-			testRestConfigNodeAgent = testRestConfigNodeAgentNode
-
 			machineNamespace = nil
 			machine = nil
 			otherMachine = nil

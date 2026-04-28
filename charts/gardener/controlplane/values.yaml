@@ -166,7 +166,6 @@ global:
  #    minTimeout: 1m0s
  #    timeout: 1m0s
  #  watchCacheSizes:
- #    default: 100
  #    resources:
  #    - apiGroup: core.gardener.cloud
  #      resource: shoots
@@ -313,6 +312,10 @@ global:
       #     apiVersions: ["*"]
       #     resources: ["shoots"]
       #     size: 100Ki
+      #   - apiGroups: ["core.gardener.cloud"]
+      #     apiVersions: ["*"]
+      #     resources: ["projects"]
+      #     count: 200
       #   unrestrictedSubjects:
       #   - kind: Group
       #     name: gardener.cloud:system:seeds

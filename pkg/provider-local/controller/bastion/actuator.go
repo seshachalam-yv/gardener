@@ -14,7 +14,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/pointer"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -23,6 +22,7 @@ import (
 	extensionsbastion "github.com/gardener/gardener/extensions/pkg/bastion"
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
 	"github.com/gardener/gardener/extensions/pkg/controller/bastion"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
@@ -120,12 +120,14 @@ func bastionImage(cluster *extensionscontroller.Cluster) (string, error) {
 		return "", fmt.Errorf("failed to extract CloudProfileConfig from cluster: %w", err)
 	}
 
-	image, err := helper.FindImageFromCloudProfile(cloudProfileConfig, machineSpec.ImageBaseName, machineSpec.ImageVersion)
+	machineTypeFromCloudProfile := v1beta1helper.FindMachineTypeByName(cluster.CloudProfile.Spec.MachineTypes, machineSpec.MachineTypeName)
+
+	image, err := helper.FindImageFromCloudProfile(cloudProfileConfig, machineSpec.ImageBaseName, machineSpec.ImageVersion, machineTypeFromCloudProfile.Capabilities, cluster.CloudProfile.Spec.MachineCapabilities)
 	if err != nil {
 		return "", fmt.Errorf("failed to find machine image in CloudProfileConfig: %w", err)
 	}
 
-	return image, nil
+	return image.Image, nil
 }
 
 func objectMetaForBastion(bastion *extensionsv1alpha1.Bastion) metav1.ObjectMeta {
@@ -155,6 +157,7 @@ func userDataSecretForBastion(bastion *extensionsv1alpha1.Bastion) *corev1.Secre
 func podForBastion(bastion *extensionsv1alpha1.Bastion, image, userDataSecretName string) *corev1.Pod {
 	objectMeta := objectMetaForBastion(bastion)
 	metav1.SetMetaDataLabel(&objectMeta, gardenerutils.NetworkPolicyLabel("machines", SSHPort), v1beta1constants.LabelNetworkPolicyAllowed)
+	metav1.SetMetaDataLabel(&objectMeta, v1beta1constants.LabelNetworkPolicyToDNS, v1beta1constants.LabelNetworkPolicyAllowed)
 
 	return &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{
@@ -169,7 +172,7 @@ func podForBastion(bastion *extensionsv1alpha1.Bastion, image, userDataSecretNam
 					Image:           image,
 					ImagePullPolicy: corev1.PullIfNotPresent,
 					SecurityContext: &corev1.SecurityContext{
-						Privileged: pointer.Bool(true),
+						Privileged: ptr.To(true),
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{
@@ -197,7 +200,7 @@ func podForBastion(bastion *extensionsv1alpha1.Bastion, image, userDataSecretNam
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
 							SecretName:  userDataSecretName,
-							DefaultMode: pointer.Int32(0777),
+							DefaultMode: ptr.To[int32](0777),
 						},
 					},
 				},

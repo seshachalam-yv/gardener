@@ -6,98 +6,165 @@ package dnsrecord
 
 import (
 	"context"
-	"regexp"
-	"strings"
+	"fmt"
+	"net"
+	"time"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"github.com/miekg/dns"
+	"k8s.io/utils/ptr"
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
-	"github.com/gardener/gardener/extensions/pkg/controller/dnsrecord"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 )
 
-type actuator struct {
-	client client.Client
+const (
+	// dnsZone is the DNS zone managed by the local BIND9 server.
+	dnsZone = "local.gardener.cloud."
+	// dnsServerAddress is the address of the local BIND9 server.
+	dnsServerAddress = "ns.local.gardener.cloud:53"
+	// defaultTTL is the default TTL for DNS records when none is specified.
+	defaultTTL = 120
+)
+
+// DNSClient is an interface for sending DNS messages, allowing for testability.
+type DNSClient interface {
+	Exchange(msg *dns.Msg, addr string) (*dns.Msg, time.Duration, error)
 }
 
-// NewActuator creates a new Actuator that updates the status of the handled DNSRecord resources.
-func NewActuator(mgr manager.Manager) dnsrecord.Actuator {
-	return &actuator{
-		client: mgr.GetClient(),
+// Actuator implements the DNSRecord actuator for the local DNS provider.
+type Actuator struct {
+	DNSClient DNSClient
+}
+
+// Reconcile ensures that the DNS record is correctly represented via RFC 2136 dynamic DNS update.
+func (a *Actuator) Reconcile(_ context.Context, _ logr.Logger, dnsRecord *extensionsv1alpha1.DNSRecord, _ *extensionscontroller.Cluster) error {
+	header, err := headerForDNSRecord(dnsRecord)
+	if err != nil {
+		return fmt.Errorf("failed to create header for %s: %w", dnsRecord.Spec.Name, err)
 	}
+
+	resourceRecords, err := resourceRecordsForDNSRecord(dnsRecord, header)
+	if err != nil {
+		return fmt.Errorf("failed to create resource records for %s: %w", dnsRecord.Spec.Name, err)
+	}
+
+	msg := (&dns.Msg{}).SetUpdate(dnsZone)
+	// Remove the existing record set for this name and type before inserting the new one to ensure removing any orphaned
+	// values. This is how RFC 2136 is designed to be used for updating values of existing records.
+	msg.RemoveRRset([]dns.RR{&dns.ANY{Hdr: header}})
+	// Set the new record values.
+	msg.Insert(resourceRecords)
+
+	return a.sendDNSUpdate(msg)
 }
 
-func (a *actuator) Reconcile(ctx context.Context, _ logr.Logger, dnsrecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster) error {
-	return a.reconcile(ctx, dnsrecord, cluster, updateCoreDNSRewriteRule)
+// Delete removes the DNS record via RFC 2136 dynamic DNS update.
+func (a *Actuator) Delete(_ context.Context, _ logr.Logger, dnsRecord *extensionsv1alpha1.DNSRecord, _ *extensionscontroller.Cluster) error {
+	header, err := headerForDNSRecord(dnsRecord)
+	if err != nil {
+		return fmt.Errorf("failed to create header for %s: %w", dnsRecord.Spec.Name, err)
+	}
+
+	msg := (&dns.Msg{}).SetUpdate(dnsZone)
+	msg.RemoveRRset([]dns.RR{&dns.ANY{Hdr: header}})
+
+	return a.sendDNSUpdate(msg)
 }
 
-func (a *actuator) Delete(ctx context.Context, _ logr.Logger, dnsrecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster) error {
-	return a.reconcile(ctx, dnsrecord, cluster, deleteCoreDNSRewriteRule)
+// ForceDelete is the same as Delete for the local DNS provider.
+func (a *Actuator) ForceDelete(ctx context.Context, log logr.Logger, dnsRecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster) error {
+	return a.Delete(ctx, log, dnsRecord, cluster)
 }
 
-func (a *actuator) ForceDelete(ctx context.Context, log logr.Logger, dnsrecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster) error {
-	return a.Delete(ctx, log, dnsrecord, cluster)
-}
-
-func (a *actuator) reconcile(ctx context.Context, dnsRecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster, mutateCorednsRules func(corednsConfig *corev1.ConfigMap, dnsRecord *extensionsv1alpha1.DNSRecord, zone *string)) error {
-	return a.updateCoreDNSRewritingRules(ctx, dnsRecord, cluster, mutateCorednsRules)
-}
-
-func (a *actuator) Migrate(ctx context.Context, log logr.Logger, dnsrecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster) error {
-	return a.Delete(ctx, log, dnsrecord, cluster)
-}
-
-func (a *actuator) Restore(ctx context.Context, log logr.Logger, dnsrecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster) error {
-	return a.Reconcile(ctx, log, dnsrecord, cluster)
-}
-
-func (a *actuator) updateCoreDNSRewritingRules(
-	ctx context.Context,
-	dnsRecord *extensionsv1alpha1.DNSRecord,
-	cluster *extensionscontroller.Cluster,
-	mutateCorednsRules func(corednsConfig *corev1.ConfigMap, dnsRecord *extensionsv1alpha1.DNSRecord, zone *string),
-) error {
-	// Only handle dns records for kube-apiserver
-	if dnsRecord == nil || !strings.HasPrefix(dnsRecord.Spec.Name, "api.") || !strings.HasSuffix(dnsRecord.Spec.Name, ".local.gardener.cloud") ||
-		(dnsRecord.Spec.Class != nil && *dnsRecord.Spec.Class == extensionsv1alpha1.ExtensionClassGarden) {
+// Migrate removes the DNS record if the shoot is not self-hosted.
+func (a *Actuator) Migrate(ctx context.Context, log logr.Logger, dnsRecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster) error {
+	if v1beta1helper.IsShootSelfHosted(cluster.Shoot.Spec.Provider.Workers) {
+		// Do nothing when migrating DNSRecord of self-hosted shoot with managed infrastructure. The DNS
+		// records are still needed for the control plane machines to resolve the kube-apiserver domain.
 		return nil
 	}
 
-	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: dnsRecord.Namespace}}
-	if err := a.client.Get(ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil {
-		return err
-	}
-
-	var zone *string
-	if zones, ok := namespace.Annotations[resourcesv1alpha1.HighAvailabilityConfigZones]; ok && !strings.Contains(zones, ",") && len(cluster.Seed.Spec.Provider.Zones) > 1 {
-		zone = &zones
-	}
-
-	corednsConfig := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "coredns-custom", Namespace: "gardener-extension-provider-local-coredns"}}
-	if err := a.client.Get(ctx, client.ObjectKeyFromObject(corednsConfig), corednsConfig); err != nil {
-		return err
-	}
-
-	originalConfig := corednsConfig.DeepCopy()
-	mutateCorednsRules(corednsConfig, dnsRecord, zone)
-
-	return a.client.Patch(ctx, corednsConfig, client.MergeFrom(originalConfig))
+	return a.Delete(ctx, log, dnsRecord, cluster)
 }
 
-func deleteCoreDNSRewriteRule(corednsConfig *corev1.ConfigMap, dnsRecord *extensionsv1alpha1.DNSRecord, _ *string) {
-	delete(corednsConfig.Data, dnsRecord.Spec.Name+".override")
+// Restore is the same as Reconcile for the local DNS provider.
+func (a *Actuator) Restore(ctx context.Context, log logr.Logger, dnsRecord *extensionsv1alpha1.DNSRecord, cluster *extensionscontroller.Cluster) error {
+	return a.Reconcile(ctx, log, dnsRecord, cluster)
 }
 
-func updateCoreDNSRewriteRule(corednsConfig *corev1.ConfigMap, dnsRecord *extensionsv1alpha1.DNSRecord, zone *string) {
-	istioNamespaceSuffix := ""
-	if zone != nil {
-		istioNamespaceSuffix = "--" + *zone
+func (a *Actuator) sendDNSUpdate(msg *dns.Msg) error {
+	resp, _, err := a.DNSClient.Exchange(msg, dnsServerAddress)
+	if err != nil {
+		return fmt.Errorf("DNS update exchange failed: %w", err)
 	}
-	corednsConfig.Data[dnsRecord.Spec.Name+".override"] =
-		"rewrite stop name regex " + regexp.QuoteMeta(dnsRecord.Spec.Name) + " istio-ingressgateway.istio-ingress" + istioNamespaceSuffix + ".svc.cluster.local answer auto"
+	if resp.Rcode != dns.RcodeSuccess {
+		return fmt.Errorf("DNS update failed with rcode: %s", dns.RcodeToString[resp.Rcode])
+	}
+
+	return nil
+}
+
+func headerForDNSRecord(dnsRecord *extensionsv1alpha1.DNSRecord) (dns.RR_Header, error) {
+	recordType, err := dnsTypeForRecordType(dnsRecord.Spec.RecordType)
+	if err != nil {
+		return dns.RR_Header{}, err
+	}
+
+	return dns.RR_Header{Name: dns.Fqdn(dnsRecord.Spec.Name), Rrtype: recordType, Class: dns.ClassINET}, nil
+}
+
+func dnsTypeForRecordType(recordType extensionsv1alpha1.DNSRecordType) (uint16, error) {
+	switch recordType {
+	case extensionsv1alpha1.DNSRecordTypeA:
+		return dns.TypeA, nil
+	case extensionsv1alpha1.DNSRecordTypeAAAA:
+		return dns.TypeAAAA, nil
+	case extensionsv1alpha1.DNSRecordTypeCNAME:
+		return dns.TypeCNAME, nil
+	}
+
+	return 0, fmt.Errorf("unsupported DNS record type: %s", recordType)
+}
+
+func resourceRecordsForDNSRecord(dnsRecord *extensionsv1alpha1.DNSRecord, header dns.RR_Header) ([]dns.RR, error) {
+	// header is passed by value (no pointer type) and thus copied for each resource record, so we can safely modify the
+	// TTL here without affecting other records.
+	// #nosec G115 -- TTL validated at admission time
+	header.Ttl = uint32(ptr.Deref(dnsRecord.Spec.TTL, defaultTTL))
+
+	resourceRecords := make([]dns.RR, len(dnsRecord.Spec.Values))
+	for i, value := range dnsRecord.Spec.Values {
+		resourceRecord, err := resourceRecordForValue(dnsRecord.Spec.RecordType, header, value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create resource record for value %s: %w", value, err)
+		}
+		resourceRecords[i] = resourceRecord
+	}
+
+	return resourceRecords, nil
+}
+
+func resourceRecordForValue(recordType extensionsv1alpha1.DNSRecordType, header dns.RR_Header, value string) (dns.RR, error) {
+	switch recordType {
+	case extensionsv1alpha1.DNSRecordTypeA:
+		ip := net.ParseIP(value)
+		if ip == nil || ip.To4() == nil {
+			return nil, fmt.Errorf("invalid IPv4 address: %s", value)
+		}
+		return &dns.A{Hdr: header, A: ip.To4()}, nil
+
+	case extensionsv1alpha1.DNSRecordTypeAAAA:
+		ip := net.ParseIP(value)
+		if ip == nil {
+			return nil, fmt.Errorf("invalid IPv6 address: %s", value)
+		}
+		return &dns.AAAA{Hdr: header, AAAA: ip.To16()}, nil
+
+	case extensionsv1alpha1.DNSRecordTypeCNAME:
+		return &dns.CNAME{Hdr: header, Target: dns.Fqdn(value)}, nil
+	}
+
+	return nil, fmt.Errorf("unsupported DNS record type: %s", recordType)
 }

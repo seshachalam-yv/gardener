@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	"github.com/gardener/gardener/pkg/resourcemanager/webhook/crddeletionprotection"
 	"github.com/gardener/gardener/pkg/resourcemanager/webhook/endpointslicehints"
 	"github.com/gardener/gardener/pkg/resourcemanager/webhook/extensionvalidation"
@@ -24,6 +24,7 @@ import (
 	"github.com/gardener/gardener/pkg/resourcemanager/webhook/projectedtokenmount"
 	"github.com/gardener/gardener/pkg/resourcemanager/webhook/seccompprofile"
 	"github.com/gardener/gardener/pkg/resourcemanager/webhook/systemcomponentsconfig"
+	"github.com/gardener/gardener/pkg/resourcemanager/webhook/vpainplaceupdates"
 )
 
 // AddToManager adds all webhook handlers to the given manager.
@@ -133,6 +134,14 @@ func AddToManager(mgr manager.Manager, sourceCluster, targetCluster cluster.Clus
 			Logger: mgr.GetLogger().WithName("webhook").WithName(seccompprofile.HandlerName),
 		}).AddToManager(mgr); err != nil {
 			return fmt.Errorf("failed adding %s webhook handler: %w", seccompprofile.HandlerName, err)
+		}
+	}
+
+	if cfg.Webhooks.VPAInPlaceUpdates.Enabled {
+		if err := (&vpainplaceupdates.Handler{
+			Logger: mgr.GetLogger().WithName("webhook").WithName(vpainplaceupdates.HandlerName),
+		}).AddToManager(mgr); err != nil {
+			return fmt.Errorf("failed adding %s webhook handler: %w", vpainplaceupdates.HandlerName, err)
 		}
 	}
 

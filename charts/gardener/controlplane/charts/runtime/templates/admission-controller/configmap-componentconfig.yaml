@@ -7,7 +7,7 @@ metadata:
   labels:
     app: gardener
     role: admission-controller
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 data:
@@ -52,10 +52,14 @@ data:
         port: {{ required ".Values.global.admission.config.server.metrics.port is required" .Values.global.admission.config.server.metrics.port }}
       {{- if .Values.global.admission.config.server.resourceAdmissionConfiguration }}
       resourceAdmissionConfiguration:
+        {{- if .Values.global.admission.config.server.resourceAdmissionConfiguration.limits }}
         limits:
 {{ toYaml .Values.global.admission.config.server.resourceAdmissionConfiguration.limits | indent 8 }}
+        {{- end }}
+        {{- if .Values.global.admission.config.server.resourceAdmissionConfiguration.unrestrictedSubjects }}
         unrestrictedSubjects:
 {{ toYaml .Values.global.admission.config.server.resourceAdmissionConfiguration.unrestrictedSubjects | indent 8 }}
+        {{- end }}
         operationMode: {{ required ".Values.global.admission.config.server.resourceAdmissionConfiguration.operationMode is required" .Values.global.admission.config.server.resourceAdmissionConfiguration.operationMode }}
       {{- end }}
       enableDebugHandlers: {{ .Values.global.admission.config.server.enableDebugHandlers }}

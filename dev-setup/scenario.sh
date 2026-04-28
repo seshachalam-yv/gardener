@@ -9,8 +9,12 @@ set -o pipefail
 function detect_scenario() {
   nodes=$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n')
   zones=$(kubectl get nodes -o jsonpath='{.items[*].metadata.labels.topology\.kubernetes\.io/zone}' | tr ' ' '\n' | sort -u)
+  provider_ids=$(kubectl get nodes -o jsonpath='{.items[*].spec.providerID}' | tr ' ' '\n')
 
-  if [[ $(echo "$nodes" | wc -l) -eq 1 ]]; then
+  # Check if all providerIDs do NOT start with kind://
+  if [[ -n "$provider_ids" && $(echo "$provider_ids" | grep -cv '^kind://') -eq $(echo "$provider_ids" | wc -l) ]]; then
+    export SCENARIO="remote"
+  elif [[ $(echo "$nodes" | wc -l) -eq 1 ]]; then
     export SCENARIO="single-node"
   elif grep -q "gardener-local-multi-node2" <<< "$nodes"; then
     export SCENARIO="multi-node2"
@@ -21,6 +25,12 @@ function detect_scenario() {
   else
     echo "Error: Unable to detect scenario. Please ensure you have a valid Kubernetes cluster with correctly labeled nodes with their availability zone." >&2
     exit 1
+  fi
+
+  if [[ "$IPFAMILY" == "ipv6" ]]; then
+    export SCENARIO="${SCENARIO}-ipv6"
+  elif [[ "$IPFAMILY" == "dual" ]]; then
+    export SCENARIO="${SCENARIO}-dual"
   fi
 
   echo "DETECTED SCENARIO: $SCENARIO"
@@ -39,6 +49,21 @@ function skaffold_profile() {
       ;;
     multi-zone)
       export SKAFFOLD_PROFILE="multi-zone"
+      ;;
+    single-node-ipv6)
+      export SKAFFOLD_PROFILE="single-node-ipv6"
+      ;;
+    multi-node-ipv6)
+      export SKAFFOLD_PROFILE="multi-node-ipv6"
+      ;;
+    multi-zone-ipv6)
+      export SKAFFOLD_PROFILE="multi-zone-ipv6"
+      ;;
+    single-node-dual)
+      export SKAFFOLD_PROFILE="single-node-dual"
+      ;;
+    remote)
+      export SKAFFOLD_PROFILE="remote"
       ;;
   esac
 

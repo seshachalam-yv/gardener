@@ -24,9 +24,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	"github.com/gardener/gardener/pkg/utils/chart"
@@ -413,6 +413,17 @@ func RenderChartAndCreate(ctx context.Context, namespace string, name string, se
 	return Create(ctx, client, namespace, name, nil, secretNameWithPrefix, "", map[string][]byte{chartName: data}, ptr.To(false), injectedLabels, &forceOverwriteAnnotations)
 }
 
+// RenderChartAndCreateForSeed renders a chart and creates a ManagedResource for the gardener-resource-manager
+// out of the results using the seed class.
+func RenderChartAndCreateForSeed(ctx context.Context, namespace string, name string, client client.Client, chartRenderer chartrenderer.Interface, chart chart.Interface, values map[string]any, imageVector imagevector.ImageVector, chartNamespace string, runtimeVersion, targetVersion string) error {
+	chartName, data, err := chart.Render(chartRenderer, chartNamespace, imageVector, runtimeVersion, targetVersion, values)
+	if err != nil {
+		return fmt.Errorf("could not render chart: %w", err)
+	}
+
+	return Create(ctx, client, namespace, name, nil, false, v1beta1constants.SeedResourceManagerClass, map[string][]byte{chartName: data}, nil, nil, nil)
+}
+
 // configurationProblemRegex is used to check if an error is caused by a bad managed resource configuration.
 var configurationProblemRegex = regexp.MustCompile(`(?i)(error during apply of object .* is invalid:)`)
 
@@ -457,7 +468,7 @@ func GetObjects(ctx context.Context, c client.Client, namespace, name string) ([
 			return nil, fmt.Errorf("could not get secret %q: %w", client.ObjectKey{Name: secretRef.Name, Namespace: managedResource.Namespace}, err)
 		}
 
-		objectsFromSecret, err := extractObjectsFromSecret(decoder, secret)
+		objectsFromSecret, err := ExtractObjectsFromSecret(decoder, secret)
 		if err != nil {
 			return nil, fmt.Errorf("could not extract objects from secret %q: %w", client.ObjectKeyFromObject(secret), err)
 		}
@@ -468,7 +479,8 @@ func GetObjects(ctx context.Context, c client.Client, namespace, name string) ([
 	return objects, nil
 }
 
-func extractObjectsFromSecret(decoder runtime.Decoder, secret *corev1.Secret) ([]client.Object, error) {
+// ExtractObjectsFromSecret extracts and decodes all objects stored in the given secret.
+func ExtractObjectsFromSecret(decoder runtime.Decoder, secret *corev1.Secret) ([]client.Object, error) {
 	var objects []client.Object
 
 	for key, value := range secret.Data {
@@ -485,8 +497,8 @@ func extractObjectsFromSecret(decoder runtime.Decoder, secret *corev1.Secret) ([
 			data = value
 		}
 
-		for _, objRaw := range strings.Split(string(data), "---\n") {
-			if objRaw == "" {
+		for objRaw := range strings.SplitSeq(string(data), "---\n") {
+			if strings.TrimSpace(objRaw) == "" {
 				continue
 			}
 

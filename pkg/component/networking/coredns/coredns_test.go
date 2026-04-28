@@ -8,6 +8,7 @@ import (
 	"context"
 	"net"
 	"regexp"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -65,14 +66,12 @@ var _ = Describe("CoreDNS", func() {
 automountServiceAccountToken: false
 kind: ServiceAccount
 metadata:
-  creationTimestamp: null
   name: coredns
   namespace: kube-system
 `
 		clusterRoleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   name: system:coredns
 rules:
 - apiGroups:
@@ -104,7 +103,6 @@ kind: ClusterRoleBinding
 metadata:
   annotations:
     resources.gardener.cloud/delete-on-invalid-update: "true"
-  creationTimestamp: null
   name: system:coredns
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -116,7 +114,8 @@ subjects:
   namespace: kube-system
 `
 		configMapYAML = func(commonSuffixes []string) string {
-			out := `apiVersion: v1
+			var out strings.Builder
+			out.WriteString(`apiVersion: v1
 data:
   Corefile: |
     .:8053 {
@@ -128,16 +127,16 @@ data:
         name regex (^(?:[^\.]+\.)+)svc\.foo\.bar\.svc\.foo\.bar {1}svc.foo.bar
         answer name (^(?:[^\.]+\.)+)svc\.foo\.bar {1}svc.foo.bar.svc.foo.bar
         answer value (^(?:[^\.]+\.)+)svc\.foo\.bar {1}svc.foo.bar.svc.foo.bar
-      }`
+      }`)
 			for _, suffix := range commonSuffixes {
-				out += `
+				out.WriteString(`
       rewrite stop {
         name regex (.*)\.` + regexp.QuoteMeta(suffix) + `\.svc\.foo\.bar {1}.` + suffix + `
         answer name (.*)\.` + regexp.QuoteMeta(suffix) + ` {1}.` + suffix + `.svc.foo.bar
         answer value (.*)\.` + regexp.QuoteMeta(suffix) + ` {1}.` + suffix + `.svc.foo.bar
-      }`
+      }`)
 			}
-			out += `
+			out.WriteString(`
       kubernetes ` + clusterDomain + ` in-addr.arpa ip6.arpa {
           pods insecure
           fallthrough in-addr.arpa ip6.arpa
@@ -158,11 +157,10 @@ data:
     import custom/*.server
 kind: ConfigMap
 metadata:
-  creationTimestamp: null
   name: coredns
   namespace: kube-system
-`
-			return out
+`)
+			return out.String()
 		}
 		configMapCustomYAML = `apiVersion: v1
 data:
@@ -172,7 +170,6 @@ kind: ConfigMap
 metadata:
   annotations:
     resources.gardener.cloud/ignore: "true"
-  creationTimestamp: null
   name: coredns-custom
   namespace: kube-system
 `
@@ -180,7 +177,6 @@ metadata:
 			out := `apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: null
   labels:
     k8s-app: kube-dns
     kubernetes.io/cluster-service: "true"
@@ -216,10 +212,7 @@ status:
 kind: NetworkPolicy
 metadata:
   annotations:
-    gardener.cloud/description: Allows CoreDNS to lookup DNS records, talk to the
-      API Server. Also allows CoreDNS to be reachable via its service and its metrics
-      endpoint.
-  creationTimestamp: null
+    gardener.cloud/description: Allows CoreDNS to lookup DNS records, talk to the API Server. Also allows CoreDNS to be reachable via its service and its metrics endpoint.
   name: gardener.cloud--allow-dns
   namespace: kube-system
 spec:
@@ -261,30 +254,30 @@ spec:
   - Egress
 `
 		deploymentYAMLFor = func(apiserverHost string, podAnnotations map[string]string, keepReplicas bool, useHALabel bool) string {
-			out := `apiVersion: apps/v1
+			var out strings.Builder
+			out.WriteString(`apiVersion: apps/v1
 kind: Deployment
 metadata:
-  creationTimestamp: null
   labels:
     gardener.cloud/role: system-component
-`
+`)
 			if useHALabel {
-				out += `    high-availability-config.resources.gardener.cloud/type: server
-`
+				out.WriteString(`    high-availability-config.resources.gardener.cloud/type: server
+`)
 			}
 
-			out += `    k8s-app: kube-dns
+			out.WriteString(`    k8s-app: kube-dns
     origin: gardener
   name: coredns
   namespace: kube-system
 spec:
-`
+`)
 			if keepReplicas {
-				out += `  replicas: 2
-`
+				out.WriteString(`  replicas: 2
+`)
 			}
 
-			out += `  revisionHistoryLimit: 2
+			out.WriteString(`  revisionHistoryLimit: 2
   selector:
     matchLabels:
       k8s-app: kube-dns
@@ -295,19 +288,18 @@ spec:
     type: RollingUpdate
   template:
     metadata:
-`
+`)
 			if len(podAnnotations) > 0 {
-				out += `      annotations:
-`
+				out.WriteString(`      annotations:
+`)
 			}
 
 			for k, v := range podAnnotations {
-				out += `        ` + k + `: ` + v + `
-`
+				out.WriteString(`        ` + k + `: ` + v + `
+`)
 			}
 
-			out += `      creationTimestamp: null
-      labels:
+			out.WriteString(`      labels:
         gardener.cloud/role: system-component
         k8s-app: kube-dns
         origin: gardener
@@ -316,16 +308,15 @@ spec:
       - args:
         - -conf
         - /etc/coredns/Corefile
-`
+`)
 
 			if apiserverHost != "" {
-				out += `        env:
+				out.WriteString(`        env:
         - name: KUBERNETES_SERVICE_HOST
           value: ` + apiserverHost + `
-`
+`)
 			}
-			// TODO(marc1404): When updating coredns to v1.13.x check if the NET_BIND_SERVICE capability can be removed.
-			out += `        image: ` + image + `
+			out.WriteString(`        image: ` + image + `
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 5
@@ -358,8 +349,6 @@ spec:
           successThreshold: 1
           timeoutSeconds: 2
         resources:
-          limits:
-            memory: 1500Mi
           requests:
             cpu: 50m
             memory: 15Mi
@@ -402,14 +391,13 @@ spec:
           optional: true
         name: custom-config-volume
 status: {}
-`
-			return out
+`)
+			return out.String()
 		}
 
 		pdbYAML = `apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  creationTimestamp: null
   labels:
     k8s-app: kube-dns
   name: coredns
@@ -430,7 +418,6 @@ status:
 		hpaYAML = `apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  creationTimestamp: null
   labels:
     high-availability-config.resources.gardener.cloud/type: server
   name: coredns
@@ -458,14 +445,12 @@ status:
 automountServiceAccountToken: false
 kind: ServiceAccount
 metadata:
-  creationTimestamp: null
   name: coredns-autoscaler
   namespace: kube-system
 `
 		cpacrYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   name: system:coredns-autoscaler
 rules:
 - apiGroups:
@@ -501,7 +486,6 @@ rules:
 		cpacrbYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  creationTimestamp: null
   name: system:coredns-autoscaler
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -515,7 +499,6 @@ subjects:
 		cpaDeploymentYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  creationTimestamp: null
   labels:
     gardener.cloud/role: system-component
     k8s-app: coredns-autoscaler
@@ -530,7 +513,6 @@ spec:
   strategy: {}
   template:
     metadata:
-      creationTimestamp: null
       labels:
         gardener.cloud/role: system-component
         k8s-app: coredns-autoscaler
@@ -577,22 +559,23 @@ status: {}
 		cpaDeploymentVpaYAML = `apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  creationTimestamp: null
   name: coredns-autoscaler
   namespace: kube-system
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: autoscaler
       controlledValues: RequestsOnly
       minAllowed:
         memory: 10Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: coredns-autoscaler
   updatePolicy:
-    updateMode: Auto
+    updateMode: Recreate
 status: {}
 `
 
@@ -605,7 +588,7 @@ status: {}
 			},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
 				HonorLabels: ptr.To(false),
-				Scheme:      ptr.To("HTTPS"),
+				Scheme:      ptr.To(monitoringv1.SchemeHTTPS),
 				TLSConfig:   &monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)},
 				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},

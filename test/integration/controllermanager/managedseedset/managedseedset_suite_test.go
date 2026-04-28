@@ -26,8 +26,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	managedseedsetcontroller "github.com/gardener/gardener/pkg/controllermanager/controller/managedseedset"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/utils"
@@ -62,7 +62,7 @@ var _ = BeforeSuite(func() {
 	testEnv = &gardenerenvtest.GardenerTestEnvironment{
 		GardenerAPIServer: &gardenerenvtest.GardenerAPIServer{
 			Args: []string{
-				"--disable-admission-plugins=DeletionConfirmation,ResourceReferenceManager,ExtensionValidator,SeedValidator,ShootDNS,ShootQuotaValidator,ShootTolerationRestriction,ManagedSeedShoot,ManagedSeed,ShootManagedSeed,ShootValidator",
+				"--disable-admission-plugins=DeletionConfirmation,ResourceReferenceManager,ExtensionValidator,SeedValidator,ShootDNS,ShootQuotaValidator,ShootTolerationRestriction,ManagedSeedShoot,ManagedSeed,ShootManagedSeed,ShootValidator,ShootMutator",
 			},
 		},
 	}

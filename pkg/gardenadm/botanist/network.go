@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/component/networking/coredns"
 	"github.com/gardener/gardener/pkg/controller/networkpolicy"
@@ -27,7 +28,7 @@ import (
 
 // IsPodNetworkAvailable checks if the ManagedResource for CoreDNS is deployed and ready. If yes, pod network must be
 // available. Otherwise, CoreDNS which runs in this network wouldn't be available.
-func (b *AutonomousBotanist) IsPodNetworkAvailable(ctx context.Context) (bool, error) {
+func (b *GardenadmBotanist) IsPodNetworkAvailable(ctx context.Context) (bool, error) {
 	managedResource := &resourcesv1alpha1.ManagedResource{ObjectMeta: metav1.ObjectMeta{Name: coredns.ManagedResourceName, Namespace: b.Shoot.ControlPlaneNamespace}}
 	if err := b.SeedClientSet.Client().Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource); err != nil {
 		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
@@ -39,7 +40,7 @@ func (b *AutonomousBotanist) IsPodNetworkAvailable(ctx context.Context) (bool, e
 }
 
 // ApplyNetworkPolicies reconciles all namespaces in the cluster in order to apply the network policies.
-func (b *AutonomousBotanist) ApplyNetworkPolicies(ctx context.Context) error {
+func (b *GardenadmBotanist) ApplyNetworkPolicies(ctx context.Context) error {
 	reconciler := &networkpolicy.Reconciler{
 		RuntimeClient: b.SeedClientSet.Client(),
 		Resolver:      hostnameresolver.NewNoOpProvider(),
@@ -74,4 +75,38 @@ func netIPNetSliceToStringSlice(in []net.IPNet) []string {
 		out = append(out, ip.String())
 	}
 	return out
+}
+
+// LookupIP is an alias for net.LookupIP that can be overridden in tests.
+var LookupIP = net.LookupIP
+
+// MachineIP returns the IP address of the current machine. It prefers addresses matching the primary IP family
+// (the first entry in .spec.networking.ipFamilies), falling back to any available address.
+// Similar to https://github.com/kubernetes/kubernetes/blob/ec9f0d55360f74337f9ef40879434a063821ff5b/pkg/kubelet/nodestatus/setters.go#L162-L178
+func (b *GardenadmBotanist) MachineIP() (net.IP, error) {
+	var (
+		preferIPv6 = len(b.Shoot.GetInfo().Spec.Networking.IPFamilies) > 0 &&
+			b.Shoot.GetInfo().Spec.Networking.IPFamilies[0] == gardencorev1beta1.IPFamilyIPv6
+		fallback net.IP
+	)
+
+	addrs, err := LookupIP(b.HostName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup IPs for hostname %s: %w", b.HostName, err)
+	}
+
+	for _, addr := range addrs {
+		if isIPv6 := addr.To4() == nil; isIPv6 == preferIPv6 {
+			return addr, nil
+		}
+		if fallback == nil {
+			fallback = addr
+		}
+	}
+
+	if fallback != nil {
+		return fallback, nil
+	}
+
+	return nil, fmt.Errorf("no IP address found for node")
 }

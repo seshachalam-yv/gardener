@@ -6,13 +6,11 @@ package seedserver
 
 import (
 	"context"
-	_ "embed"
 	"fmt"
 	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"text/template"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
@@ -39,6 +37,7 @@ import (
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
+	"github.com/gardener/gardener/pkg/component/networking/vpn/envoy"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
 	"github.com/gardener/gardener/pkg/controllerutils"
@@ -53,7 +52,10 @@ import (
 
 const (
 	// GatewayPort is the port exposed by the istio ingress gateway
+	// TODO(hown3d): Drop with RemoveHTTPProxyLegacyPort feature gate
 	GatewayPort = 8132
+	// HTTPProxyGatewayPort is the port exposed by the istio ingress gateway to accept HTTP Connect proxy requests
+	HTTPProxyGatewayPort = 8443
 	// SecretNameTLSAuth is the name of seed server tlsauth Secret.
 	SecretNameTLSAuth = "vpn-seed-server-tlsauth" // #nosec G101 -- No credential.
 	deploymentName    = v1beta1constants.DeploymentNameVPNSeedServer
@@ -74,11 +76,10 @@ const (
 	fileNameEnvoyConfig = "envoy.yaml"
 	fileNameCABundle    = "ca.crt"
 
-	volumeMountPathDevNetTun   = "/dev/net/tun"
-	volumeMountPathCerts       = "/srv/secrets/vpn-server"
-	volumeMountPathTLSAuth     = "/srv/secrets/tlsauth"
-	volumeMountPathEnvoyConfig = "/etc/envoy"
-	volumeMountPathStatusDir   = "/srv/status"
+	volumeMountPathDevNetTun = "/dev/net/tun"
+	volumeMountPathCerts     = "/srv/secrets/vpn-server"
+	volumeMountPathTLSAuth   = "/srv/secrets/tlsauth"
+	volumeMountPathStatusDir = "/srv/status"
 
 	volumeNameDevNetTun   = "dev-net-tun"
 	volumeNameCerts       = "certs"
@@ -86,21 +87,6 @@ const (
 	volumeNameEnvoyConfig = "envoy-config"
 	volumeNameStatusDir   = "openvpn-status"
 )
-
-var (
-	tplNameEnvoy = "envoy.yaml.tpl"
-	//go:embed templates/envoy.yaml.tpl
-	tplContentEnvoy string
-	tplEnvoy        *template.Template
-)
-
-func init() {
-	var err error
-	tplEnvoy, err = template.
-		New(tplNameEnvoy).
-		Parse(tplContentEnvoy)
-	utilruntime.Must(err)
-}
 
 // Interface contains functions for a vpn-seed-server deployer.
 type Interface interface {
@@ -180,21 +166,19 @@ func (v *vpnSeedServer) GetValues() Values {
 }
 
 func (v *vpnSeedServer) Deploy(ctx context.Context) error {
-	envoyConfig, err := v.getEnvoyConfig()
+	envoyConfig, err := envoy.GetEnvoyConfig()
 	if err != nil {
 		return err
 	}
-	var (
-		configMap = &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "vpn-seed-server-envoy-config",
-				Namespace: v.namespace,
-			},
-			Data: map[string]string{
-				fileNameEnvoyConfig: envoyConfig,
-			},
-		}
-	)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vpn-seed-server-envoy-config",
+			Namespace: v.namespace,
+		},
+		Data: map[string]string{
+			fileNameEnvoyConfig: envoyConfig,
+		},
+	}
 
 	utilruntime.Must(kubernetesutils.MakeUnique(configMap))
 
@@ -277,17 +261,10 @@ func (v *vpnSeedServer) Deploy(ctx context.Context) error {
 
 func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, secretServer, secretTLSAuth *corev1.Secret) *corev1.PodTemplateSpec {
 	hostPathCharDev := corev1.HostPathCharDev
-	var (
-		ipFamilies []string
-	)
+	var ipFamilies []string
 
 	for _, v := range v.values.Network.IPFamilies {
 		ipFamilies = append(ipFamilies, string(v))
-	}
-
-	nodeNetwork := ""
-	if len(v.values.Network.NodeCIDRs) > 0 {
-		nodeNetwork = v.values.Network.NodeCIDRs[0].String()
 	}
 
 	template := &corev1.PodTemplateSpec{
@@ -334,27 +311,15 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 							Value: strings.Join(ipFamilies, ","),
 						},
 						{
-							Name:  "SERVICE_NETWORK",
-							Value: v.values.Network.ServiceCIDRs[0].String(),
-						},
-						{
-							Name:  "POD_NETWORK",
-							Value: v.values.Network.PodCIDRs[0].String(),
-						},
-						{
-							Name:  "NODE_NETWORK",
-							Value: nodeNetwork,
-						},
-						{
-							Name:  "SERVICE_NETWORKS",
+							Name:  "SHOOT_SERVICE_NETWORKS",
 							Value: netutils.JoinByComma(v.values.Network.ServiceCIDRs),
 						},
 						{
-							Name:  "POD_NETWORKS",
+							Name:  "SHOOT_POD_NETWORKS",
 							Value: netutils.JoinByComma(v.values.Network.PodCIDRs),
 						},
 						{
-							Name:  "NODE_NETWORKS",
+							Name:  "SHOOT_NODE_NETWORKS",
 							Value: netutils.JoinByComma(v.values.Network.NodeCIDRs),
 						},
 						{
@@ -369,20 +334,32 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 								},
 							},
 						},
+						{
+							Name:  "OPENVPN_STATUS_PATH",
+							Value: filepath.Join(volumeMountPathStatusDir, "openvpn.status"),
+						},
 					},
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
-							TCPSocket: &corev1.TCPSocketAction{
-								Port: intstr.FromInt32(OpenVPNPort),
+							Exec: &corev1.ExecAction{
+								Command: []string{
+									"/bin/vpn-server",
+									"readiness",
+								},
 							},
 						},
+						InitialDelaySeconds: 15,
 					},
 					LivenessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
-							TCPSocket: &corev1.TCPSocketAction{
-								Port: intstr.FromInt32(OpenVPNPort),
+							Exec: &corev1.ExecAction{
+								Command: []string{
+									"/bin/vpn-server",
+									"liveness",
+								},
 							},
 						},
+						InitialDelaySeconds: 5,
 					},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
@@ -411,6 +388,10 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 						{
 							Name:      volumeNameTLSAuth,
 							MountPath: volumeMountPathTLSAuth,
+						},
+						{
+							Name:      volumeNameStatusDir,
+							MountPath: volumeMountPathStatusDir,
 						},
 					},
 				},
@@ -473,63 +454,18 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 						},
 					},
 				},
+				{
+					Name: volumeNameStatusDir,
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
 			},
 		},
 	}
 
 	if !v.values.HighAvailabilityEnabled {
-		template.Spec.Containers = append(template.Spec.Containers, corev1.Container{
-			Name:            envoyProxyContainerName,
-			Image:           v.values.ImageAPIServerProxy,
-			ImagePullPolicy: corev1.PullIfNotPresent,
-			Command: []string{
-				"envoy",
-				"--concurrency",
-				"2",
-				"-c",
-				fmt.Sprintf("%s/%s", volumeMountPathEnvoyConfig, fileNameEnvoyConfig),
-			},
-			ReadinessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					TCPSocket: &corev1.TCPSocketAction{
-						Port: intstr.FromInt32(EnvoyPort),
-					},
-				},
-			},
-			LivenessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					TCPSocket: &corev1.TCPSocketAction{
-						Port: intstr.FromInt32(EnvoyPort),
-					},
-				},
-			},
-			Resources: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("10m"),
-					corev1.ResourceMemory: resource.MustParse("25M"),
-				},
-			},
-			SecurityContext: &corev1.SecurityContext{
-				AllowPrivilegeEscalation: ptr.To(false),
-				Capabilities: &corev1.Capabilities{
-					Drop: []corev1.Capability{
-						"all",
-					},
-				},
-				RunAsUser:    ptr.To(int64(v1beta1constants.EnvoyNonRootUserId)),
-				RunAsNonRoot: ptr.To(true),
-			},
-			VolumeMounts: []corev1.VolumeMount{
-				{
-					Name:      volumeNameCerts,
-					MountPath: volumeMountPathCerts,
-				},
-				{
-					Name:      volumeNameEnvoyConfig,
-					MountPath: volumeMountPathEnvoyConfig,
-				},
-			},
-		})
+		template.Spec.Containers = append(template.Spec.Containers, *envoy.GetEnvoyProxyContainer(v.values.ImageAPIServerProxy))
 		template.Spec.Volumes = append(template.Spec.Volumes, corev1.Volume{
 			Name: volumeNameEnvoyConfig,
 			VolumeSource: corev1.VolumeSource{
@@ -544,10 +480,6 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 		template.Spec.Containers[0].Env = append(
 			template.Spec.Containers[0].Env,
 			[]corev1.EnvVar{
-				{
-					Name:  "OPENVPN_STATUS_PATH",
-					Value: filepath.Join(volumeMountPathStatusDir, "openvpn.status"),
-				},
 				{
 					Name: "POD_NAME",
 					ValueFrom: &corev1.EnvVarSource{
@@ -565,16 +497,6 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 					Value: strconv.Itoa(v.values.HighAvailabilityNumberOfShootClients),
 				},
 			}...)
-		template.Spec.Containers[0].VolumeMounts = append(template.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{
-			Name:      volumeNameStatusDir,
-			MountPath: volumeMountPathStatusDir,
-		})
-		template.Spec.Volumes = append(template.Spec.Volumes, corev1.Volume{
-			Name: volumeNameStatusDir,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
 
 		exporterContainer := corev1.Container{
 			Name:            openVPNExporterContainerName,
@@ -751,6 +673,10 @@ func (v *vpnSeedServer) deployService(ctx context.Context, idx *int) error {
 			}
 		}
 
+		// We need to publish the service even if no pod is ready yet to allow vpn clients to connect before regular traffic.
+		// The readiness check of the vpn server container only passes once vpn clients have connected and traffic can flow.
+		service.Spec.PublishNotReadyAddresses = true
+
 		return nil
 	})
 	return err
@@ -822,6 +748,8 @@ func (v *vpnSeedServer) deployScrapeConfig(ctx context.Context) error {
 			"openvpn_server_route_last_reference_time_seconds",
 			"openvpn_status_update_time_seconds",
 			"openvpn_up",
+			"openvpn_netstat_Tcp_OutSegs",
+			"openvpn_netstat_Tcp_RetransSegs",
 		}
 	}
 
@@ -916,7 +844,7 @@ func (v *vpnSeedServer) deployDestinationRule(ctx context.Context, idx *int) err
 func (v *vpnSeedServer) deployVPA(ctx context.Context) error {
 	var (
 		vpa           = v.emptyVPA()
-		vpaUpdateMode = ptr.To(vpaautoscalingv1.UpdateModeAuto)
+		vpaUpdateMode = ptr.To(vpaautoscalingv1.UpdateModeRecreate)
 	)
 
 	targetRefKind := "Deployment"
@@ -938,25 +866,19 @@ func (v *vpnSeedServer) deployVPA(ctx context.Context) error {
 			UpdateMode: vpaUpdateMode,
 		}
 		vpa.Spec.ResourcePolicy = &vpaautoscalingv1.PodResourcePolicy{
-			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
-				{
-					ContainerName: deploymentName,
-					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-				},
-			},
+			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{},
 		}
 
-		if v.values.HighAvailabilityEnabled {
-			vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
-				ContainerName: openVPNExporterContainerName,
-				Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-			})
-		} else {
+		if !v.values.HighAvailabilityEnabled {
 			vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
 				ContainerName:    envoyProxyContainerName,
 				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 			})
 		}
+		vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
+			ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+			Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+		})
 		return nil
 	})
 	return err
@@ -1038,25 +960,4 @@ func getLabels() map[string]string {
 		v1beta1constants.GardenRole: v1beta1constants.GardenRoleControlPlane,
 		v1beta1constants.LabelApp:   deploymentName,
 	}
-}
-
-func (v *vpnSeedServer) getEnvoyConfig() (string, error) {
-	values := map[string]any{
-		"listenAddress":   "0.0.0.0",
-		"listenAddressV6": "::",
-		"dnsLookupFamily": "ALL",
-		"envoyPort":       EnvoyPort,
-		"certChain":       volumeMountPathCerts + `/` + secretsutils.DataKeyCertificate,
-		"privateKey":      volumeMountPathCerts + `/` + secretsutils.DataKeyPrivateKey,
-		"caCert":          volumeMountPathCerts + `/` + fileNameCABundle,
-		"metricsPort":     metricsPort,
-	}
-
-	var envoyConfig strings.Builder
-	err := tplEnvoy.Execute(&envoyConfig, values)
-	if err != nil {
-		return "", err
-	}
-
-	return envoyConfig.String(), nil
 }

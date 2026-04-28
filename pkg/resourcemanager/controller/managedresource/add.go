@@ -56,6 +56,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, sourceCluster, targetClus
 		Named(ControllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
+			ReconciliationTimeout:   r.Config.SyncPeriod.Duration,
 		}).
 		For(&resourcesv1alpha1.ManagedResource{}, builder.WithPredicates(
 			r.ClassFilter,
@@ -66,6 +67,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, sourceCluster, targetClus
 				resourcemanagerpredicate.NoLongerIgnored(),
 				// we need to reconcile once if the ManagedResource got marked as ignored in order to update the conditions
 				resourcemanagerpredicate.GotMarkedAsIgnored(),
+				r.ClassFilter.CleanupCompleted(),
 			),
 			// TODO: refactor this predicate chain into a single predicate.Funcs that can be properly tested as a whole
 			predicate.Or(
@@ -84,6 +86,10 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, sourceCluster, targetClus
 					predicateutils.IsDeleting(),
 				),
 			)),
+			// Only react on secret updates to minimize the handler calls during start up.
+			// Since the controller-runtime has started to wait for all handler syncs, cache sync timeouts blocked the GRM from starting.
+			// See https://github.com/kubernetes-sigs/controller-runtime/pull/3406 for more information.
+			builder.WithPredicates(predicateutils.ForEventTypes(predicateutils.Update)),
 		).
 		Complete(reconcilerutils.OperationAnnotationWrapper(
 			mgr,

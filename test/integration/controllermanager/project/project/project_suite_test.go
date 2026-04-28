@@ -30,16 +30,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gardener/gardener/pkg/api/indexer"
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/cloudprofile"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/namespacedcloudprofile"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/project/project"
-	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/utils"
-	"github.com/gardener/gardener/pkg/utils/test"
 	gardenerenvtest "github.com/gardener/gardener/test/envtest"
 	"github.com/gardener/gardener/test/utils/namespacefinalizer"
 )
@@ -71,7 +69,7 @@ var _ = BeforeSuite(func() {
 	By("Start test environment")
 	testEnv = &gardenerenvtest.GardenerTestEnvironment{
 		GardenerAPIServer: &gardenerenvtest.GardenerAPIServer{
-			Args: []string{"--disable-admission-plugins=DeletionConfirmation,ResourceReferenceManager,ExtensionValidator,ShootQuotaValidator,ShootValidator,ShootTolerationRestriction,ShootDNS"},
+			Args: []string{"--disable-admission-plugins=DeletionConfirmation,ResourceReferenceManager,ExtensionValidator,ShootQuotaValidator,ShootValidator,ShootTolerationRestriction,ShootDNS,ShootMutator"},
 		},
 	}
 
@@ -158,8 +156,6 @@ var _ = BeforeSuite(func() {
 			ConcurrentSyncs: ptr.To(5),
 		},
 	}).AddToManager(mgr)).To(Succeed())
-
-	DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.UseNamespacedCloudProfile, true))
 
 	By("Start manager")
 	mgrContext, mgrCancel := context.WithCancel(ctx)

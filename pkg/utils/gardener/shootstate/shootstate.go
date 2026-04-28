@@ -19,10 +19,10 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	apiextensions "github.com/gardener/gardener/pkg/api/extensions"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -32,7 +32,7 @@ import (
 
 // Deploy deploys the ShootState resource with the effective state for the given shoot into the garden
 // cluster.
-func Deploy(ctx context.Context, clock clock.Clock, gardenClient, seedClient client.Client, shoot *gardencorev1beta1.Shoot, overwriteSpec bool) error {
+func Deploy(ctx context.Context, clock clock.Clock, gardenClient, seedClient client.Client, shoot *gardencorev1beta1.Shoot, controlPlaneNamespace string, overwriteSpec bool) error {
 	shootState := &gardencorev1beta1.ShootState{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      shoot.Name,
@@ -40,7 +40,7 @@ func Deploy(ctx context.Context, clock clock.Clock, gardenClient, seedClient cli
 		},
 	}
 
-	spec, err := computeSpec(ctx, seedClient, shoot.Status.TechnicalID)
+	spec, err := computeSpec(ctx, seedClient, controlPlaneNamespace)
 	if err != nil {
 		return fmt.Errorf("failed computing spec of ShootState for shoot %s: %w", client.ObjectKeyFromObject(shoot), err)
 	}
@@ -95,13 +95,13 @@ func Delete(ctx context.Context, gardenClient client.Client, shoot *gardencorev1
 	return client.IgnoreNotFound(gardenClient.Delete(ctx, shootState))
 }
 
-func computeSpec(ctx context.Context, seedClient client.Client, seedNamespace string) (*gardencorev1beta1.ShootStateSpec, error) {
-	gardener, err := computeGardenerData(ctx, seedClient, seedNamespace)
+func computeSpec(ctx context.Context, seedClient client.Client, controlPlaneNamespace string) (*gardencorev1beta1.ShootStateSpec, error) {
+	gardener, err := computeGardenerData(ctx, seedClient, controlPlaneNamespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed computing Gardener data: %w", err)
 	}
 
-	extensions, resources, err := computeExtensionsDataAndResources(ctx, seedClient, seedNamespace)
+	extensions, resources, err := computeExtensionsDataAndResources(ctx, seedClient, controlPlaneNamespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed computing extensions data and resources: %w", err)
 	}
@@ -116,37 +116,34 @@ func computeSpec(ctx context.Context, seedClient client.Client, seedNamespace st
 func computeGardenerData(
 	ctx context.Context,
 	seedClient client.Client,
-	seedNamespace string,
+	controlPlaneNamespace string,
 ) (
 	[]gardencorev1beta1.GardenerResourceData,
 	error,
 ) {
-	secretsToPersist, err := computeSecretsToPersist(ctx, seedClient, seedNamespace)
+	secretsToPersist, err := computeSecretsToPersist(ctx, seedClient, controlPlaneNamespace)
 	if err != nil {
 		return nil, err
 	}
 
-	machineState, err := computeMachineState(ctx, seedClient, seedNamespace)
+	machineState, err := computeMachineState(ctx, seedClient, controlPlaneNamespace)
 	if err != nil {
 		return nil, err
 	}
 
-	machineStateJSON, err := json.Marshal(machineState)
-	if err != nil {
-		return nil, fmt.Errorf("failed marshalling machine state to JSON: %w", err)
-	}
+	if machineState != nil {
+		machineStateJSONCompressed, err := MarshalMachineState(machineState)
+		if err != nil {
+			return nil, err
+		}
 
-	machineStateJSONCompressed, err := compressMachineState(machineStateJSON)
-	if err != nil {
-		return nil, fmt.Errorf("failed compressing machine state data: %w", err)
-	}
-
-	if machineStateJSONCompressed != nil {
-		secretsToPersist = append(secretsToPersist, gardencorev1beta1.GardenerResourceData{
-			Name: v1beta1constants.DataTypeMachineState,
-			Type: v1beta1constants.DataTypeMachineState,
-			Data: runtime.RawExtension{Raw: machineStateJSONCompressed},
-		})
+		if machineStateJSONCompressed != nil {
+			secretsToPersist = append(secretsToPersist, gardencorev1beta1.GardenerResourceData{
+				Name: v1beta1constants.DataTypeMachineState,
+				Type: v1beta1constants.DataTypeMachineState,
+				Data: runtime.RawExtension{Raw: machineStateJSONCompressed},
+			})
+		}
 	}
 
 	return secretsToPersist, nil
@@ -155,13 +152,13 @@ func computeGardenerData(
 func computeSecretsToPersist(
 	ctx context.Context,
 	seedClient client.Client,
-	seedNamespace string,
+	controlPlaneNamespace string,
 ) (
 	[]gardencorev1beta1.GardenerResourceData,
 	error,
 ) {
 	secretList := &corev1.SecretList{}
-	if err := seedClient.List(ctx, secretList, client.InNamespace(seedNamespace), client.MatchingLabels{
+	if err := seedClient.List(ctx, secretList, client.InNamespace(controlPlaneNamespace), client.MatchingLabels{
 		secretsmanager.LabelKeyPersist: secretsmanager.LabelValueTrue,
 	}); err != nil {
 		return nil, fmt.Errorf("failed listing all secrets that must be persisted: %w", err)
@@ -189,7 +186,7 @@ func computeSecretsToPersist(
 func computeExtensionsDataAndResources(
 	ctx context.Context,
 	seedClient client.Client,
-	seedNamespace string,
+	controlPlaneNamespace string,
 ) (
 	[]gardencorev1beta1.ExtensionResourceState,
 	[]gardencorev1beta1.ResourceData,
@@ -212,10 +209,11 @@ func computeExtensionsDataAndResources(
 		{extensionsv1alpha1.InfrastructureResource, func() client.ObjectList { return &extensionsv1alpha1.InfrastructureList{} }},
 		{extensionsv1alpha1.NetworkResource, func() client.ObjectList { return &extensionsv1alpha1.NetworkList{} }},
 		{extensionsv1alpha1.OperatingSystemConfigResource, func() client.ObjectList { return &extensionsv1alpha1.OperatingSystemConfigList{} }},
+		{extensionsv1alpha1.SelfHostedShootExposureResource, func() client.ObjectList { return &extensionsv1alpha1.SelfHostedShootExposureList{} }},
 		{extensionsv1alpha1.WorkerResource, func() client.ObjectList { return &extensionsv1alpha1.WorkerList{} }},
 	} {
 		objList := extension.newObjectListFunc()
-		if err := seedClient.List(ctx, objList, client.InNamespace(seedNamespace)); err != nil {
+		if err := seedClient.List(ctx, objList, client.InNamespace(controlPlaneNamespace)); err != nil {
 			return nil, nil, fmt.Errorf("failed to list extension resources of kind %s: %w", extension.objKind, err)
 		}
 
@@ -239,9 +237,9 @@ func computeExtensionsDataAndResources(
 			})
 
 			for _, newResource := range extensionObj.GetExtensionStatus().GetResources() {
-				referencedObj, err := unstructuredutils.GetObjectByRef(ctx, seedClient, &newResource.ResourceRef, seedNamespace)
+				referencedObj, err := unstructuredutils.GetObjectByRef(ctx, seedClient, &newResource.ResourceRef, controlPlaneNamespace)
 				if err != nil {
-					return fmt.Errorf("failed reading referenced object %s: %w", client.ObjectKey{Name: newResource.ResourceRef.Name, Namespace: seedNamespace}, err)
+					return fmt.Errorf("failed reading referenced object %s: %w", client.ObjectKey{Name: newResource.ResourceRef.Name, Namespace: controlPlaneNamespace}, err)
 				}
 				if obj == nil {
 					return fmt.Errorf("object %v not found", newResource.ResourceRef)
@@ -249,7 +247,7 @@ func computeExtensionsDataAndResources(
 
 				raw := &runtime.RawExtension{}
 				if err := runtime.DefaultUnstructuredConverter.FromUnstructured(referencedObj, raw); err != nil {
-					return fmt.Errorf("failed converting referenced object %s to raw extension: %w", client.ObjectKey{Name: newResource.ResourceRef.Name, Namespace: seedNamespace}, err)
+					return fmt.Errorf("failed converting referenced object %s to raw extension: %w", client.ObjectKey{Name: newResource.ResourceRef.Name, Namespace: controlPlaneNamespace}, err)
 				}
 
 				resources = append(resources, gardencorev1beta1.ResourceData{

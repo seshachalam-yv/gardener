@@ -193,6 +193,11 @@ func (*openTelemetryOperator) clusterRole() *rbacv1.ClusterRole {
 				Verbs:     []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 			},
 			{
+				APIGroups: []string{"networking.k8s.io"},
+				Resources: []string{"networkpolicies"},
+				Verbs:     []string{"list", "watch"},
+			},
+			{
 				APIGroups: []string{"opentelemetry.io"},
 				Resources: []string{"instrumentations", "opentelemetrycollectors"},
 				Verbs:     []string{"get", "list", "patch", "update", "watch"},
@@ -356,6 +361,9 @@ func (o *openTelemetryOperator) deployment() *appsv1.Deployment {
 									corev1.ResourceMemory: resource.MustParse("64Mi"),
 								},
 							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: ptr.To(false),
+							},
 						},
 					},
 				},
@@ -365,7 +373,7 @@ func (o *openTelemetryOperator) deployment() *appsv1.Deployment {
 }
 
 func (o *openTelemetryOperator) vpa() *vpaautoscalingv1.VerticalPodAutoscaler {
-	vpaUpdateMode := vpaautoscalingv1.UpdateModeAuto
+	vpaUpdateMode := vpaautoscalingv1.UpdateModeRecreate
 	return &vpaautoscalingv1.VerticalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -388,6 +396,10 @@ func (o *openTelemetryOperator) vpa() *vpaautoscalingv1.VerticalPodAutoscaler {
 						MinAllowed: corev1.ResourceList{
 							corev1.ResourceMemory: resource.MustParse("64Mi"),
 						},
+					},
+					{
+						ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+						Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 					},
 				},
 			},

@@ -44,6 +44,7 @@ import (
 	netutils "github.com/gardener/gardener/pkg/utils/net"
 	"github.com/gardener/gardener/pkg/utils/secrets"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
 const (
@@ -456,13 +457,18 @@ func (k *kubeControllerManager) Deploy(ctx context.Context) error {
 			Name:       k.values.NamePrefix + v1beta1constants.DeploymentNameKubeControllerManager,
 		}
 		vpa.Spec.UpdatePolicy = &vpaautoscalingv1.PodUpdatePolicy{
-			UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+			UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 		}
 		vpa.Spec.ResourcePolicy = &vpaautoscalingv1.PodResourcePolicy{
-			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-				ContainerName:    containerName,
-				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-			}},
+			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+				{
+					ContainerName:    containerName,
+					ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+				},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff)},
+			},
 		}
 
 		if k.values.IsScaleDownDisabled {
@@ -517,13 +523,19 @@ func (k *kubeControllerManager) Deploy(ctx context.Context) error {
 		serviceMonitor.Spec = monitoringv1.ServiceMonitorSpec{
 			Selector: metav1.LabelSelector{MatchLabels: getLabels()},
 			Endpoints: []monitoringv1.Endpoint{{
-				Port:      portNameMetrics,
-				Scheme:    "https",
-				TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
-				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: k.prometheusAccessSecretName()},
-					Key:                  resourcesv1alpha1.DataKeyToken,
-				}},
+				Port:   portNameMetrics,
+				Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+				HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+					HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+						TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+						HTTPConfigWithoutTLS: monitoringv1.HTTPConfigWithoutTLS{
+							Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: k.prometheusAccessSecretName()},
+								Key:                  resourcesv1alpha1.DataKeyToken,
+							}},
+						},
+					},
+				},
 				RelabelConfigs: []monitoringv1.RelabelConfig{{
 					Action: "labelmap",
 					Regex:  `__meta_kubernetes_service_label_(.+)`,
@@ -652,6 +664,8 @@ func (k *kubeControllerManager) computeCommand(port int32) []string {
 			"--authentication-kubeconfig=" + gardenerutils.PathGenericKubeconfig,
 			"--authorization-kubeconfig=" + gardenerutils.PathGenericKubeconfig,
 			"--kubeconfig=" + gardenerutils.PathGenericKubeconfig,
+			"--kube-api-qps=100",
+			"--kube-api-burst=200",
 		}
 
 		controllersToEnable  = sets.New("*", "bootstrapsigner", "tokencleaner")
@@ -663,12 +677,26 @@ func (k *kubeControllerManager) computeCommand(port int32) []string {
 			nodeMonitorGracePeriod = *v
 		}
 
-		if k.values.Config.NodeCIDRMaskSize != nil {
-			if k.isDualStack() {
+		if k.isDualStack() {
+			// Dual-stack: use separate IPv4 and IPv6 flags
+			if k.values.Config.NodeCIDRMaskSize != nil {
 				command = append(command, fmt.Sprintf("--node-cidr-mask-size-ipv4=%d", *k.values.Config.NodeCIDRMaskSize))
-				command = append(command, fmt.Sprintf("--node-cidr-mask-size-ipv6=%d", 64))
-			} else {
-				command = append(command, fmt.Sprintf("--node-cidr-mask-size=%d", *k.values.Config.NodeCIDRMaskSize))
+			}
+			if k.values.Config.NodeCIDRMaskSizeIPv6 != nil {
+				command = append(command, fmt.Sprintf("--node-cidr-mask-size-ipv6=%d", *k.values.Config.NodeCIDRMaskSizeIPv6))
+			}
+		} else {
+			// Single-stack: use generic flag (works for both IPv4 and IPv6)
+			var maskSize *int32
+			if k.values.Config.NodeCIDRMaskSize != nil {
+				maskSize = k.values.Config.NodeCIDRMaskSize
+			}
+			if k.values.Config.NodeCIDRMaskSizeIPv6 != nil {
+				maskSize = k.values.Config.NodeCIDRMaskSizeIPv6
+			}
+
+			if maskSize != nil {
+				command = append(command, fmt.Sprintf("--node-cidr-mask-size=%d", *maskSize))
 			}
 		}
 
@@ -719,6 +747,14 @@ func (k *kubeControllerManager) computeCommand(port int32) []string {
 			"pv-protection",
 			"ttl",
 		)
+
+		if versionutils.ConstraintK8sGreaterEqual133.Check(k.values.TargetVersion) {
+			controllersToDisable.Insert("device-taint-eviction-controller")
+		}
+
+		if versionutils.ConstraintK8sGreaterEqual134.Check(k.values.TargetVersion) {
+			controllersToDisable.Insert("podcertificaterequest-cleaner-controller")
+		}
 	}
 
 	command = append(command,

@@ -137,8 +137,8 @@ func NewOptions() *Options {
 		schema.GroupKind{Group: gardencorev1beta1.GroupName},
 	)
 	apiserver.RegisterAllAdmissionPlugins(o.Recommended.Admission.Plugins)
-	o.Recommended.Admission.DefaultOffPlugins = sets.New(sets.List(sets.New(plugin.AllPluginNames()...).Difference(plugin.DefaultOnPlugins()))...)
-	o.Recommended.Admission.RecommendedPluginOrder = plugin.AllPluginNames()
+	o.Recommended.Admission.DefaultOffPlugins = sets.New(sets.List(sets.New(plugin.AllOrderedPluginNames()...).Difference(plugin.DefaultOnPlugins()))...)
+	o.Recommended.Admission.RecommendedPluginOrder = plugin.AllOrderedPluginNames()
 
 	return o
 }
@@ -187,6 +187,8 @@ func (o *Options) config(kubeAPIServerConfig *rest.Config, kubeClient *kubernete
 	if err := o.ApplyTo(apiConfig, kubeClient); err != nil {
 		return nil, err
 	}
+
+	apiConfig.SubjectAccessReviewer = kubeClient.AuthorizationV1().SubjectAccessReviews()
 
 	protobufLoopbackConfig := *gardenerAPIServerConfig.LoopbackClientConfig
 	if protobufLoopbackConfig.ContentType == "" {
@@ -260,9 +262,17 @@ func (o *Options) config(kubeAPIServerConfig *rest.Config, kubeClient *kubernete
 	}
 
 	if initializers, err := o.Recommended.ExtraAdmissionInitializers(gardenerAPIServerConfig); err != nil {
-		return apiConfig, err
-	} else if err := o.Recommended.Admission.ApplyTo(&gardenerAPIServerConfig.Config, gardenerAPIServerConfig.SharedInformerFactory, gardenerKubeClient, gardenerDynamicClient, features.DefaultFeatureGate, initializers...); err != nil {
-		return apiConfig, err
+		return nil, err
+	} else if err := o.Recommended.Admission.ApplyTo(
+		&gardenerAPIServerConfig.Config,
+		gardenerAPIServerConfig.SharedInformerFactory,
+		gardenerKubeClient,
+		gardenerDynamicClient,
+		features.DefaultFeatureGate,
+		gardenerAPIServerConfig.EffectiveVersion,
+		initializers...,
+	); err != nil {
+		return nil, err
 	}
 
 	return apiConfig, nil
@@ -377,7 +387,7 @@ func (o *Options) Run(ctx context.Context) error {
 		return err
 	}
 
-	return server.GenericAPIServer.PrepareRun().Run(ctx.Done())
+	return server.GenericAPIServer.PrepareRun().RunWithContext(ctx)
 }
 
 // ApplyTo applies the options to the given config.
@@ -389,8 +399,9 @@ func (o *Options) ApplyTo(config *apiserver.Config, kubeClient kubernetes.Interf
 	gardenerAPIServerConfig.OpenAPIV3Config.Info.Title = "Gardener"
 	gardenerAPIServerConfig.OpenAPIV3Config.Info.Version = gardenerVersion.GitVersion
 
-	// For backward-compatibility, we also have to keep serving the /openapi/v2 endpoint since kubectl < 1.27 rely on
-	// this endpoint.
+	// For backward-compatibility, we also have to keep serving the /openapi/v2 endpoint since terraform-provider-kubernetes does not support OpenAPI v3 yet.
+	// For more details, see https://github.com/hashicorp/terraform-provider-kubernetes/issues/2769.
+	// TODO(shafeeqes): Remove this in gardener v1.160
 	gardenerAPIServerConfig.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(openapi.GetOpenAPIDefinitions, openapinamer.NewDefinitionNamer(api.Scheme))
 	gardenerAPIServerConfig.OpenAPIConfig.Info.Title = gardenerAPIServerConfig.OpenAPIV3Config.Info.Title
 	gardenerAPIServerConfig.OpenAPIConfig.Info.Version = gardenerAPIServerConfig.OpenAPIV3Config.Info.Version

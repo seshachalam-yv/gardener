@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.18.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: clusterfilters.fluentbit.fluent.io
 spec:
   group: fluentbit.fluent.io
@@ -85,7 +85,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -131,7 +131,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -279,6 +279,10 @@ spec:
                             Include Kubernetes namespace metadata only and no pod metadata.
                             If this is set, the values of Labels and Annotations are ignored.
                           type: boolean
+                        ownerReferences:
+                          description: Include Kubernetes owner references in the
+                            extra metadata.
+                          type: boolean
                         regexParser:
                           description: |-
                             Set an alternative Parser to process record Tag and extract pod_name, namespace_name, container_name and docker_id.
@@ -287,7 +291,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -312,6 +316,11 @@ spec:
                             This is an optional feature flag to get metadata information from kubelet
                             instead of calling Kube Server API to enhance the log.
                             This could mitigate the Kube API heavy traffic issue for large cluster.
+                          type: boolean
+                        useTagForMeta:
+                          description: If true, Kubernetes metadata (e.g., pod_name,
+                            container_name, namespace_name etc) will be extracted
+                            from the tag itself.
                           type: boolean
                       type: object
                     logToMetrics:
@@ -387,7 +396,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -417,6 +426,11 @@ spec:
                           description: Inline LUA code instead of loading from a path
                             via script.
                           type: string
+                        enable_flb_null:
+                          description: |-
+                            If enabled, null will be converted to flb_null in Lua.
+                            This helps prevent removing key/value since nil is a special value to remove key/value from map in Lua. Default value: false.
+                          type: boolean
                         protectedMode:
                           description: |-
                             If enabled, Lua script will be executed in protected mode.
@@ -425,7 +439,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -548,7 +562,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -671,7 +685,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -711,7 +725,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -751,7 +765,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -788,7 +802,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -826,7 +840,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -864,7 +878,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the
@@ -901,7 +915,7 @@ spec:
                         retryLimit:
                           description: 'RetryLimit describes how many times fluent-bit
                             should retry to send data to a specific output. If set
-                            to false fluent-bit will try indefinetly. If set to any
+                            to false fluent-bit will try indefinitely. If set to any
                             integer N>0 it will try at most N+1 times. Leading zeros
                             are not allowed (values such as 007, 0150, 01 do not work).
                             If this property is not defined fluent-bit will use the

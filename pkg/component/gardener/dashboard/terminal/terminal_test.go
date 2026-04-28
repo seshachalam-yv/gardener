@@ -368,17 +368,21 @@ server:
 					Name:       "terminal-controller-manager",
 				},
 				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 						{
-							ContainerName:    "*",
+							ContainerName:    "terminal-controller-manager",
 							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 							MinAllowed: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse("10m"),
 								corev1.ResourceMemory: resource.MustParse("32Mi"),
 							},
+						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},
@@ -393,22 +397,23 @@ server:
 			Spec: monitoringv1.ServiceMonitorSpec{
 				Selector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "terminal-controller-manager"}},
 				Endpoints: []monitoringv1.Endpoint{{
-					Port:      "metrics",
-					Scheme:    "https",
-					TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
-					Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-garden"},
-						Key:                  "token",
-					}},
+					Port:   "metrics",
+					Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+					HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+						HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+							HTTPConfigWithoutTLS: monitoringv1.HTTPConfigWithoutTLS{
+								Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-garden"},
+									Key:                  "token",
+								}},
+							},
+						},
+					},
 					MetricRelabelConfigs: []monitoringv1.RelabelConfig{
 						{
 							Action: "labeldrop",
 							Regex:  `url`,
-						},
-						{
-							SourceLabels: []monitoringv1.LabelName{"__name__"},
-							Action:       "keep",
-							Regex:        `^()$`,
 						},
 					},
 				}},
@@ -723,6 +728,19 @@ server:
 			Context("when topology aware routing is configured", func() {
 				BeforeEach(func() {
 					topologyAwareRouting = true
+				})
+
+				When("runtime Kubernetes version is >= 1.34", func() {
+					BeforeEach(func() {
+						runtimeVersion = semver.MustParse("1.34.0")
+					})
+
+					It("should successfully deploy all resources", func() {
+						service.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferSameZone)
+
+						Expect(managedResourceRuntime).To(consistOf(expectedRuntimeObjects...))
+						Expect(managedResourceVirtual).To(consistOf(expectedVirtualObjects...))
+					})
 				})
 
 				When("runtime Kubernetes version is >= 1.32", func() {

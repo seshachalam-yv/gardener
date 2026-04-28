@@ -32,11 +32,6 @@ add_keep_object_annotation=false
 crd_options=""
 declare -A custom_packages=()
 
-# setup virtual GOPATH
-source $(dirname $0)/vgopath-setup.sh
-
-export GO111MODULE=off
-
 get_group_package () {
   if [[ -v custom_packages["$1"] ]]; then
     echo "${custom_packages["$1"]}"
@@ -65,8 +60,14 @@ get_group_package () {
   "monitoring.coreos.com_v1alpha1")
     echo "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
     ;;
-  "perses.dev_v1alpha1")
-    echo "github.com/perses/perses-operator/api/v1alpha1"
+  "perses.dev_v1alpha2")
+    echo "github.com/perses/perses-operator/api/v1alpha2"
+    ;;
+  "operator.victoriametrics.com_v1")
+    echo "github.com/VictoriaMetrics/operator/api/operator/v1"
+    ;;
+  "operator.victoriametrics.com_v1beta1")
+    echo "github.com/VictoriaMetrics/operator/api/operator/v1beta1"
     ;;
   "autoscaling.k8s.io")
     echo "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
@@ -81,10 +82,10 @@ get_group_package () {
     echo "github.com/gardener/terminal-controller-manager/api/v1alpha1"
     ;;
   "opentelemetry.io_v1alpha1")
-    echo "github.com/open-telemetry/opentelemetry-operator/apis/v1alpha1"
+    echo "github.com/gardener/gardener/third_party/open-telemetry/opentelemetry-operator/apis/v1alpha1"
     ;;
   "opentelemetry.io_v1beta1")
-    echo "github.com/open-telemetry/opentelemetry-operator/apis/v1beta1"
+    echo "github.com/gardener/gardener/third_party/open-telemetry/opentelemetry-operator/apis/v1beta1"
     ;;
   *)
     >&2 echo "unknown group $1"
@@ -102,10 +103,12 @@ generate_all_groups () {
   generate_group monitoring.coreos.com_v1
   generate_group monitoring.coreos.com_v1beta1
   generate_group monitoring.coreos.com_v1alpha1
-  generate_group perses.dev_v1alpha1
+  generate_group perses.dev_v1alpha2
   generate_group machine.sapcloud.io
   generate_group dashboard.gardener.cloud
   generate_group opentelemetry.io
+  generate_group operator.victoriametrics.com_v1
+  generate_group operator.victoriametrics.com_v1beta1
 }
 
 generate_group () {
@@ -132,21 +135,7 @@ generate_group () {
     generate="controller-gen crd"$crd_options" paths="$package_path" output:crd:dir="$output_dir_temp" output:stdout"
     $generate &> "$generator_output" ||:
     grep -v -e 'map keys must be strings, not int' -e 'not all generators ran successfully' -e 'usage' "$generator_output" && { echo "Failed to generate CRD YAMLs."; exit 1; }
-  elif [[ "$group" == "monitoring.coreos.com_v1alpha1" ]]; then
-    # ScrapeConfig roles change recently, see https://github.com/prometheus-operator/prometheus-operator/commit/38900ced627fdde49f3136795a678fbb8f79de05#diff-95caef4dacf48c47bf56afc00c513822feba29a5d2f6354b75c97a25a353d52fL75-R77
-    # The old roles (starting with lower case letters) are still working (because later roles are converted to lower case anyway). Yet, they are forbidden by the new enum.
-    # Some extensions still use the old roles, so we patch the CRD to give time for updating them.
-    # TODO(oliver-goetz): Remove this workaround when https://github.com/gardener/gardener/issues/12401 has been closed.
-    monitoring_dir="$(go list -f '{{ .Dir }}' "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring")"
-    scrapeconfig_types_file="${monitoring_dir}/v1alpha1/scrapeconfig_types.go"
-    # Create a local copy outside the mod cache path in order to patch the types file via sed.
-    scrapeconfig_types_backup="$(mktemp -d)/scrapeconfig_types.go"
-    cp "$scrapeconfig_types_file" "$scrapeconfig_types_backup"
-    chmod +w "$scrapeconfig_types_file" "$monitoring_dir/v1alpha1/"
-    trap 'cp "$scrapeconfig_types_backup" "$scrapeconfig_types_file" && chmod -w "$monitoring_dir/v1alpha1/"' EXIT
-    sed -i 's/\+kubebuilder:validation:Enum=Pod;Endpoints;Ingress;Service;Node;EndpointSlice/\+kubebuilder:validation:Enum=Pod;pod;Endpoints;endpoints;Ingress;ingress;Service;service;Node;node;EndpointSlice;endpointslice/g' "$scrapeconfig_types_file"
-    $generate
-  elif [[ "$group" == "perses.dev_v1alpha1" ]]; then
+  elif [[ "$group" == "perses.dev_v1alpha2" ]]; then
     generate="controller-gen crd:ignoreUnexportedFields=true"$crd_options" paths="$package_path" output:crd:dir="$output_dir_temp" output:stdout"
     $generate
   else
@@ -163,11 +152,7 @@ generate_group () {
     relevant_files+=("$(basename "$crd_out")")
 
     if $add_deletion_protection_label; then
-      if grep -q "clusters.extensions.gardener.cloud"  "$crd_out"; then
-        :
-      else
         sed -i '4 a\  labels:\n\    gardener.cloud/deletion-protected: "true"' "$crd_out"
-      fi
     fi
 
     if $add_keep_object_annotation; then

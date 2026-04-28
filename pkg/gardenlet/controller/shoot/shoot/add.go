@@ -36,7 +36,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster cluster.Clu
 		r.GardenClient = gardenCluster.GetClient()
 	}
 	if r.Recorder == nil {
-		r.Recorder = gardenCluster.GetEventRecorderFor(ControllerName + "-controller")
+		r.Recorder = gardenCluster.GetEventRecorder(ControllerName + "-controller")
 	}
 	if r.Clock == nil {
 		r.Clock = clock.RealClock{}
@@ -67,7 +67,7 @@ func (r *Reconciler) EventHandler(log logr.Logger) handler.EventHandler {
 				return
 			}
 
-			enqueueAfter := CalculateControllerInfos(shoot, r.Clock, *r.Config.Controllers.Shoot).EnqueueAfter
+			enqueueAfter := CalculateControllerInfos(nil, shoot, r.Clock, *r.Config.Controllers.Shoot).EnqueueAfter
 			nextReconciliation := r.Clock.Now().UTC().Add(enqueueAfter)
 
 			log.Info("Scheduling next reconciliation for Shoot",

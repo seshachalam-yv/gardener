@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,11 +22,12 @@ import (
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
 	"github.com/gardener/gardener/extensions/pkg/util"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/gardener/shootstate"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
 var diskSizeRegex = regexp.MustCompile(`^(\d+)`)
@@ -56,12 +60,9 @@ type MachineDeployments []MachineDeployment
 // HasDeployment checks whether the <name> is part of the <machineDeployments>
 // list, i.e. whether there is an entry whose 'Name' attribute matches <name>. It returns true or false.
 func (m MachineDeployments) HasDeployment(name string) bool {
-	for _, deployment := range m {
-		if name == deployment.Name {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(m, func(deployment MachineDeployment) bool {
+		return name == deployment.Name
+	})
 }
 
 // FindByName finds the deployment with the <name> from the <machineDeployments>
@@ -78,23 +79,17 @@ func (m MachineDeployments) FindByName(name string) *MachineDeployment {
 // HasClass checks whether the <className> is part of the <machineDeployments>
 // list, i.e. whether there is an entry whose 'ClassName' attribute matches <name>. It returns true or false.
 func (m MachineDeployments) HasClass(className string) bool {
-	for _, deployment := range m {
-		if className == deployment.ClassName {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(m, func(deployment MachineDeployment) bool {
+		return className == deployment.ClassName
+	})
 }
 
 // HasSecret checks whether the <secretName> is part of the <machineDeployments>
 // list, i.e. whether there is an entry whose 'SecretName' attribute matches <name>. It returns true or false.
 func (m MachineDeployments) HasSecret(secretName string) bool {
-	for _, deployment := range m {
-		if secretName == deployment.SecretName {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(m, func(deployment MachineDeployment) bool {
+		return secretName == deployment.SecretName
+	})
 }
 
 // WorkerPoolHash returns a hash value for a given worker pool and a given cluster resource.
@@ -161,16 +156,22 @@ func WorkerPoolHashV1(pool extensionsv1alpha1.WorkerPool, cluster *extensionscon
 		}
 	}
 
-	if v1beta1helper.IsNodeLocalDNSEnabled(cluster.Shoot.Spec.SystemComponents) {
+	parsedVersion, err := semver.NewVersion(kubernetesVersion)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse Kubernetes version %q: %w", kubernetesVersion, err)
+	}
+
+	if (versionutils.ConstraintK8sLess134.Check(parsedVersion) && v1beta1helper.IsNodeLocalDNSEnabled(cluster.Shoot.Spec.SystemComponents)) ||
+		(v1beta1helper.IsKubeProxyIPVSMode(cluster.Shoot.Spec.Kubernetes.KubeProxy) && v1beta1helper.IsNodeLocalDNSEnabled(cluster.Shoot.Spec.SystemComponents)) {
 		data = append(data, "node-local-dns")
 	}
 
-	var result string
+	var result strings.Builder
 	for _, v := range data {
-		result += utils.ComputeSHA256Hex([]byte(v))
+		result.WriteString(utils.ComputeSHA256Hex([]byte(v)))
 	}
 
-	return utils.ComputeSHA256Hex([]byte(result))[:5], nil
+	return utils.ComputeSHA256Hex([]byte(result.String()))[:5], nil
 }
 
 // WorkerPoolHashV2 returns a hash value for a given nodeAgentSecretName and additional data.
@@ -179,12 +180,12 @@ func WorkerPoolHashV2(nodeAgentSecretName string, additionalData ...string) (str
 
 	data = append(data, additionalData...)
 
-	var result string
+	var result strings.Builder
 	for _, v := range data {
-		result += utils.ComputeSHA256Hex([]byte(v))
+		result.WriteString(utils.ComputeSHA256Hex([]byte(v)))
 	}
 
-	return utils.ComputeSHA256Hex([]byte(result))[:5], nil
+	return utils.ComputeSHA256Hex([]byte(result.String()))[:5], nil
 }
 
 // WorkerPoolHashInPlace returns the hash value for a worker pool with an in-place update strategy.
@@ -211,12 +212,12 @@ func WorkerPoolHashInPlace(pool extensionsv1alpha1.WorkerPool, cluster *extensio
 	data = append(data, workerPoolHash)
 	data = append(data, additionalData...)
 
-	var result string
+	var result strings.Builder
 	for _, v := range data {
-		result += utils.ComputeSHA256Hex([]byte(v))
+		result.WriteString(utils.ComputeSHA256Hex([]byte(v)))
 	}
 
-	return utils.ComputeSHA256Hex([]byte(result))[:5], nil
+	return utils.ComputeSHA256Hex([]byte(result.String()))[:5], nil
 }
 
 // DistributeOverZones is a function which is used to determine how many nodes should be used
@@ -287,11 +288,11 @@ func DiskSize(size string) (int, error) {
 
 // ErrorMachineImageNotFound returns an appropriate error message for an unknown name/version image pair.
 func ErrorMachineImageNotFound(name, version string, opt ...string) error {
-	ext := ""
+	var ext strings.Builder
 	for _, o := range opt {
-		ext += "/" + o
+		ext.WriteString("/" + o)
 	}
-	return fmt.Errorf("could not find machine image for %s/%s%s neither in cloud profile nor in worker status", name, version, ext)
+	return fmt.Errorf("could not find machine image for %s/%s%s neither in cloud profile nor in worker status", name, version, ext.String())
 }
 
 // FetchUserData fetches the user data for a worker pool.

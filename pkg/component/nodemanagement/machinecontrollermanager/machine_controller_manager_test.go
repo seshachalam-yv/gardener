@@ -21,7 +21,6 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
@@ -45,9 +44,8 @@ var _ = Describe("MachineControllerManager", func() {
 		ctx       = context.Background()
 		namespace string
 
-		image        = "mcm-image:tag"
-		namespaceUID = types.UID("uid")
-		replicas     = int32(1)
+		image    = "mcm-image:tag"
+		replicas = int32(1)
 
 		fakeClient client.Client
 		sm         secretsmanager.Interface
@@ -60,7 +58,6 @@ var _ = Describe("MachineControllerManager", func() {
 		roleBindingYAML        string
 
 		serviceAccount        *corev1.ServiceAccount
-		clusterRoleBinding    *rbacv1.ClusterRoleBinding
 		roleBinding           *rbacv1.RoleBinding
 		role                  *rbacv1.Role
 		service               *corev1.Service
@@ -96,30 +93,6 @@ var _ = Describe("MachineControllerManager", func() {
 				Namespace: namespace,
 			},
 			AutomountServiceAccountToken: ptr.To(false),
-		}
-
-		clusterRoleBinding = &rbacv1.ClusterRoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "machine-controller-manager-" + namespace,
-				OwnerReferences: []metav1.OwnerReference{{
-					APIVersion:         "v1",
-					Kind:               "Namespace",
-					Name:               namespace,
-					UID:                namespaceUID,
-					Controller:         ptr.To(true),
-					BlockOwnerDeletion: ptr.To(true),
-				}},
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "ClusterRole",
-				Name:     "system:machine-controller-manager-runtime",
-			},
-			Subjects: []rbacv1.Subject{{
-				Kind:      "ServiceAccount",
-				Name:      "machine-controller-manager",
-				Namespace: namespace,
-			}},
 		}
 
 		roleBinding = &rbacv1.RoleBinding{
@@ -312,6 +285,7 @@ var _ = Describe("MachineControllerManager", func() {
 						PriorityClassName:             "gardener-system-300",
 						ServiceAccountName:            "machine-controller-manager",
 						TerminationGracePeriodSeconds: ptr.To[int64](5),
+						Tolerations:                   []corev1.Toleration{{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists}},
 					},
 				},
 			},
@@ -353,13 +327,19 @@ var _ = Describe("MachineControllerManager", func() {
 					Name:       "machine-controller-manager",
 				},
 				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
-					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-						ContainerName:    "machine-controller-manager",
-						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-					}},
+					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+						{
+							ContainerName:    "machine-controller-manager",
+							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+						},
+					},
 				},
 			},
 		}
@@ -433,7 +413,6 @@ var _ = Describe("MachineControllerManager", func() {
 		clusterRoleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   name: gardener.cloud:target:machine-controller-manager
 rules:
 - apiGroups:
@@ -512,7 +491,6 @@ rules:
 		clusterRoleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  creationTimestamp: null
   name: gardener.cloud:target:machine-controller-manager
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -527,7 +505,6 @@ subjects:
 		roleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  creationTimestamp: null
   name: gardener.cloud:target:machine-controller-manager
   namespace: kube-system
 rules:
@@ -545,7 +522,6 @@ rules:
 		roleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  creationTimestamp: null
   name: gardener.cloud:target:machine-controller-manager
   namespace: kube-system
 roleRef:
@@ -586,10 +562,6 @@ subjects:
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(serviceAccount), actualServiceAccount)).To(Succeed())
 			serviceAccount.ResourceVersion = "1"
 			Expect(actualServiceAccount).To(DeepEqual(serviceAccount))
-
-			//TODO(@aaronfern): Remove this after v1.123 is released
-			actualClusterRoleBinding := &rbacv1.ClusterRoleBinding{}
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(clusterRoleBinding), actualClusterRoleBinding)).To(BeNotFoundError())
 
 			actualRoleBinding := &rbacv1.RoleBinding{}
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(roleBinding), actualRoleBinding)).To(Succeed())
@@ -632,30 +604,34 @@ subjects:
 			Expect(actualServiceMonitor).To(DeepEqual(serviceMonitor))
 
 			actualManagedResource := &resourcesv1alpha1.ManagedResource{}
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(managedResource), actualManagedResource)).To(Succeed())
-			managedResource.ResourceVersion = "1"
-			managedResource.Spec.SecretRefs[0] = actualManagedResource.Spec.SecretRefs[0]
-			utilruntime.Must(references.InjectAnnotations(managedResource))
-			Expect(actualManagedResource).To(DeepEqual(managedResource))
+			if values.SelfHostedShoot && namespace != "kube-system" {
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(managedResource), actualManagedResource)).To(BeNotFoundError())
+			} else {
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(managedResource), actualManagedResource)).To(Succeed())
+				managedResource.ResourceVersion = "1"
+				managedResource.Spec.SecretRefs[0] = actualManagedResource.Spec.SecretRefs[0]
+				utilruntime.Must(references.InjectAnnotations(managedResource))
+				Expect(actualManagedResource).To(DeepEqual(managedResource))
 
-			actualManagedResourceSecret := &corev1.Secret{}
-			managedResourceSecret.Name = actualManagedResource.Spec.SecretRefs[0].Name
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), actualManagedResourceSecret)).To(Succeed())
-			Expect(actualManagedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
-			Expect(actualManagedResourceSecret.Immutable).To(Equal(ptr.To(true)))
+				actualManagedResourceSecret := &corev1.Secret{}
+				managedResourceSecret.Name = actualManagedResource.Spec.SecretRefs[0].Name
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(managedResourceSecret), actualManagedResourceSecret)).To(Succeed())
+				Expect(actualManagedResourceSecret.Type).To(Equal(corev1.SecretTypeOpaque))
+				Expect(actualManagedResourceSecret.Immutable).To(Equal(ptr.To(true)))
 
-			manifests, err := test.ExtractManifestsFromManagedResourceData(actualManagedResourceSecret.Data)
-			Expect(err).NotTo(HaveOccurred())
+				manifests, err := test.ExtractManifestsFromManagedResourceData(actualManagedResourceSecret.Data)
+				Expect(err).NotTo(HaveOccurred())
 
-			Expect(manifests).To(ConsistOf(
-				clusterRoleYAML,
-				clusterRoleBindingYAML,
-				roleYAML,
-				roleBindingYAML,
-			))
+				Expect(manifests).To(ConsistOf(
+					clusterRoleYAML,
+					clusterRoleBindingYAML,
+					roleYAML,
+					roleBindingYAML,
+				))
+			}
 		}
 
-		When("the shoot is not autonomous", func() {
+		When("the shoot is not self-hosted", func() {
 			JustBeforeEach(func() {
 				Expect(gardenerutils.InjectGenericKubeconfig(deployment, "generic-token-kubeconfig", shootAccessSecret.Name)).To(Succeed())
 			})
@@ -670,24 +646,26 @@ subjects:
 			})
 		})
 
-		When("the shoot is autonomous", func() {
+		When("the shoot is self-hosted", func() {
 			BeforeEach(func() {
-				values.AutonomousShoot = true
+				values.SelfHostedShoot = true
 			})
 
 			JustBeforeEach(func() {
 				shootAccessSecret = nil
-
-				for i, s := range deployment.Spec.Template.Spec.Containers[0].Command {
-					if strings.HasPrefix(s, "--target-kubeconfig=") {
-						deployment.Spec.Template.Spec.Containers[0].Command[i] = "--target-kubeconfig="
-					}
-				}
 			})
 
 			When("running the control plane (gardenadm init)", func() {
 				BeforeEach(func() {
 					namespace = "kube-system"
+				})
+
+				JustBeforeEach(func() {
+					for i, s := range deployment.Spec.Template.Spec.Containers[0].Command {
+						if strings.HasPrefix(s, "--target-kubeconfig=") {
+							deployment.Spec.Template.Spec.Containers[0].Command[i] = "--target-kubeconfig="
+						}
+					}
 				})
 
 				It("should successfully deploy all resources", func() {
@@ -697,12 +675,11 @@ subjects:
 
 			When("not running the control plane (gardenadm bootstrap)", func() {
 				JustBeforeEach(func() {
-					managedResource.Labels = nil
-					managedResource.Spec.InjectLabels = nil
-					managedResource.Spec.Class = ptr.To("seed")
-
-					clusterRoleBindingYAML = strings.ReplaceAll(clusterRoleBindingYAML, "name: machine-controller-manager\n  namespace: kube-system", "name: machine-controller-manager\n  namespace: "+namespace)
-					roleBindingYAML = strings.ReplaceAll(roleBindingYAML, "name: machine-controller-manager\n  namespace: kube-system", "name: machine-controller-manager\n  namespace: "+namespace)
+					for i, s := range deployment.Spec.Template.Spec.Containers[0].Command {
+						if strings.HasPrefix(s, "--target-kubeconfig=") {
+							deployment.Spec.Template.Spec.Containers[0].Command[i] = "--target-kubeconfig=none"
+						}
+					}
 				})
 
 				It("should successfully deploy all resources", func() {
@@ -712,24 +689,9 @@ subjects:
 		})
 	})
 
-	Describe("#MigrateRBAC", func() {
-		It("should successfully delete existing clusterRoleBinding and create a role/roleBinding when MigrateRBAC is called", func() {
-			Expect(fakeClient.Create(ctx, clusterRoleBinding)).To(Succeed())
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(clusterRoleBinding), &rbacv1.ClusterRoleBinding{})).To(Succeed())
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(role), &rbacv1.Role{})).To(BeNotFoundError())
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(roleBinding), &rbacv1.RoleBinding{})).To(BeNotFoundError())
-
-			Expect(mcm.MigrateRBAC(ctx)).To(Succeed())
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(clusterRoleBinding), &rbacv1.ClusterRoleBinding{})).To(BeNotFoundError())
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(role), &rbacv1.Role{})).To(Succeed())
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(roleBinding), &rbacv1.RoleBinding{})).To(Succeed())
-		})
-	})
-
 	Describe("#Destroy", func() {
 		It("should successfully destroy all resources", func() {
 			Expect(fakeClient.Create(ctx, serviceAccount)).To(Succeed())
-			Expect(fakeClient.Create(ctx, clusterRoleBinding)).To(Succeed())
 			Expect(fakeClient.Create(ctx, role)).To(Succeed())
 			Expect(fakeClient.Create(ctx, roleBinding)).To(Succeed())
 			Expect(fakeClient.Create(ctx, service)).To(Succeed())
@@ -751,7 +713,6 @@ subjects:
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(deployment), &appsv1.Deployment{})).To(BeNotFoundError())
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(shootAccessSecret), &corev1.Secret{})).To(BeNotFoundError())
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(service), &corev1.Service{})).To(BeNotFoundError())
-			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(clusterRoleBinding), &rbacv1.ClusterRoleBinding{})).To(BeNotFoundError())
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(role), &rbacv1.ClusterRoleBinding{})).To(BeNotFoundError())
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(roleBinding), &rbacv1.ClusterRoleBinding{})).To(BeNotFoundError())
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(serviceAccount), &corev1.ServiceAccount{})).To(BeNotFoundError())

@@ -15,9 +15,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement/encoding"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	seedmanagementv1alpha1constants "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/constants"
@@ -314,7 +314,7 @@ func managedSeedRegistered(managedSeed *seedmanagementv1alpha1.ManagedSeed) bool
 }
 
 func seedReady(seed *gardencorev1beta1.Seed) bool {
-	conditionGardenletReady := v1beta1helper.GetCondition(seed.Status.Conditions, gardencorev1beta1.SeedGardenletReady)
+	conditionGardenletReady := v1beta1helper.GetCondition(seed.Status.Conditions, gardencorev1beta1.GardenletReady)
 	conditionBackupBucketsReady := v1beta1helper.GetCondition(seed.Status.Conditions, gardencorev1beta1.SeedBackupBucketsReady)
 	conditionSystemComponentsHealthy := v1beta1helper.GetCondition(seed.Status.Conditions, gardencorev1beta1.SeedSystemComponentsHealthy)
 	return seed.Generation == seed.Status.ObservedGeneration && seed.DeletionTimestamp == nil &&

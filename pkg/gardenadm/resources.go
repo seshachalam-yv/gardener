@@ -6,6 +6,7 @@ package gardenadm
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -51,34 +52,23 @@ type Resources struct {
 	Project                 *gardencorev1beta1.Project
 	Seed                    *gardencorev1beta1.Seed
 	Shoot                   *gardencorev1beta1.Shoot
+	ShootState              *gardencorev1beta1.ShootState
 	ControllerRegistrations []*gardencorev1beta1.ControllerRegistration
 	ControllerDeployments   []*gardencorev1.ControllerDeployment
+	ConfigMaps              []*corev1.ConfigMap
 	Secrets                 []*corev1.Secret
 	SecretBinding           *gardencorev1beta1.SecretBinding
 	CredentialsBinding      *securityv1alpha1.CredentialsBinding
+	WorkloadIdentities      []*securityv1alpha1.WorkloadIdentity
 }
 
 // ReadManifests reads Kubernetes and Gardener manifests in YAML or JSON format.
 // It returns among others a CloudProfile, Project, and Shoot resource if found, or an error if any issues occur during
-// reading or decoding.
+// reading or decoding. It ignores hidden files and directories (starting with a dot).
 func ReadManifests(log logr.Logger, fsys fs.FS) (Resources, error) {
 	resources := Resources{Seed: &gardencorev1beta1.Seed{}}
 
-	if err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return fmt.Errorf("failed walking directory: %w", err)
-		}
-
-		if d.IsDir() || !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") && !strings.HasSuffix(path, ".json") {
-			return nil
-		}
-
-		file, err := fsys.Open(path)
-		if err != nil {
-			return fmt.Errorf("failed opening file %s: %w", path, err)
-		}
-		defer file.Close()
-
+	if err := VisitManifestFiles(fsys, func(path string, file fs.File) error {
 		reader := yaml.NewYAMLReader(bufio.NewReader(file))
 
 		for indexInFile := 0; true; indexInFile++ {
@@ -121,6 +111,12 @@ func ReadManifests(log logr.Logger, fsys fs.FS) (Resources, error) {
 				}
 				resources.Shoot = typedObj
 
+			case *gardencorev1beta1.ShootState:
+				if resources.ShootState != nil {
+					return fmt.Errorf("found more than one *gardencorev1beta1.ShootState resource, but only one is allowed")
+				}
+				resources.ShootState = typedObj
+
 			case *gardencorev1beta1.ControllerRegistration:
 				resources.ControllerRegistrations = append(resources.ControllerRegistrations, typedObj)
 
@@ -131,6 +127,9 @@ func ReadManifests(log logr.Logger, fsys fs.FS) (Resources, error) {
 				controllerRegistration, controllerDeployment := operator.ControllerRegistrationForExtension(typedObj)
 				resources.ControllerRegistrations = append(resources.ControllerRegistrations, controllerRegistration)
 				resources.ControllerDeployments = append(resources.ControllerDeployments, controllerDeployment)
+
+			case *corev1.ConfigMap:
+				resources.ConfigMaps = append(resources.ConfigMaps, typedObj)
 
 			case *corev1.Secret:
 				resources.Secrets = append(resources.Secrets, typedObj)
@@ -146,6 +145,8 @@ func ReadManifests(log logr.Logger, fsys fs.FS) (Resources, error) {
 					return fmt.Errorf("found more than one *securityv1alpha1.CredentialsBinding resource, but only one is allowed")
 				}
 				resources.CredentialsBinding = typedObj
+			case *securityv1alpha1.WorkloadIdentity:
+				resources.WorkloadIdentities = append(resources.WorkloadIdentities, typedObj)
 			}
 		}
 
@@ -165,4 +166,37 @@ func ReadManifests(log logr.Logger, fsys fs.FS) (Resources, error) {
 	}
 
 	return resources, nil
+}
+
+// VisitManifestFiles calls the visit func for all manifest files in the given file system.
+// It ignores hidden files and directories (starting with a dot).
+func VisitManifestFiles(fsys fs.FS, visit func(path string, file fs.File) error) error {
+	return fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) (rErr error) {
+		if err != nil {
+			return fmt.Errorf("failed walking directory: %w", err)
+		}
+
+		// stop walking hidden directories entirely
+		if d.IsDir() && d.Name() != "." && strings.HasPrefix(d.Name(), ".") {
+			return fs.SkipDir
+		}
+
+		if d.IsDir() || // don't read directories
+			strings.HasPrefix(d.Name(), ".") || // don't read hidden files
+			(!strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") && !strings.HasSuffix(path, ".json")) { // don't read files with unexpected extension
+			return nil
+		}
+
+		file, err := fsys.Open(path)
+		if err != nil {
+			return fmt.Errorf("failed opening file %s: %w", path, err)
+		}
+		defer func() {
+			if closeErr := file.Close(); closeErr != nil {
+				rErr = errors.Join(rErr, closeErr)
+			}
+		}()
+
+		return visit(path, file)
+	})
 }

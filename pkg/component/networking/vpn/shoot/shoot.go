@@ -38,6 +38,7 @@ import (
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
 	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
@@ -67,8 +68,10 @@ const (
 
 // ReversedVPNValues contains the configuration values for the ReversedVPN.
 type ReversedVPNValues struct {
-	// Header is the header for the ReversedVPN.
+	// Header is the header value for the ReversedVPN.
 	Header string
+	// HeaderKey is the actual header for the ReversedVPN.
+	HeaderKey string
 	// Endpoint is the endpoint for the ReversedVPN.
 	Endpoint string
 	// OpenVPNPort is the port for the ReversedVPN.
@@ -493,11 +496,10 @@ func (v *vpnShoot) computeResourcesData(secretCAVPN *corev1.Secret, secretsVPNSh
 	utilruntime.Must(references.InjectAnnotations(deploymentOrStatefulSet))
 
 	if v.values.VPAEnabled {
-		vpaUpdateMode := vpaautoscalingv1.UpdateModeAuto
+		vpaUpdateMode := vpaautoscalingv1.UpdateModeRecreate
 		if v.values.VPAUpdateDisabled {
 			vpaUpdateMode = vpaautoscalingv1.UpdateModeOff
 		}
-		controlledValues := vpaautoscalingv1.ContainerControlledValuesRequestsOnly
 		kind := "Deployment"
 		if _, ok := deploymentOrStatefulSet.(*appsv1.StatefulSet); ok {
 			kind = "StatefulSet"
@@ -517,9 +519,13 @@ func (v *vpnShoot) computeResourcesData(secretCAVPN *corev1.Secret, secretsVPNSh
 				MinAllowed: corev1.ResourceList{
 					corev1.ResourceMemory: resource.MustParse("10Mi"),
 				},
-				ControlledValues: &controlledValues,
+				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 			})
 		}
+		containerPolicies = append(containerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
+			ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+			Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+		})
 		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "vpn-shoot",
@@ -634,7 +640,6 @@ func (v *vpnShoot) container(secrets []vpnSecret, index *int) *corev1.Container 
 				corev1.ResourceCPU:    resource.MustParse("100m"),
 				corev1.ResourceMemory: resource.MustParse("100Mi"),
 			},
-			Limits: v.getResourceLimits(),
 		},
 		SecurityContext: &corev1.SecurityContext{
 			Privileged:               ptr.To(false),
@@ -658,9 +663,6 @@ func (v *vpnShoot) tunnelControllerContainer() *corev1.Container {
 				corev1.ResourceCPU:    resource.MustParse("10m"),
 				corev1.ResourceMemory: resource.MustParse("10Mi"),
 			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("20Mi"),
-			},
 		},
 		SecurityContext: &corev1.SecurityContext{
 			Privileged:               ptr.To(false),
@@ -668,6 +670,19 @@ func (v *vpnShoot) tunnelControllerContainer() *corev1.Container {
 			Capabilities: &corev1.Capabilities{
 				Add: []corev1.Capability{"NET_ADMIN"},
 			},
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/readyz",
+					Port: intstr.FromInt32(8080),
+				},
+			},
+			SuccessThreshold:    2, // Check twice to buy enough time to establish more than one kube apiserver route.
+			FailureThreshold:    1,
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       5,
+			TimeoutSeconds:      2,
 		},
 	}
 }
@@ -784,6 +799,13 @@ func (v *vpnShoot) getEnvVars(index *int) []corev1.EnvVar {
 		},
 	)
 
+	if headerKey := v.values.ReversedVPN.HeaderKey; headerKey != "" {
+		envVariables = append(envVariables, corev1.EnvVar{
+			Name:  "REVERSED_VPN_HEADER_KEY",
+			Value: headerKey,
+		})
+	}
+
 	if index != nil {
 		envVariables = append(envVariables,
 			[]corev1.EnvVar{
@@ -807,17 +829,6 @@ func (v *vpnShoot) getEnvVars(index *int) []corev1.EnvVar {
 	}
 
 	return envVariables
-}
-
-func (v *vpnShoot) getResourceLimits() corev1.ResourceList {
-	if v.values.VPAEnabled {
-		return corev1.ResourceList{
-			corev1.ResourceMemory: resource.MustParse("100Mi"),
-		}
-	}
-	return corev1.ResourceList{
-		corev1.ResourceMemory: resource.MustParse("120Mi"),
-	}
 }
 
 func (v *vpnShoot) getVolumeMounts(secrets []vpnSecret) []corev1.VolumeMount {
@@ -942,9 +953,6 @@ func (v *vpnShoot) getInitContainers() []corev1.Container {
 				corev1.ResourceCPU:    resource.MustParse("30m"),
 				corev1.ResourceMemory: resource.MustParse("32Mi"),
 			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("32Mi"),
-			},
 		},
 	}
 
@@ -963,6 +971,12 @@ func (v *vpnShoot) getInitContainers() []corev1.Container {
 				Value: strconv.Itoa(v.values.HighAvailabilityNumberOfShootClients),
 			},
 		}...)
+		if features.DefaultFeatureGate.Enabled(features.VPNBondingModeRoundRobin) {
+			container.Env = append(container.Env, corev1.EnvVar{
+				Name:  "BONDING_MODE",
+				Value: "balance-rr",
+			})
+		}
 	}
 
 	return []corev1.Container{container}

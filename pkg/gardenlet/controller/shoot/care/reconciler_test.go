@@ -22,15 +22,15 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	fakeclientmap "github.com/gardener/gardener/pkg/client/kubernetes/clientmap/fake"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/shoot/care"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
@@ -93,6 +93,7 @@ var _ = Describe("Shoot Care Control", func() {
 
 			gardenSecrets []corev1.Secret
 			req           reconcile.Request
+			seed          *gardencorev1beta1.Seed
 		)
 
 		BeforeEach(func() {
@@ -116,6 +117,12 @@ var _ = Describe("Shoot Care Control", func() {
 					},
 				},
 			}
+
+			seed = &gardencorev1beta1.Seed{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: seedName,
+				},
+			}
 		})
 
 		JustBeforeEach(func() {
@@ -124,6 +131,8 @@ var _ = Describe("Shoot Care Control", func() {
 			for _, secret := range gardenSecrets {
 				Expect(gardenClient.Create(ctx, secret.DeepCopy())).To(Succeed())
 			}
+
+			Expect(gardenClient.Create(ctx, seed)).To(Succeed())
 		})
 
 		Context("when health check setup is broken", func() {
@@ -227,7 +236,7 @@ var _ = Describe("Shoot Care Control", func() {
 					}
 
 					_, err := reconciler.Reconcile(ctx, req)
-					Expect(err).To(MatchError("error reading Garden secrets: need an internal domain secret but found none"))
+					Expect(err).To(MatchError("error reading Garden internal domain secret: need an internal domain secret but found none"))
 				})
 			})
 		})
@@ -587,6 +596,8 @@ func opFunc(op *operation.Operation, err error) NewOperationFunc {
 		_ *gardencorev1beta1.Gardener,
 		_ string,
 		_ map[string]*corev1.Secret,
+		_ *gardenerutils.Domain,
+		_ []*gardenerutils.Domain,
 		_ *gardencorev1beta1.Shoot,
 	) (*operation.Operation, error) {
 		return op, err

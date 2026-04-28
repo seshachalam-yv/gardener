@@ -7,12 +7,14 @@ package utils
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"net"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/elliotchance/orderedmap/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -54,18 +56,14 @@ func MergeStringMaps[T any](oldMap map[string]T, newMaps ...map[string]T) map[st
 	if oldMap != nil {
 		out = make(map[string]T, len(oldMap))
 	}
-	for k, v := range oldMap {
-		out[k] = v
-	}
+	maps.Copy(out, oldMap)
 
 	for _, newMap := range newMaps {
 		if newMap != nil && out == nil {
 			out = make(map[string]T)
 		}
 
-		for k, v := range newMap {
-			out[k] = v
-		}
+		maps.Copy(out, newMap)
 	}
 
 	return out
@@ -73,12 +71,17 @@ func MergeStringMaps[T any](oldMap map[string]T, newMaps ...map[string]T) map[st
 
 // CreateMapFromSlice converts the values of an array to a map using a key function.
 func CreateMapFromSlice[K comparable, T any](arr []T, keyFunc func(T) K) map[K]T {
-	mapped := make(map[K]T, len(arr))
+	return maps.Collect(CreateOrderedMapFromSlice(arr, keyFunc).AllFromFront())
+}
+
+// CreateOrderedMapFromSlice converts the values of an array to an ordered map using a key function.
+func CreateOrderedMapFromSlice[K comparable, T any](arr []T, keyFunc func(T) K) *orderedmap.OrderedMap[K, T] {
+	mapped := orderedmap.NewOrderedMapWithCapacity[K, T](len(arr))
 	if keyFunc == nil {
 		return mapped
 	}
 	for _, value := range arr {
-		mapped[keyFunc(value)] = value
+		mapped.Set(keyFunc(value), value)
 	}
 	return mapped
 }
@@ -133,9 +136,7 @@ func Indent(str string, spaces int) string {
 // ShallowCopyMapStringInterface creates a shallow copy of the given map.
 func ShallowCopyMapStringInterface(values map[string]any) map[string]any {
 	copiedValues := make(map[string]any, len(values))
-	for k, v := range values {
-		copiedValues[k] = v
-	}
+	maps.Copy(copiedValues, values)
 	return copiedValues
 }
 
@@ -205,4 +206,18 @@ func ComputeOffsetIP(subnet *net.IPNet, offset int64) (net.IP, error) {
 	}
 
 	return nil, fmt.Errorf("computed IPv4 address %q is broadcast for subnet %q", ip, subnet)
+}
+
+// SplitAndTrimString returns a new slice from a string separated by the given separator with all empty entries removed.
+func SplitAndTrimString(s, sep string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+
+	result := strings.Split(s, sep)
+	for i := range result {
+		result[i] = strings.TrimSpace(result[i])
+	}
+
+	return result
 }

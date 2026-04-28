@@ -10,20 +10,21 @@ import (
 	"os"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/operator/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
 	"github.com/gardener/gardener/pkg/controller/networkpolicy"
 	"github.com/gardener/gardener/pkg/controller/service"
 	"github.com/gardener/gardener/pkg/controller/vpaevictionrequirements"
-	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/operator/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/operator/controller/controllerregistrar"
 	"github.com/gardener/gardener/pkg/operator/controller/extension"
 	"github.com/gardener/gardener/pkg/operator/controller/extension/care"
@@ -144,7 +145,14 @@ func AddToManager(operatorCancel context.CancelFunc, mgr manager.Manager, cfg *o
 			return err
 		}
 
-		if err := (&service.Reconciler{IsMultiZone: true}).AddToManager(mgr, virtualGardenIstioIngressPredicate); err != nil {
+		if err := (&service.Reconciler{
+			VirtualGardenIP: os.Getenv("GARDENER_OPERATOR_VIRTUAL_GARDEN_IP"),
+		}).AddToManager(mgr, predicate.And(
+			virtualGardenIstioIngressPredicate,
+			predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				return obj.GetNamespace() == operatorv1alpha1.VirtualGardenDefaultSNIIngressNamespace
+			})),
+		); err != nil {
 			return fmt.Errorf("failed adding Service controller: %w", err)
 		}
 	}

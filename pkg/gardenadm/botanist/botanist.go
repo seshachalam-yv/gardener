@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
@@ -23,12 +24,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	"github.com/gardener/gardener/pkg/component/extensions/bastion"
+	"github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
 	"github.com/gardener/gardener/pkg/gardenadm"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	botanistpkg "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
@@ -38,23 +41,48 @@ import (
 	"github.com/gardener/gardener/pkg/nodeagent"
 	"github.com/gardener/gardener/pkg/nodeagent/dbus"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	sshutils "github.com/gardener/gardener/pkg/utils/ssh"
 )
 
-// AutonomousBotanist is a struct which has methods that perform operations for an autonomous shoot cluster.
-type AutonomousBotanist struct {
+// GardenadmBaseDir is the directory that gardenadm works with for storing information, transferring manifests, etc.
+// NB: We don't use filepath.Join here, because we explicitly need Linux path separators for the target machine,
+// even when running `gardenadm bootstrap` on Windows.
+const GardenadmBaseDir = "/var/lib/gardenadm"
+
+// GardenadmBotanist is a struct which has methods that perform operations for a self-hosted shoot cluster.
+type GardenadmBotanist struct {
 	*botanistpkg.Botanist
 
-	HostName   string
-	DBus       dbus.DBus
-	FS         afero.Afero
-	Extensions []Extension
+	HostName string
+	DBus     dbus.DBus
+	FS       afero.Afero
 
-	// Bastion is only set for `gardenadm bootstrap`.
-	Bastion *bastion.Bastion
+	Resources  gardenadm.Resources
+	Components Components
+	Extensions []Extension
+	// Zone is the availability zone in which the new node is being added. This is used to set the
+	// topology.kubernetes.io/zone label on the node resource.
+	// This field is only relevant for shoot with unmanaged infrastructure.
+	Zone *string
 
 	operatingSystemConfigSecret       *corev1.Secret
 	gardenerResourceManagerServiceIPs []string
-	staticPodNameToHash               map[string]string
+	useEtcdManagedByDruid             bool
+
+	// controlPlaneMachines is set by ListControlPlaneMachines during `gardenadm bootstrap`.
+	controlPlaneMachines []machinev1alpha1.Machine
+	// sshConnection is the SSH connection to the first control plane machine. It is set by ConnectToControlPlaneMachine
+	// during `gardenadm bootstrap`.
+	sshConnection *sshutils.Connection
+}
+
+// Components contains deployable components for self-hosted shoots.
+type Components struct {
+	// Bastion is only set for `gardenadm bootstrap`.
+	Bastion *bastion.Bastion
+	// RuntimeResourceManager is the gardener-resource-manager instance responsible for runtime operations running in
+	// the garden namespace.
+	RuntimeResourceManager resourcemanager.Interface
 }
 
 // Extension contains the resources needed for an extension registration.
@@ -73,15 +101,15 @@ var (
 	NewFs = afero.NewOsFs
 )
 
-// NewAutonomousBotanistFromManifests reads the manifests from dir and initializes a new AutonomousBotanist with them.
-func NewAutonomousBotanistFromManifests(
+// NewGardenadmBotanistFromManifests reads the manifests from dir and initializes a new GardenadmBotanist with them.
+func NewGardenadmBotanistFromManifests(
 	ctx context.Context,
 	log logr.Logger,
 	clientSet kubernetes.Interface,
 	dir string,
 	runsControlPlane bool,
 ) (
-	*AutonomousBotanist,
+	*GardenadmBotanist,
 	error,
 ) {
 	resources, err := gardenadm.ReadManifests(log, DirFS(dir))
@@ -89,12 +117,12 @@ func NewAutonomousBotanistFromManifests(
 		return nil, fmt.Errorf("failed reading Kubernetes resources from config directory %s: %w", dir, err)
 	}
 
-	extensions, err := ComputeExtensions(resources, runsControlPlane)
+	extensions, err := ComputeExtensions(resources, runsControlPlane, v1beta1helper.HasManagedInfrastructure(resources.Shoot))
 	if err != nil {
 		return nil, fmt.Errorf("failed computing extensions: %w", err)
 	}
 
-	b, err := NewAutonomousBotanist(ctx, log, clientSet, resources, extensions, runsControlPlane)
+	b, err := NewGardenadmBotanist(ctx, log, clientSet, resources, extensions, runsControlPlane)
 	if err != nil {
 		return nil, fmt.Errorf("failed constructing botanist: %w", err)
 	}
@@ -102,8 +130,8 @@ func NewAutonomousBotanistFromManifests(
 	return b, nil
 }
 
-// NewAutonomousBotanist creates a new botanist.AutonomousBotanist instance for the gardenadm command execution.
-func NewAutonomousBotanist(
+// NewGardenadmBotanist creates a new botanist.GardenadmBotanist instance for the gardenadm command execution.
+func NewGardenadmBotanist(
 	ctx context.Context,
 	log logr.Logger,
 	clientSet kubernetes.Interface,
@@ -111,54 +139,60 @@ func NewAutonomousBotanist(
 	extensions []Extension,
 	runsControlPlane bool,
 ) (
-	*AutonomousBotanist,
+	*GardenadmBotanist,
 	error,
 ) {
-	autonomousBotanist, err := NewAutonomousBotanistWithoutResources(log)
+	gardenadmBotanist, err := NewGardenadmBotanistWithoutResources(log)
 	if err != nil {
-		return nil, fmt.Errorf("failed creating autonomous botanist: %w", err)
+		return nil, fmt.Errorf("failed creating gardenadm botanist: %w", err)
 	}
 
-	if err := initializeShootResource(resources.Shoot, autonomousBotanist.FS, resources.Project.Name, runsControlPlane); err != nil {
+	if err := initializeShootResource(resources, gardenadmBotanist.FS, runsControlPlane); err != nil {
 		return nil, fmt.Errorf("failed initializing shoot resource: %w", err)
 	}
 
-	initializeSeedResource(resources.Seed, resources.Shoot.Name, runsControlPlane)
+	initializeSeedResource(resources, runsControlPlane)
 
 	gardenClient := newFakeGardenClient()
 	if err := initializeFakeGardenResources(ctx, gardenClient, resources, extensions); err != nil {
 		return nil, fmt.Errorf("failed initializing resources in fake garden client: %w", err)
 	}
 
-	autonomousBotanist.Botanist, err = newBotanist(ctx, log, clientSet, gardenClient, resources, runsControlPlane)
+	gardenadmBotanist.Botanist, err = newBotanist(ctx, log, clientSet, gardenClient, resources, runsControlPlane)
 	if err != nil {
 		return nil, fmt.Errorf("failed creating botanist: %w", err)
 	}
 
-	if !autonomousBotanist.Shoot.RunsControlPlane() {
-		autonomousBotanist.Bastion = autonomousBotanist.DefaultBastion()
+	if gardenadmBotanist.Shoot.RunsControlPlane() {
+		gardenadmBotanist.Components.RuntimeResourceManager, err = gardenadmBotanist.NewRuntimeGardenerResourceManager()
+		if err != nil {
+			return nil, fmt.Errorf("failed creating runtime gardener resource manager: %w", err)
+		}
+	} else {
+		gardenadmBotanist.Components.Bastion = gardenadmBotanist.DefaultBastion()
 
 		// For `gardenadm bootstrap`, we don't initialize the control plane machines with a "full OSC".
 		// Instead, we provide a small alternative OSC, that only fetches the `gardenadm` binary from the registry.
-		autonomousBotanist.Shoot.Components.Extensions.OperatingSystemConfig, err = autonomousBotanist.ControlPlaneBootstrapOperatingSystemConfig()
+		gardenadmBotanist.Shoot.Components.Extensions.OperatingSystemConfig, err = gardenadmBotanist.ControlPlaneBootstrapOperatingSystemConfig()
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	autonomousBotanist.Extensions = extensions
+	gardenadmBotanist.Resources = resources
+	gardenadmBotanist.Extensions = extensions
 
-	return autonomousBotanist, nil
+	return gardenadmBotanist, nil
 }
 
-// NewAutonomousBotanistWithoutResources creates a new AutonomousBotanist without instantiating a Botanist struct.
-func NewAutonomousBotanistWithoutResources(log logr.Logger) (*AutonomousBotanist, error) {
+// NewGardenadmBotanistWithoutResources creates a new GardenadmBotanist without instantiating a Botanist struct.
+func NewGardenadmBotanistWithoutResources(log logr.Logger) (*GardenadmBotanist, error) {
 	hostName, err := nodeagent.GetHostName()
 	if err != nil {
 		return nil, fmt.Errorf("failed fetching hostname: %w", err)
 	}
 
-	return &AutonomousBotanist{
+	return &GardenadmBotanist{
 		Botanist: &botanistpkg.Botanist{Operation: newOperation(log, newFakeGardenClient(), newFakeSeedClientSet(""))},
 
 		HostName: hostName,
@@ -206,9 +240,9 @@ func newBotanist(
 	keysAndValues := []any{"cloudProfile", resources.CloudProfile, "project", resources.Project, "shoot", resources.Shoot}
 	if clientSet == nil {
 		clientSet = newFakeSeedClientSet(seedObj.KubernetesVersion.String())
-		log.Info("Initializing autonomous botanist with fake client set", keysAndValues...) //nolint:logcheck
+		log.Info("Initializing gardenadm botanist with fake client set", keysAndValues...) //nolint:logcheck
 	} else {
-		log.Info("Initializing autonomous botanist with control plane client set", keysAndValues...) //nolint:logcheck
+		log.Info("Initializing gardenadm botanist with control plane client set", keysAndValues...) //nolint:logcheck
 	}
 
 	o := newOperation(log, gardenClient, clientSet)
@@ -236,8 +270,14 @@ func initializeFakeGardenResources(
 		)
 	}
 
+	for _, configMap := range resources.ConfigMaps {
+		objects = append(objects, configMap.DeepCopy())
+	}
 	for _, secret := range resources.Secrets {
 		objects = append(objects, secret.DeepCopy())
+	}
+	for _, workloadIdentity := range resources.WorkloadIdentities {
+		objects = append(objects, workloadIdentity.DeepCopy())
 	}
 
 	if resources.SecretBinding != nil {
@@ -245,6 +285,9 @@ func initializeFakeGardenResources(
 	}
 	if resources.CredentialsBinding != nil {
 		objects = append(objects, resources.CredentialsBinding.DeepCopy())
+	}
+	if resources.ShootState != nil {
+		objects = append(objects, resources.ShootState.DeepCopy())
 	}
 
 	for _, obj := range objects {
@@ -289,8 +332,7 @@ func newShootObject(
 		NewBuilder().
 		WithProjectName(resources.Project.Name).
 		WithCloudProfileObject(resources.CloudProfile).
-		WithShootObject(resources.Shoot).
-		WithInternalDomain(&gardenerutils.Domain{Domain: "gardenadm.local"})
+		WithShootObject(resources.Shoot)
 
 	if resources.Shoot.Spec.SecretBindingName != nil || resources.Shoot.Spec.CredentialsBindingName != nil {
 		b = b.WithShootCredentialsFrom(gardenClient)
@@ -298,7 +340,7 @@ func newShootObject(
 		b = b.WithoutShootCredentials()
 	}
 
-	obj, err := b.Build(ctx, nil)
+	obj, err := b.Build(ctx, gardenClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed building shoot object: %w", err)
 	}
@@ -308,11 +350,10 @@ func newShootObject(
 		return nil, fmt.Errorf("failed computing shoot networks: %w", err)
 	}
 
-	// In autonomous shoot clusters, kube-system is used as the control plane namespace.
-	// However, when bootstrapping an autonomous shoot cluster with `gardenadm bootstrap` using a temporary local cluster,
+	// In self-hosted shoot clusters, kube-system is used as the control plane namespace.
+	// However, when bootstrapping a self-hosted shoot cluster with `gardenadm bootstrap` using a temporary local cluster,
 	// we want to avoid conflicts with kube-system components of the bootstrap cluster by placing all shoot-related
 	// components in another namespace. In this case, we use the technical ID as the control plane namespace, as usual.
-	// TODO(timebertt): double-check if this causes problems when importing the state into the autonomous shoot cluster
 	if !runsControlPlane {
 		obj.ControlPlaneNamespace = resources.Shoot.Status.TechnicalID
 	}
@@ -346,8 +387,9 @@ func newFakeSeedClientSet(kubernetesVersion string) kubernetes.Interface {
 		Build()
 }
 
-func initializeShootResource(shoot *gardencorev1beta1.Shoot, fs afero.Afero, projectName string, runsControlPlane bool) error {
-	shoot.Status.TechnicalID = gardenerutils.ComputeTechnicalID(projectName, shoot)
+func initializeShootResource(resources gardenadm.Resources, fs afero.Afero, runsControlPlane bool) error {
+	shoot := resources.Shoot
+	shoot.Status.TechnicalID = gardenerutils.ComputeTechnicalID(resources.Project.Name, shoot)
 	shoot.Status.Gardener = gardencorev1beta1.Gardener{Name: "gardenadm", Version: version.Get().GitVersion}
 
 	if runsControlPlane {
@@ -358,6 +400,22 @@ func initializeShootResource(shoot *gardencorev1beta1.Shoot, fs afero.Afero, pro
 			return fmt.Errorf("failed fetching shoot UID: %w", err)
 		}
 		shoot.Status.UID = uid
+
+		if v1beta1helper.HasManagedInfrastructure(resources.Shoot) && resources.ShootState == nil {
+			return fmt.Errorf("shoot has managed infrastructure, but ShootState is missing " +
+				"(the ShootState is usually exported by `gardenadm bootstrap` and read by `gardenadm init`): " +
+				"you should either use `gardenadm bootstrap` to create the self-hosted shoot cluster with managed infrastructure or " +
+				"remove the `Shoot.spec.{secret,credentials}BindingName` field to mark the shoot as having unmanaged infrastructure")
+		}
+
+		if resources.ShootState != nil {
+			// Instruct the botanist and shoot package to read the ShootState and restore the state of extensions, secrets, etc.
+			// For managed infrastructure, this restores the state exported by `gardenadm bootstrap`.
+			// For unmanaged infrastructure on retry, this restores the bootstrap secrets persisted by `gardenadm init`.
+			shoot.Status.LastOperation = &gardencorev1beta1.LastOperation{
+				Type: gardencorev1beta1.LastOperationTypeRestore,
+			}
+		}
 	} else {
 		// For `gardenadm bootstrap`, we don't need a stable UID. We generate a random one instead, because we might not be
 		// able to persist the generated UID in /var/lib/gardenadm (e.g., when running `gardenadm bootstrap` on macOS).
@@ -367,16 +425,17 @@ func initializeShootResource(shoot *gardencorev1beta1.Shoot, fs afero.Afero, pro
 	return nil
 }
 
-func initializeSeedResource(seed *gardencorev1beta1.Seed, shootName string, runsControlPlane bool) {
-	seed.Name = shootName
-	seed.Status = gardencorev1beta1.SeedStatus{ClusterIdentity: ptr.To(shootName)}
+func initializeSeedResource(resources gardenadm.Resources, runsControlPlane bool) {
+	seed := resources.Seed
+	seed.Name = resources.Shoot.Name
+	seed.Status = gardencorev1beta1.SeedStatus{ClusterIdentity: ptr.To(resources.Shoot.Name)}
 
 	if runsControlPlane {
-		// When running the control plane (`gardenadm init`), mark the seed as an autonomous shoot cluster.
+		// When running the control plane (`gardenadm init`), mark the seed as a self-hosted shoot cluster.
 		// Otherwise (`gardenadm bootstrap`), the bootstrap cluster should behave like a standard seed cluster.
-		// If the seed is marked as an autonomous shoot cluster, extensions are configured differently, e.g., they merge the
+		// If the seed is marked as a self-hosted shoot cluster, extensions are configured differently, e.g., they merge the
 		// shoot webhooks into the seed webhooks.
-		metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelAutonomousShootCluster, "true")
+		metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelSelfHostedShootCluster, "true")
 	}
 
 	kubernetes.GardenScheme.Default(seed)
@@ -384,7 +443,7 @@ func initializeSeedResource(seed *gardencorev1beta1.Seed, shootName string, runs
 
 func shootUID(fs afero.Afero) (types.UID, error) {
 	var (
-		path                    = filepath.Join(string(filepath.Separator), "var", "lib", "gardenadm", "shoot-uid")
+		path                    = filepath.Join(string(filepath.Separator), GardenadmBaseDir, "shoot-uid")
 		permissions os.FileMode = 0600
 	)
 

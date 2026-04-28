@@ -139,6 +139,28 @@ var _ = Describe("Secrets", func() {
 			}))
 		})
 
+		It("should create cloud provider secret containing internal secret data", func() {
+			botanist.Shoot.Credentials = &gardencorev1beta1.InternalSecret{
+				Data: map[string][]byte{"bar": []byte("foo")},
+			}
+			Expect(botanist.DeployCloudProviderSecret(ctx)).To(Succeed())
+
+			retrieved := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: controlPlaneNamespace, Name: "cloudprovider"}}
+			Expect(botanist.SeedClientSet.Client().Get(ctx, client.ObjectKeyFromObject(retrieved), retrieved)).To(Succeed())
+			Expect(retrieved).To(Equal(&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:       controlPlaneNamespace,
+					Name:            "cloudprovider",
+					ResourceVersion: "1",
+					Labels: map[string]string{
+						"gardener.cloud/purpose": "cloudprovider",
+					},
+				},
+				Data: map[string][]byte{"bar": []byte("foo")},
+				Type: corev1.SecretTypeOpaque,
+			}))
+		})
+
 		It("should create cloud provider secret containing WorkloadIdentity data", func() {
 			botanist.Shoot.Credentials = &securityv1alpha1.WorkloadIdentity{
 				ObjectMeta: metav1.ObjectMeta{
@@ -228,7 +250,7 @@ var _ = Describe("Secrets", func() {
 
 		It("should return error when shoot credentials are of unknown type", func() {
 			botanist.Shoot.Credentials = &corev1.Pod{}
-			Expect(botanist.DeployCloudProviderSecret(ctx)).To(MatchError(Equal("unexpected type *v1.Pod, should be either Secret or WorkloadIdentity")))
+			Expect(botanist.DeployCloudProviderSecret(ctx)).To(MatchError(Equal("unexpected type *v1.Pod, should be either Secret, InternalSecret, or WorkloadIdentity")))
 		})
 	})
 
@@ -458,6 +480,7 @@ var _ = Describe("Secrets", func() {
 							{
 								Name: "secret-without-labels",
 								Type: "secret",
+								Data: runtime.RawExtension{Raw: rawData("secret-without-labels")},
 							},
 							{
 								Name: "some-other-data",
@@ -486,16 +509,26 @@ var _ = Describe("Secrets", func() {
 				By("Verify non-CA secrets got restored")
 				secret := &corev1.Secret{}
 				Expect(seedClient.Get(ctx, client.ObjectKey{Namespace: controlPlaneNamespace, Name: "non-ca-secret"}, secret)).To(Succeed())
+				Expect(secret.Immutable).To(PointTo(BeTrue()))
+				Expect(secret.Type).To(Equal(corev1.SecretTypeOpaque))
 				Expect(secret.Labels).To(Equal(map[string]string{"managed-by": "secrets-manager", "manager-identity": fakesecretsmanager.ManagerIdentity}))
 				Expect(secret.Data).To(Equal(map[string][]byte{"data-for": []byte(secret.Name)}))
 
 				By("Verify external secrets got restored")
 				Expect(seedClient.Get(ctx, client.ObjectKey{Namespace: controlPlaneNamespace, Name: "extension-foo-secret"}, secret)).To(Succeed())
+				Expect(secret.Immutable).To(PointTo(BeTrue()))
+				Expect(secret.Type).To(Equal(corev1.SecretTypeOpaque))
 				Expect(secret.Labels).To(Equal(map[string]string{"managed-by": "secrets-manager", "manager-identity": "extension-foo"}))
 				Expect(secret.Data).To(Equal(map[string][]byte{"data-for": []byte(secret.Name)}))
 
+				By("Verify secret without labels got restored")
+				Expect(seedClient.Get(ctx, client.ObjectKey{Namespace: controlPlaneNamespace, Name: "secret-without-labels"}, secret)).To(Succeed())
+				Expect(secret.Immutable).To(BeNil())
+				Expect(secret.Type).To(Equal(corev1.SecretTypeOpaque))
+				Expect(secret.Labels).To(BeEmpty())
+				Expect(secret.Data).To(Equal(map[string][]byte{"data-for": []byte(secret.Name)}))
+
 				By("Verify unrelated data not to be restored")
-				Expect(seedClient.Get(ctx, client.ObjectKey{Namespace: controlPlaneNamespace, Name: "secret-without-labels"}, &corev1.Secret{})).To(BeNotFoundError())
 				Expect(seedClient.Get(ctx, client.ObjectKey{Namespace: controlPlaneNamespace, Name: "some-other-data"}, &corev1.Secret{})).To(BeNotFoundError())
 			})
 		})
@@ -504,6 +537,7 @@ var _ = Describe("Secrets", func() {
 
 func verifyCASecret(name string, secret *corev1.Secret, dataMatcher gomegatypes.GomegaMatcher) {
 	ExpectWithOffset(1, secret.Immutable).To(PointTo(BeTrue()))
+	ExpectWithOffset(1, secret.Type).To(Equal(corev1.SecretTypeOpaque))
 	ExpectWithOffset(1, secret.Labels).To(And(
 		HaveKeyWithValue("name", name),
 		HaveKeyWithValue("managed-by", "secrets-manager"),

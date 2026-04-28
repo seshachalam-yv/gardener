@@ -88,9 +88,21 @@ var _ = Describe("Bastion controller tests", func() {
 				DNS: gardencorev1beta1.SeedDNS{
 					Provider: &gardencorev1beta1.SeedDNSProvider{
 						Type: providerType,
-						SecretRef: corev1.SecretReference{
-							Name:      "some-secret",
-							Namespace: "some-namespace",
+						CredentialsRef: &corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
+						},
+					},
+					Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+						Type:   providerType,
+						Domain: "internal.example.com",
+						CredentialsRef: corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
 						},
 					},
 				},
@@ -121,6 +133,10 @@ var _ = Describe("Bastion controller tests", func() {
 							Maximum: 2,
 							Machine: gardencorev1beta1.Machine{
 								Type: "large",
+								Image: &gardencorev1beta1.ShootMachineImage{
+									Name:    "some-image",
+									Version: ptr.To("1.0.0"),
+								},
 							},
 						},
 					},
@@ -368,7 +384,7 @@ mkdir -p /home/gardener/.ssh
 echo "%s" > /home/gardener/.ssh/authorized_keys
 chown gardener:gardener /home/gardener/.ssh/authorized_keys
 echo "gardener ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/99-gardener-user
-systemctl start ssh
+systemctl start sshd || systemctl start ssh
 `, bastion.Spec.SSHPublicKey)
 
 	return []byte(userData)

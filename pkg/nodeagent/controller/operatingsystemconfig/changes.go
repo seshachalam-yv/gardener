@@ -10,7 +10,6 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/Masterminds/semver/v3"
 	"github.com/go-logr/logr"
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
@@ -23,13 +22,12 @@ import (
 	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 	"k8s.io/utils/ptr"
 
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
 	kubeletcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
 	oscutils "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/utils"
-	"github.com/gardener/gardener/pkg/features"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
@@ -56,7 +54,15 @@ func extractOSCFromSecret(secret *corev1.Secret) (*extensionsv1alpha1.OperatingS
 	return osc, secret.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumDownloadedOperatingSystemConfig], nil
 }
 
-func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC *extensionsv1alpha1.OperatingSystemConfig, newOSCChecksum string, currentOSVersion *string, skipPersist bool) (*operatingSystemConfigChanges, error) {
+func computeOperatingSystemConfigChanges(
+	log logr.Logger,
+	fs afero.Afero,
+	newOSC *extensionsv1alpha1.OperatingSystemConfig,
+	newOSCChecksum string,
+	currentOSVersion *string,
+	skipPersist bool,
+	hostName string,
+) (*operatingSystemConfigChanges, error) {
 	changes := &operatingSystemConfigChanges{
 		fs:                            fs,
 		OperatingSystemConfigChecksum: newOSCChecksum,
@@ -94,12 +100,12 @@ func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC
 
 	// osc.files and osc.unit.files should be changed the same way by OSC controller.
 	// The reason for assigning files to units is the detection of changes which require the restart of a unit.
-	newOSCFiles := collectAllFiles(newOSC)
+	newOSCFiles := CollectAllFiles(newOSC, hostName)
 
-	oldOSCRaw, err := fs.ReadFile(lastAppliedOperatingSystemConfigFilePath)
+	oldOSCRaw, err := fs.ReadFile(nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath)
 	if err != nil {
 		if !errors.Is(err, afero.ErrFileNotFound) {
-			return nil, fmt.Errorf("error reading last applied OSC from file path %s: %w", lastAppliedOperatingSystemConfigFilePath, err)
+			return nil, fmt.Errorf("error reading last applied OSC from file path %s: %w", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, err)
 		}
 
 		var (
@@ -144,10 +150,10 @@ func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC
 
 	oldOSC := &extensionsv1alpha1.OperatingSystemConfig{}
 	if err := runtime.DecodeInto(decoder, oldOSCRaw, oldOSC); err != nil {
-		return nil, fmt.Errorf("unable to decode the old OSC read from file path %s: %w", lastAppliedOperatingSystemConfigFilePath, err)
+		return nil, fmt.Errorf("unable to decode the old OSC read from file path %s: %w", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, err)
 	}
 
-	oldOSCFiles := collectAllFiles(oldOSC)
+	oldOSCFiles := CollectAllFiles(oldOSC, hostName)
 	// File changes have to be computed in one step for all files,
 	// because moving a file from osc.unit.files to osc.files or vice versa should not result in a change and a delete event.
 	changes.Files = computeFileDiffs(oldOSCFiles, newOSCFiles)
@@ -159,12 +165,14 @@ func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC
 	)
 
 	if oldOSC.Spec.InPlaceUpdates != nil && newOSC.Spec.InPlaceUpdates != nil {
-		if currentOSVersion != nil && *currentOSVersion != newOSC.Spec.InPlaceUpdates.OperatingSystemVersion {
-			changes.InPlaceUpdates.OperatingSystem = true
+		isOsVersionUpToDate, err := IsOsVersionUpToDate(currentOSVersion, newOSC)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compute OS version change: %w", err)
 		}
+		changes.InPlaceUpdates.OperatingSystem = !isOsVersionUpToDate
 
 		if oldOSC.Spec.InPlaceUpdates.KubeletVersion != newOSC.Spec.InPlaceUpdates.KubeletVersion {
-			changes.InPlaceUpdates.Kubelet.MinorVersion, err = CheckIfMinorVersionUpdate(oldOSC.Spec.InPlaceUpdates.KubeletVersion, newOSC.Spec.InPlaceUpdates.KubeletVersion)
+			changes.InPlaceUpdates.Kubelet.MinorVersion, err = versionutils.CheckIfMinorVersionUpdate(oldOSC.Spec.InPlaceUpdates.KubeletVersion, newOSC.Spec.InPlaceUpdates.KubeletVersion)
 			if err != nil {
 				return nil, fmt.Errorf("failed to check if kubelet minor version was updated: %w", err)
 			}
@@ -184,26 +192,10 @@ func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC
 			return nil, fmt.Errorf("failed to check if kubelet config has changed: %w", err)
 		}
 
-		if newOSC.Spec.InPlaceUpdates.CredentialsRotation != nil {
-			// Rotation is triggered for the first time
-			if oldOSC.Spec.InPlaceUpdates.CredentialsRotation == nil {
-				caRotation := newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil && newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime != nil
-				changes.InPlaceUpdates.CertificateAuthoritiesRotation.Kubelet = caRotation
-				changes.InPlaceUpdates.CertificateAuthoritiesRotation.NodeAgent = caRotation && features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer)
-
-				changes.InPlaceUpdates.ServiceAccountKeyRotation = newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil && newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime != nil
-			} else {
-				caRotation := oldOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil &&
-					newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil &&
-					!oldOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime.Equal(newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime)
-				changes.InPlaceUpdates.CertificateAuthoritiesRotation.Kubelet = caRotation
-				changes.InPlaceUpdates.CertificateAuthoritiesRotation.NodeAgent = caRotation && features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer)
-
-				changes.InPlaceUpdates.ServiceAccountKeyRotation = oldOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil &&
-					newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil &&
-					!oldOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime.Equal(newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime)
-			}
-		}
+		caRotation, saKeyRotation := ComputeCredentialsRotationChanges(oldOSC, newOSC)
+		changes.InPlaceUpdates.CertificateAuthoritiesRotation.Kubelet = caRotation
+		changes.InPlaceUpdates.CertificateAuthoritiesRotation.NodeAgent = caRotation
+		changes.InPlaceUpdates.ServiceAccountKeyRotation = saKeyRotation
 	}
 
 	var (
@@ -233,6 +225,46 @@ func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC
 	changes.lock.Lock()
 	defer changes.lock.Unlock()
 	return changes, changes.persist()
+}
+
+// IsOsVersionUpToDate checks if the current OS version is up to date with the version specified in the new OSC.
+func IsOsVersionUpToDate(currentOSVersion *string, newOSC *extensionsv1alpha1.OperatingSystemConfig) (bool, error) {
+	if currentOSVersion == nil {
+		return false, fmt.Errorf("current OS version is nil")
+	}
+
+	osVersionUpToDate, err := versionutils.CompareVersions(*currentOSVersion, "=", newOSC.Spec.InPlaceUpdates.OperatingSystemVersion)
+	if err != nil {
+		return false, fmt.Errorf("failed comparing current OS version %q with OS version in the new OSC %q: %w", *currentOSVersion, newOSC.Spec.InPlaceUpdates.OperatingSystemVersion, err)
+	}
+
+	return osVersionUpToDate, nil
+}
+
+// ComputeCredentialsRotationChanges computes if the credentials rotation has changed between the old and new OSC.
+func ComputeCredentialsRotationChanges(oldOSC, newOSC *extensionsv1alpha1.OperatingSystemConfig) (bool, bool) {
+	if newOSC.Spec.InPlaceUpdates.CredentialsRotation == nil {
+		return false, false
+	}
+
+	// Rotation is triggered for the first time
+	if oldOSC.Spec.InPlaceUpdates.CredentialsRotation == nil {
+		caRotation := newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil && newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime != nil
+
+		serviceAccountKeyRotation := newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil && newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime != nil
+
+		return caRotation, serviceAccountKeyRotation
+	}
+
+	caRotation := oldOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil &&
+		newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities != nil &&
+		!oldOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime.Equal(newOSC.Spec.InPlaceUpdates.CredentialsRotation.CertificateAuthorities.LastInitiationTime)
+
+	serviceAccountKeyRotation := oldOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil &&
+		newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey != nil &&
+		!oldOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime.Equal(newOSC.Spec.InPlaceUpdates.CredentialsRotation.ServiceAccountKey.LastInitiationTime)
+
+	return caRotation, serviceAccountKeyRotation
 }
 
 func getKubeletConfig(osc *extensionsv1alpha1.OperatingSystemConfig) (*kubeletconfigv1beta1.KubeletConfiguration, error) {
@@ -478,8 +510,12 @@ func mergeUnits(specUnits, statusUnits []extensionsv1alpha1.Unit) []extensionsv1
 	return out
 }
 
-func collectAllFiles(osc *extensionsv1alpha1.OperatingSystemConfig) []extensionsv1alpha1.File {
-	return append(osc.Spec.Files, osc.Status.ExtensionFiles...)
+// CollectAllFiles returns the list of all files from spec and status of the given OSC, optionally filtered for the given node.
+func CollectAllFiles(osc *extensionsv1alpha1.OperatingSystemConfig, hostName string) []extensionsv1alpha1.File {
+	allFiles := slices.Clone(append(osc.Spec.Files, osc.Status.ExtensionFiles...))
+	return slices.DeleteFunc(allFiles, func(file extensionsv1alpha1.File) bool {
+		return file.HostName != nil && *file.HostName != hostName
+	})
 }
 
 func computeContainerdRegistryDiffs(newRegistries, oldRegistries []extensionsv1alpha1.RegistryConfig) containerdRegistries {
@@ -529,18 +565,4 @@ func getCommandToExecute(newUnit extensionsv1alpha1.Unit) extensionsv1alpha1.Uni
 		commandToExecute = extensionsv1alpha1.CommandStop
 	}
 	return commandToExecute
-}
-
-// CheckIfMinorVersionUpdate checks if the new kubelet version is a minor version update to the old kubelet version.
-func CheckIfMinorVersionUpdate(old, new string) (bool, error) {
-	oldVersion, err := semver.NewVersion(versionutils.Normalize(old))
-	if err != nil {
-		return false, fmt.Errorf("failed to parse old kubelet version %s: %w", old, err)
-	}
-	newVersion, err := semver.NewVersion(versionutils.Normalize(new))
-	if err != nil {
-		return false, fmt.Errorf("failed to parse new kubelet version %s: %w", new, err)
-	}
-
-	return oldVersion.Minor() != newVersion.Minor(), nil
 }

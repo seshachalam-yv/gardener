@@ -21,8 +21,9 @@ import (
 	auth "k8s.io/apiserver/pkg/authorization/authorizer"
 	bootstraptokenapi "k8s.io/cluster-bootstrap/token/api"
 
-	"github.com/gardener/gardener/pkg/admissioncontroller/seedidentity"
-	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/auth/seed/graph"
+	"github.com/gardener/gardener/pkg/admissioncontroller/gardenletidentity"
+	seedidentity "github.com/gardener/gardener/pkg/admissioncontroller/gardenletidentity/seed"
+	authwebhook "github.com/gardener/gardener/pkg/admissioncontroller/webhook/auth"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
@@ -30,20 +31,24 @@ import (
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	gardenletbootstraputil "github.com/gardener/gardener/pkg/gardenlet/bootstrap/util"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/graph"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/bootstraptoken"
+	authorizerwebhook "github.com/gardener/gardener/pkg/webhook/authorizer"
 )
 
 // NewAuthorizer returns a new authorizer for requests from gardenlets. It never has an opinion on the request.
-func NewAuthorizer(logger logr.Logger, graph graph.Interface) *authorizer {
+func NewAuthorizer(logger logr.Logger, graph graph.Interface, authorizeWithSelectors authorizerwebhook.WithSelectorsChecker) *authorizer {
 	return &authorizer{
-		logger: logger,
-		graph:  graph,
+		logger:                 logger,
+		graph:                  graph,
+		authorizeWithSelectors: authorizeWithSelectors,
 	}
 }
 
 type authorizer struct {
-	logger logr.Logger
-	graph  graph.Interface
+	logger                 logr.Logger
+	graph                  graph.Interface
+	authorizeWithSelectors authorizerwebhook.WithSelectorsChecker
 }
 
 var _ = auth.Authorizer(&authorizer{})
@@ -91,140 +96,140 @@ func (a *authorizer) Authorize(_ context.Context, attrs auth.Attributes) (auth.D
 		return auth.DecisionNoOpinion, "", nil
 	}
 
-	requestLog := a.logger.WithValues("seedName", seedName, "attributes", fmt.Sprintf("%#v", attrs), "userType", userType)
+	var (
+		log               = a.logger.WithValues("seedName", seedName, "attributes", fmt.Sprintf("%#v", attrs), "userType", userType)
+		requestAuthorizer = &authwebhook.RequestAuthorizer{
+			Log:                    log,
+			Graph:                  a.graph,
+			AuthorizeWithSelectors: a.authorizeWithSelectors,
+			ToType:                 graph.VertexTypeSeed,
+			ToName:                 seedName,
+		}
+	)
 
 	if attrs.IsResourceRequest() {
 		requestResource := schema.GroupResource{Group: attrs.GetAPIGroup(), Resource: attrs.GetResource()}
 		switch requestResource {
 		case backupBucketResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeBackupBucket, attrs,
-				[]string{"update", "patch", "delete"},
-				[]string{"create", "get", "list", "watch"},
-				[]string{"status"},
+			return requestAuthorizer.Check(graph.VertexTypeBackupBucket, attrs,
+				authwebhook.WithAllowedVerbs("update", "patch", "delete"),
+				authwebhook.WithAlwaysAllowedVerbs("create", "get", "list", "watch"),
+				authwebhook.WithAllowedSubresources("status", "finalizers"),
 			)
 		case backupEntryResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeBackupEntry, attrs,
-				[]string{"update", "patch", "delete"},
-				[]string{"create", "get", "list", "watch"},
-				[]string{"status"},
+			return requestAuthorizer.Check(graph.VertexTypeBackupEntry, attrs,
+				authwebhook.WithAllowedVerbs("update", "patch", "delete"),
+				authwebhook.WithAlwaysAllowedVerbs("create", "get", "list", "watch"),
+				authwebhook.WithAllowedSubresources("status"),
 			)
 		case bastionResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeBastion, attrs,
-				[]string{"update", "patch"},
-				[]string{"create", "get", "list", "watch"},
-				[]string{"status"},
+			return requestAuthorizer.Check(graph.VertexTypeBastion, attrs,
+				authwebhook.WithAllowedVerbs("update", "patch"),
+				authwebhook.WithAlwaysAllowedVerbs("create", "get", "list", "watch"),
+				authwebhook.WithAllowedSubresources("status"),
 			)
 		case certificateSigningRequestResource:
-			if userType == seedidentity.UserTypeExtension {
-				return a.authorizeRead(requestLog, seedName, graph.VertexTypeCertificateSigningRequest, attrs)
+			if userType == gardenletidentity.UserTypeExtension {
+				return requestAuthorizer.CheckRead(graph.VertexTypeCertificateSigningRequest, attrs)
 			}
 
-			return a.authorize(requestLog, seedName, graph.VertexTypeCertificateSigningRequest, attrs,
-				[]string{"get", "list", "watch"},
-				[]string{"create"},
-				[]string{"seedclient"},
+			return requestAuthorizer.Check(graph.VertexTypeCertificateSigningRequest, attrs,
+				authwebhook.WithAllowedVerbs("get", "list", "watch"),
+				authwebhook.WithAlwaysAllowedVerbs("create"),
+				authwebhook.WithAllowedSubresources("seedclient"),
 			)
 		case cloudProfileResource:
-			return a.authorizeRead(requestLog, seedName, graph.VertexTypeCloudProfile, attrs)
+			return requestAuthorizer.CheckRead(graph.VertexTypeCloudProfile, attrs)
 		case namespacedCloudProfileResource:
-			return a.authorizeRead(requestLog, seedName, graph.VertexTypeNamespacedCloudProfile, attrs)
+			return requestAuthorizer.CheckRead(graph.VertexTypeNamespacedCloudProfile, attrs)
 		case clusterRoleBindingResource:
-			if userType == seedidentity.UserTypeExtension {
+			if userType == gardenletidentity.UserTypeExtension {
 				// We don't use authorizeRead here, as it would also grant list and watch permissions, which gardenlet doesn't
 				// have. We want to grant the read-only subset of gardenlet's permissions.
-				return a.authorize(requestLog, seedName, graph.VertexTypeClusterRoleBinding, attrs,
-					[]string{"get"},
-					nil,
-					nil,
+				return requestAuthorizer.Check(graph.VertexTypeClusterRoleBinding, attrs,
+					authwebhook.WithAllowedVerbs("get"),
 				)
 			}
 
-			return a.authorizeClusterRoleBinding(requestLog, seedName, attrs)
+			return a.authorizeClusterRoleBinding(requestAuthorizer, attrs)
 		case configMapResource:
-			return a.authorizeConfigMap(requestLog, seedName, attrs)
+			return a.authorizeConfigMap(requestAuthorizer, attrs)
 		case controllerDeploymentResource:
-			return a.authorizeRead(requestLog, seedName, graph.VertexTypeControllerDeployment, attrs)
+			return requestAuthorizer.CheckRead(graph.VertexTypeControllerDeployment, attrs)
 		case controllerInstallationResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeControllerInstallation, attrs,
-				[]string{"update", "patch"},
-				[]string{"get", "list", "watch"},
-				[]string{"status"},
+			return requestAuthorizer.Check(graph.VertexTypeControllerInstallation, attrs,
+				authwebhook.WithAllowedVerbs("update", "patch"),
+				authwebhook.WithAlwaysAllowedVerbs("get", "list", "watch"),
+				authwebhook.WithAllowedSubresources("status"),
 			)
 		case controllerRegistrationResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeControllerRegistration, attrs,
-				nil,
-				[]string{"get", "list", "watch"},
-				nil,
+			return requestAuthorizer.Check(graph.VertexTypeControllerRegistration, attrs,
+				authwebhook.WithAlwaysAllowedVerbs("get", "list", "watch"),
 			)
+		case credentialsBindingResource:
+			return requestAuthorizer.CheckRead(graph.VertexTypeCredentialsBinding, attrs)
 		case eventCoreResource, eventResource:
-			return a.authorizeEvent(requestLog, attrs)
+			return a.authorizeEvent(log, attrs)
 		case exposureClassResource:
-			return a.authorizeRead(requestLog, seedName, graph.VertexTypeExposureClass, attrs)
+			return requestAuthorizer.CheckRead(graph.VertexTypeExposureClass, attrs)
 		case internalSecretResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeInternalSecret, attrs,
-				[]string{"get", "update", "patch", "delete", "list", "watch"},
-				[]string{"create"},
-				nil,
+			return requestAuthorizer.Check(graph.VertexTypeInternalSecret, attrs,
+				authwebhook.WithAllowedVerbs("get", "update", "patch", "delete", "list", "watch"),
+				authwebhook.WithAlwaysAllowedVerbs("create"),
 			)
 		case leaseResource:
-			return a.authorizeLease(requestLog, seedName, userType, attrs)
+			return a.authorizeLease(requestAuthorizer, userType, attrs)
 		case gardenletResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeGardenlet, attrs,
-				[]string{"update", "patch"},
-				[]string{"get", "list", "watch", "create"},
-				[]string{"status"},
+			return requestAuthorizer.Check(graph.VertexTypeGardenlet, attrs,
+				authwebhook.WithAllowedVerbs("update", "patch"),
+				authwebhook.WithAlwaysAllowedVerbs("get", "list", "watch", "create"),
+				authwebhook.WithAllowedSubresources("status"),
 			)
 		case managedSeedResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeManagedSeed, attrs,
-				[]string{"update", "patch"},
-				[]string{"get", "list", "watch"},
-				[]string{"status"},
+			return requestAuthorizer.Check(graph.VertexTypeManagedSeed, attrs,
+				authwebhook.WithAllowedVerbs("update", "patch"),
+				authwebhook.WithAlwaysAllowedVerbs("get", "list", "watch"),
+				authwebhook.WithAllowedSubresources("status"),
 			)
 		case namespaceResource:
-			return a.authorizeRead(requestLog, seedName, graph.VertexTypeNamespace, attrs)
+			return requestAuthorizer.CheckRead(graph.VertexTypeNamespace, attrs)
 		case projectResource:
-			return a.authorizeRead(requestLog, seedName, graph.VertexTypeProject, attrs)
+			return requestAuthorizer.CheckRead(graph.VertexTypeProject, attrs)
 		case secretBindingResource:
-			return a.authorizeRead(requestLog, seedName, graph.VertexTypeSecretBinding, attrs)
-		case credentialsBindingResource:
-			return a.authorizeRead(requestLog, seedName, graph.VertexTypeCredentialsBinding, attrs)
+			return requestAuthorizer.CheckRead(graph.VertexTypeSecretBinding, attrs)
 		case secretResource:
-			return a.authorizeSecret(requestLog, seedName, attrs)
+			return a.authorizeSecret(requestAuthorizer, attrs)
 		case workloadIdentityResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeWorkloadIdentity, attrs,
-				[]string{"get", "list", "watch", "create", "patch"},
-				nil,
-				[]string{"token"},
+			return requestAuthorizer.Check(graph.VertexTypeWorkloadIdentity, attrs,
+				authwebhook.WithAllowedVerbs("get", "list", "watch", "create", "patch"),
+				authwebhook.WithAllowedSubresources("token"),
 			)
 		case seedResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeSeed, attrs,
-				[]string{"update", "patch", "delete"},
-				[]string{"create", "get", "list", "watch"},
-				[]string{"status"},
+			return requestAuthorizer.Check(graph.VertexTypeSeed, attrs,
+				authwebhook.WithAllowedVerbs("update", "patch", "delete"),
+				authwebhook.WithAlwaysAllowedVerbs("create", "get", "list", "watch"),
+				authwebhook.WithAllowedSubresources("status"),
 			)
 		case serviceAccountResource:
-			if userType == seedidentity.UserTypeExtension {
+			if userType == gardenletidentity.UserTypeExtension {
 				// We don't use authorizeRead here, as it would also grant list and watch permissions, which gardenlet doesn't
 				// have. We want to grant the read-only subset of gardenlet's permissions.
-				return a.authorize(requestLog, seedName, graph.VertexTypeServiceAccount, attrs,
-					[]string{"get"},
-					nil,
-					nil,
+				return requestAuthorizer.Check(graph.VertexTypeServiceAccount, attrs,
+					authwebhook.WithAllowedVerbs("get"),
 				)
 			}
 
-			return a.authorizeServiceAccount(requestLog, seedName, attrs)
+			return a.authorizeServiceAccount(requestAuthorizer, attrs)
 		case shootResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeShoot, attrs,
-				[]string{"update", "patch"},
-				[]string{"get", "list", "watch"},
-				[]string{"status"},
+			return requestAuthorizer.Check(graph.VertexTypeShoot, attrs,
+				authwebhook.WithAllowedVerbs("update", "patch"),
+				authwebhook.WithAlwaysAllowedVerbs("get", "list", "watch"),
+				authwebhook.WithAllowedSubresources("status", "finalizers"),
 			)
 		case shootStateResource:
-			return a.authorize(requestLog, seedName, graph.VertexTypeShootState, attrs,
-				[]string{"get", "update", "patch", "delete", "list", "watch"},
-				[]string{"create"},
-				nil,
+			return requestAuthorizer.Check(graph.VertexTypeShootState, attrs,
+				authwebhook.WithAllowedVerbs("get", "update", "patch", "delete", "list", "watch"),
+				authwebhook.WithAlwaysAllowedVerbs("create"),
 			)
 		default:
 			a.logger.Info(
@@ -241,41 +246,40 @@ func (a *authorizer) Authorize(_ context.Context, attrs auth.Attributes) (auth.D
 	return auth.DecisionNoOpinion, "", nil
 }
 
-func (a *authorizer) authorizeClusterRoleBinding(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *authorizer) authorizeClusterRoleBinding(requestAuthorizer *authwebhook.RequestAuthorizer, attrs auth.Attributes) (auth.Decision, string, error) {
 	// Allow gardenlet to delete its cluster role binding after bootstrapping (in this case, there is no `Seed` resource
 	// in the system yet, so we can't rely on the graph).
 	if attrs.GetVerb() == "delete" &&
 		strings.HasPrefix(attrs.GetName(), gardenletbootstraputil.ClusterRoleBindingNamePrefix) {
 		managedSeedNamespace, managedSeedName := gardenletbootstraputil.ManagedSeedInfoFromClusterRoleBindingName(attrs.GetName())
-		if managedSeedNamespace == v1beta1constants.GardenNamespace && managedSeedName == seedName {
+		if managedSeedNamespace == v1beta1constants.GardenNamespace && managedSeedName == requestAuthorizer.ToName {
 			return auth.DecisionAllow, "", nil
 		}
 	}
 
-	return a.authorize(log, seedName, graph.VertexTypeClusterRoleBinding, attrs,
-		[]string{"get", "patch", "update"},
-		[]string{"create"},
-		nil,
+	return requestAuthorizer.Check(graph.VertexTypeClusterRoleBinding, attrs,
+		authwebhook.WithAllowedVerbs("get", "patch", "update"),
+		authwebhook.WithAlwaysAllowedVerbs("create"),
 	)
 }
 
 func (a *authorizer) authorizeEvent(log logr.Logger, attrs auth.Attributes) (auth.Decision, string, error) {
-	if ok, reason := a.checkVerb(log, attrs, "create", "patch"); !ok {
+	if ok, reason := authwebhook.CheckVerb(log, attrs, "create", "patch"); !ok {
 		return auth.DecisionNoOpinion, reason, nil
 	}
 
-	if ok, reason := a.checkSubresource(log, attrs); !ok {
+	if ok, reason := authwebhook.CheckSubresource(log, attrs); !ok {
 		return auth.DecisionNoOpinion, reason, nil
 	}
 
 	return auth.DecisionAllow, "", nil
 }
 
-func (a *authorizer) authorizeLease(log logr.Logger, seedName string, userType seedidentity.UserType, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *authorizer) authorizeLease(requestAuthorizer *authwebhook.RequestAuthorizer, userType gardenletidentity.UserType, attrs auth.Attributes) (auth.Decision, string, error) {
 	// extension clients may only work with leases in the seed namespace
-	if userType == seedidentity.UserTypeExtension {
-		if attrs.GetNamespace() == gardenerutils.ComputeGardenNamespace(seedName) {
-			if ok, reason := a.checkVerb(log, attrs, "create", "get", "list", "watch", "update", "patch", "delete", "deletecollection"); !ok {
+	if userType == gardenletidentity.UserTypeExtension {
+		if attrs.GetNamespace() == gardenerutils.ComputeGardenNamespace(requestAuthorizer.ToName) {
+			if ok, reason := authwebhook.CheckVerb(requestAuthorizer.Log, attrs, "create", "get", "list", "watch", "update", "patch", "delete", "deletecollection"); !ok {
 				return auth.DecisionNoOpinion, reason, nil
 			}
 
@@ -286,21 +290,25 @@ func (a *authorizer) authorizeLease(log logr.Logger, seedName string, userType s
 	}
 
 	// This is needed if the seed cluster is a garden cluster at the same time.
-	if attrs.GetName() == "gardenlet-leader-election" &&
-		slices.Contains([]string{"create", "get", "list", "watch", "update"}, attrs.GetVerb()) {
+	// TODO(rfranzke): Remove this logic once we only support gardener-operator-based Gardener deployments (in this
+	//  case, the seed authorizer would not handle gardenlet's leader-election Lease requests since they are not
+	//  performed in the virtual/garden cluster but in the runtime cluster).
+	if attrs.GetName() == "gardenlet-leader-election" {
+		if ok, reason := authwebhook.CheckVerb(requestAuthorizer.Log, attrs, "create", "get", "list", "update", "watch"); !ok {
+			return auth.DecisionNoOpinion, reason, nil
+		}
 		return auth.DecisionAllow, "", nil
 	}
 
-	return a.authorize(log, seedName, graph.VertexTypeLease, attrs,
-		[]string{"get", "update", "patch", "list", "watch"},
-		[]string{"create"},
-		nil,
+	return requestAuthorizer.Check(graph.VertexTypeLease, attrs,
+		authwebhook.WithAllowedVerbs("get", "update", "patch", "list", "watch"),
+		authwebhook.WithAlwaysAllowedVerbs("create"),
 	)
 }
 
-func (a *authorizer) authorizeSecret(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *authorizer) authorizeSecret(requestAuthorizer *authwebhook.RequestAuthorizer, attrs auth.Attributes) (auth.Decision, string, error) {
 	// Allow gardenlets to get/list/watch secrets in their seed-<name> namespaces.
-	if slices.Contains([]string{"get", "list", "watch"}, attrs.GetVerb()) && attrs.GetNamespace() == gardenerutils.ComputeGardenNamespace(seedName) {
+	if slices.Contains([]string{"get", "list", "watch"}, attrs.GetVerb()) && attrs.GetNamespace() == gardenerutils.ComputeGardenNamespace(requestAuthorizer.ToName) {
 		return auth.DecisionAllow, "", nil
 	}
 
@@ -309,127 +317,46 @@ func (a *authorizer) authorizeSecret(log logr.Logger, seedName string, attrs aut
 	if (attrs.GetVerb() == "delete" &&
 		attrs.GetNamespace() == metav1.NamespaceSystem &&
 		strings.HasPrefix(attrs.GetName(), bootstraptokenapi.BootstrapTokenSecretPrefix)) &&
-		(attrs.GetName() == bootstraptokenapi.BootstrapTokenSecretPrefix+bootstraptoken.TokenID(metav1.ObjectMeta{Name: seedName, Namespace: v1beta1constants.GardenNamespace})) {
+		(attrs.GetName() == bootstraptokenapi.BootstrapTokenSecretPrefix+bootstraptoken.TokenID(metav1.ObjectMeta{Name: requestAuthorizer.ToName, Namespace: v1beta1constants.GardenNamespace})) {
 		return auth.DecisionAllow, "", nil
 	}
 
-	return a.authorize(log, seedName, graph.VertexTypeSecret, attrs,
-		[]string{"get", "patch", "update", "delete"},
-		[]string{"create"},
-		nil,
+	return requestAuthorizer.Check(graph.VertexTypeSecret, attrs,
+		authwebhook.WithAllowedVerbs("get", "patch", "update", "delete"),
+		authwebhook.WithAlwaysAllowedVerbs("create"),
 	)
 }
 
-func (a *authorizer) authorizeConfigMap(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
-	return a.authorize(log, seedName, graph.VertexTypeConfigMap, attrs,
-		[]string{"get", "patch", "update", "delete", "list", "watch"},
-		[]string{"create"},
-		nil,
+func (a *authorizer) authorizeConfigMap(requestAuthorizer *authwebhook.RequestAuthorizer, attrs auth.Attributes) (auth.Decision, string, error) {
+	if attrs.GetVerb() == "get" &&
+		attrs.GetNamespace() == gardencorev1beta1.GardenerSystemPublicNamespace &&
+		attrs.GetName() == v1beta1constants.ConfigMapNameGardenerInfo {
+		return auth.DecisionAllow, "", nil
+	}
+
+	return requestAuthorizer.Check(graph.VertexTypeConfigMap, attrs,
+		authwebhook.WithAllowedVerbs("get", "patch", "update", "delete", "list", "watch"),
+		authwebhook.WithAlwaysAllowedVerbs("create"),
 	)
 }
 
-func (a *authorizer) authorizeServiceAccount(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *authorizer) authorizeServiceAccount(requestAuthorizer *authwebhook.RequestAuthorizer, attrs auth.Attributes) (auth.Decision, string, error) {
 	// Allow gardenlet to delete its service account after bootstrapping (in this case, there is no `Seed` resource in
 	// the system yet, so we can't rely on the graph).
 	if attrs.GetVerb() == "delete" &&
 		attrs.GetNamespace() == v1beta1constants.GardenNamespace &&
 		strings.HasPrefix(attrs.GetName(), gardenletbootstraputil.ServiceAccountNamePrefix) &&
-		strings.TrimPrefix(attrs.GetName(), gardenletbootstraputil.ServiceAccountNamePrefix) == seedName {
+		strings.TrimPrefix(attrs.GetName(), gardenletbootstraputil.ServiceAccountNamePrefix) == requestAuthorizer.ToName {
 		return auth.DecisionAllow, "", nil
 	}
 
 	// Allow all verbs for service accounts in gardenlets' seed-<name> namespaces.
-	if attrs.GetNamespace() == gardenerutils.ComputeGardenNamespace(seedName) {
+	if attrs.GetNamespace() == gardenerutils.ComputeGardenNamespace(requestAuthorizer.ToName) {
 		return auth.DecisionAllow, "", nil
 	}
 
-	return a.authorize(log, seedName, graph.VertexTypeServiceAccount, attrs,
-		[]string{"get", "patch", "update"},
-		[]string{"create"},
-		nil,
+	return requestAuthorizer.Check(graph.VertexTypeServiceAccount, attrs,
+		authwebhook.WithAllowedVerbs("get", "patch", "update"),
+		authwebhook.WithAlwaysAllowedVerbs("create"),
 	)
-}
-
-func (a *authorizer) authorizeRead(log logr.Logger, seedName string, fromType graph.VertexType, attrs auth.Attributes) (auth.Decision, string, error) {
-	return a.authorize(log, seedName, fromType, attrs,
-		[]string{"get", "list", "watch"},
-		nil,
-		nil,
-	)
-}
-
-func (a *authorizer) authorize(
-	log logr.Logger,
-	seedName string,
-	fromType graph.VertexType,
-	attrs auth.Attributes,
-	allowedVerbs []string,
-	alwaysAllowedVerbs []string,
-	allowedSubresources []string,
-) (
-	auth.Decision,
-	string,
-	error,
-) {
-	if ok, reason := a.checkSubresource(log, attrs, allowedSubresources...); !ok {
-		return auth.DecisionNoOpinion, reason, nil
-	}
-
-	// When a new object is created then it doesn't yet exist in the graph, so usually such requests are always allowed
-	// as the 'create case' is typically handled in the SeedRestriction admission handler. Similarly, resources for
-	// which the gardenlet has a controller need to be listed/watched, so those verbs would also be allowed here.
-	if slices.Contains(alwaysAllowedVerbs, attrs.GetVerb()) {
-		return auth.DecisionAllow, "", nil
-	}
-
-	if ok, reason := a.checkVerb(log, attrs, append(alwaysAllowedVerbs, allowedVerbs...)...); !ok {
-		return auth.DecisionNoOpinion, reason, nil
-	}
-
-	return a.hasPathFrom(log, seedName, fromType, attrs)
-}
-
-func (a *authorizer) hasPathFrom(log logr.Logger, seedName string, fromType graph.VertexType, attrs auth.Attributes) (auth.Decision, string, error) {
-	if len(attrs.GetName()) == 0 {
-		log.Info("Denying authorization because attributes are missing object name")
-		return auth.DecisionNoOpinion, "No Object name found", nil
-	}
-
-	// If the request is made for a namespace then the attributes.Namespace field is not empty. It contains the name of
-	// the namespace.
-	namespace := attrs.GetNamespace()
-	if fromType == graph.VertexTypeNamespace {
-		namespace = ""
-	}
-
-	// If the vertex does not exist in the graph (i.e., the resource does not exist in the system) then we allow the
-	// request.
-	if attrs.GetVerb() == "delete" && !a.graph.HasVertex(fromType, namespace, attrs.GetName()) {
-		return auth.DecisionAllow, "", nil
-	}
-
-	if !a.graph.HasPathFrom(fromType, namespace, attrs.GetName(), graph.VertexTypeSeed, "", seedName) {
-		log.Info("Denying authorization because no relationship is found between seed and object")
-		return auth.DecisionNoOpinion, fmt.Sprintf("no relationship found between seed '%s' and this object", seedName), nil
-	}
-
-	return auth.DecisionAllow, "", nil
-}
-
-func (a *authorizer) checkVerb(log logr.Logger, attrs auth.Attributes, allowedVerbs ...string) (bool, string) {
-	if !slices.Contains(allowedVerbs, attrs.GetVerb()) {
-		log.Info("Denying authorization because verb is not allowed for this resource type", "allowedVerbs", allowedVerbs)
-		return false, fmt.Sprintf("only the following verbs are allowed for this resource type: %+v", allowedVerbs)
-	}
-
-	return true, ""
-}
-
-func (a *authorizer) checkSubresource(log logr.Logger, attrs auth.Attributes, allowedSubresources ...string) (bool, string) {
-	if subresource := attrs.GetSubresource(); len(subresource) > 0 && !slices.Contains(allowedSubresources, attrs.GetSubresource()) {
-		log.Info("Denying authorization because subresource is not allowed for this resource type", "allowedSubresources", allowedSubresources)
-		return false, fmt.Sprintf("only the following subresources are allowed for this resource type: %+v", allowedSubresources)
-	}
-
-	return true, ""
 }

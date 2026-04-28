@@ -93,6 +93,8 @@ func (e *ExposureClass) ValidateInitialization() error {
 	return nil
 }
 
+var _ admission.MutationInterface = (*ExposureClass)(nil)
+
 // Admit unite the seed selector and/or tolerations of a Shoot resource
 // with the ones from the referenced ExposureClass.
 func (e *ExposureClass) Admit(_ context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {
@@ -169,8 +171,8 @@ func uniteSeedSelectors(shootSeedSelector *core.SeedSelector, exposureClassSeedS
 	shootSeedSelector.MatchExpressions = append(shootSeedSelector.MatchExpressions, exposureClassSeedSelector.MatchExpressions...)
 
 	// Unite provider types.
-	shootProviderTypes := sets.New[string]().Insert(shootSeedSelector.ProviderTypes...)
-	exposureclasssProviderTypes := sets.New[string]().Insert(exposureClassSeedSelector.ProviderTypes...)
+	shootProviderTypes := sets.New(shootSeedSelector.ProviderTypes...)
+	exposureclasssProviderTypes := sets.New(exposureClassSeedSelector.ProviderTypes...)
 	shootSeedSelector.ProviderTypes = sets.List(shootProviderTypes.Union(exposureclasssProviderTypes))
 
 	return shootSeedSelector, nil

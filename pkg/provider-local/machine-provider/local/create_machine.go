@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"time"
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/gardener/machine-controller-manager/pkg/util/provider/driver"
@@ -15,11 +17,14 @@ import (
 	"github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/status"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/provider-local/local"
 	apiv1alpha1 "github.com/gardener/gardener/pkg/provider-local/machine-provider/api/v1alpha1"
 	"github.com/gardener/gardener/pkg/provider-local/machine-provider/api/validation"
 )
@@ -32,6 +37,11 @@ func (d *localDriver) CreateMachine(ctx context.Context, req *driver.CreateMachi
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("requested for provider '%s', we only support '%s'", req.MachineClass.Provider, apiv1alpha1.Provider))
 	}
 
+	providerClient, err := local.GetProviderClient(ctx, log, d.runtimeClient, *req.MachineClass.CredentialsSecretRef)
+	if err != nil {
+		return nil, fmt.Errorf("could not create client for infrastructure resources: %w", err)
+	}
+
 	klog.V(3).Infof("Machine creation request has been received for %q", req.Machine.Name)
 	defer klog.V(3).Infof("Machine creation request has been processed for %q", req.Machine.Name)
 
@@ -40,30 +50,81 @@ func (d *localDriver) CreateMachine(ctx context.Context, req *driver.CreateMachi
 		return nil, err
 	}
 
-	userDataSecret := userDataSecretForMachine(req.Machine, req.MachineClass)
+	userDataSecret := userDataSecretForMachine(req.Machine, req.MachineClass, providerSpec)
 	userDataSecret.Data = map[string][]byte{"userdata": req.Secret.Data["userData"]}
 
-	if err := controllerutil.SetControllerReference(req.Machine, userDataSecret, d.client.Scheme()); err != nil {
+	pod, err := d.applyPod(ctx, providerClient, req, providerSpec, userDataSecret)
+	if err != nil {
+		return nil, err
+	}
+
+	// The pod object is used as the owner for the userData secret and the service.
+	// We cannot use the machine object here, because it lives in a different cluster in the local setup for self-hosted
+	// shoots (the Machine lives in the shoot cluster, the pod in the bootstrap/kind cluster).
+	// We explicitly delete the Pod on machine deletion, so we can use this object for garbage collection of the others.
+
+	if err := controllerutil.SetControllerReference(pod, userDataSecret, providerClient.Scheme()); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("could not set userData secret ownership: %s", err.Error()))
 	}
 
-	if err := d.client.Patch(ctx, userDataSecret, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
+	if err := providerClient.Patch(ctx, userDataSecret, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("error applying user data secret: %s", err.Error()))
 	}
 
-	pod, err := d.applyPod(ctx, req, providerSpec, userDataSecret)
-	if err != nil {
+	if err := d.applyService(ctx, providerClient, req, pod, providerSpec); err != nil {
+		return nil, err
+	}
+
+	if err := d.waitForPodToBeRunning(ctx, providerClient, pod); err != nil {
 		return nil, err
 	}
 
 	return &driver.CreateMachineResponse{
 		ProviderID: pod.Name,
 		NodeName:   pod.Name,
+		Addresses:  addressesFromStatus(pod.Status),
 	}, nil
+}
+
+func (d *localDriver) applyService(ctx context.Context, providerClient client.Client, req *driver.CreateMachineRequest, owner client.Object, providerSpec *apiv1alpha1.ProviderSpec) error {
+	service := serviceForMachine(req.Machine, req.MachineClass, providerSpec)
+
+	service.Labels = map[string]string{
+		labelKeyProvider: apiv1alpha1.Provider,
+		labelKeyApp:      labelValueMachine,
+		labelKeyMachine:  req.Machine.Name,
+	}
+	service.Spec = corev1.ServiceSpec{
+		Type:      corev1.ServiceTypeClusterIP,
+		ClusterIP: corev1.ClusterIPNone,
+		Selector:  maps.Clone(service.Labels),
+		// Publish the machine pod IP, even if the pod is not ready, because this happens only eventually when the Node
+		// joins the cluster (or never in case of `gardenadm bootstrap`).
+		PublishNotReadyAddresses: true,
+		Ports: []corev1.ServicePort{
+			{
+				Name:        "ssh",
+				Port:        22,
+				Protocol:    corev1.ProtocolTCP,
+				AppProtocol: ptr.To("ssh"),
+			},
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(owner, service, providerClient.Scheme()); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("could not set service ownership: %s", err.Error()))
+	}
+
+	if err := providerClient.Patch(ctx, service, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("error applying service: %s", err.Error()))
+	}
+
+	return nil
 }
 
 func (d *localDriver) applyPod(
 	ctx context.Context,
+	providerClient client.Client,
 	req *driver.CreateMachineRequest,
 	providerSpec *apiv1alpha1.ProviderSpec,
 	userDataSecret *corev1.Secret,
@@ -71,7 +132,7 @@ func (d *localDriver) applyPod(
 	*corev1.Pod,
 	error,
 ) {
-	pod := podForMachine(req.Machine, req.MachineClass)
+	pod := podForMachine(req.Machine, req.MachineClass, providerSpec)
 	pod.Annotations = map[string]string{}
 
 	if providerSpec.IPPoolNameV4 != "" {
@@ -82,13 +143,23 @@ func (d *localDriver) applyPod(
 	}
 
 	pod.Labels = map[string]string{
-		labelKeyProvider:                   apiv1alpha1.Provider,
-		labelKeyApp:                        labelValueMachine,
-		"networking.gardener.cloud/to-dns": "allowed",
-		"networking.gardener.cloud/to-private-networks":                 "allowed",
-		"networking.gardener.cloud/to-public-networks":                  "allowed",
-		"networking.gardener.cloud/to-runtime-apiserver":                "allowed", // needed for ManagedSeeds such that gardenlets deployed to these Machines can talk to the seed's kube-apiserver (which is the same like the garden cluster kube-apiserver)
-		"networking.resources.gardener.cloud/to-kube-apiserver-tcp-443": "allowed",
+		labelKeyProvider: apiv1alpha1.Provider,
+		labelKeyApp:      labelValueMachine,
+		labelKeyMachine:  req.Machine.Name,
+
+		// needed for machine pods to talk to containers in the kind network:
+		// - the local DNS server (bind9)
+		// - the local registry and registry caches
+		// - seed istio ingress-gateways
+		// - virtual garden istio ingress-gateway
+		"networking.gardener.cloud/to-private-networks": "allowed",
+		// needed for machine pods to talk to the outside world:
+		// - for pulling container images from the upstream registries as fallbacks if the cache doesn't work
+		"networking.gardener.cloud/to-public-networks": "allowed",
+		// needed for ManagedSeeds such that gardenlets deployed to these Machines can talk to the seed's kube-apiserver (which is the same like the garden cluster kube-apiserver)
+		"networking.gardener.cloud/to-runtime-apiserver": "allowed",
+
+		local.LabelNetworkPolicyToIstioIngressGateway: v1beta1constants.LabelNetworkPolicyAllowed,
 	}
 	pod.Spec = corev1.PodSpec{
 		Containers: []corev1.Container{
@@ -97,7 +168,7 @@ func (d *localDriver) applyPod(
 				Image:           providerSpec.Image,
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				SecurityContext: &corev1.SecurityContext{
-					Privileged: pointer.Bool(true),
+					Privileged: ptr.To(true),
 				},
 				Env: []corev1.EnvVar{{
 					Name: "NODE_NAME",
@@ -136,13 +207,18 @@ func (d *localDriver) applyPod(
 				}},
 			},
 		},
+		// Don't use the coredns of the kind cluster. The machine pods should not rely on in-cluster DNS at all because
+		// in the real world, shoot nodes also can't resolve DNS names of the seed (obviously). Using the DNS config of
+		// the kind cluster nodes means that the machine pods will talk directly to the local DNS server (bind9) running
+		// next to the kind nodes.
+		DNSPolicy: corev1.DNSDefault,
 		Volumes: []corev1.Volume{
 			{
 				Name: "userdata",
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName:  userDataSecret.Name,
-						DefaultMode: pointer.Int32(0777),
+						DefaultMode: ptr.To[int32](0777),
 					},
 				},
 			},
@@ -163,15 +239,35 @@ func (d *localDriver) applyPod(
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(req.Machine, pod, d.client.Scheme()); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("could not set pod ownership: %s", err.Error()))
-	}
-
-	if err := d.client.Patch(ctx, pod, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
+	if err := providerClient.Patch(ctx, pod, client.Apply, fieldOwner, client.ForceOwnership); err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("error applying pod: %s", err.Error()))
 	}
 
 	return pod, nil
+}
+
+func (d *localDriver) waitForPodToBeRunning(ctx context.Context, providerClient client.Client, pod *corev1.Pod) error {
+	// Actively wait until pod is running. Without doing so, we might not be able to catch misconfigurations or image
+	// problems before the Machine transitions to Available/Pending.
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	if err := wait.PollUntilContextCancel(timeoutCtx, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+		if err := providerClient.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+			return true, err
+		}
+
+		if pod.Status.Phase == corev1.PodRunning {
+			return true, nil
+		}
+
+		return false, nil
+	}); err != nil {
+		// will be retried with short retry by machine controller
+		return status.Error(codes.DeadlineExceeded, fmt.Sprintf("pod %q is in phase %q, failed waiting for phase %q: %v", pod.Name, pod.Status.Phase, corev1.PodRunning, err))
+	}
+
+	return nil
 }
 
 func validateProviderSpecAndSecret(machineClass *machinev1alpha1.MachineClass, secret *corev1.Secret) (*apiv1alpha1.ProviderSpec, error) {

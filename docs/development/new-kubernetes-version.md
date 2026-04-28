@@ -8,14 +8,11 @@ This document describes the steps needed to perform in order to confidently add 
 - Ensure Gardener and extensions are updated to support the new Kubernetes version ([example](https://github.com/gardener/gardener/issues/11020))
 - Bump Golang dependencies for `k8s.io/*` and `sigs.k8s.io/controller-runtime` ([example](https://github.com/gardener/gardener/issues/11186)) [[ref](#bump-golang-dependencies-for-k8sio-and-sigsk8siocontroller-runtime)]
 - Prepare a short (~30-60 min) session for a special edition of Gardener's Review Meeting on new key features and changes in the release
-- Drop support for all but the greatest/latest 5 Kubernetes minor versions (the newly added plus four prior). Drop all lower/older versions and adapt accordingly ([example](https://github.com/gardener/gardener/pull/10664))
+- Drop support for all but the greatest/latest 4 Kubernetes minor versions (the newly added plus three prior). Drop all lower/older versions and adapt accordingly ([example](https://github.com/gardener/gardener/pull/10664))
+  - Removing support is only possible if the Kubernetes version to be dropped has been supported for at least 14 months. See [Supported Kubernetes Versions](../usage/shoot-operations/supported_k8s_versions.md) for details.
 
 Version | Expected Release Date | Release Responsibles                                                                         |
 --------|-----------------------|----------------------------------------------------------------------------------------------|
-v1.32   | December 11, 2024     | [@marc1404](https://github.com/marc1404), [@LucaBernstein](https://github.com/LucaBernstein) |
-v1.33   | April 23, 2025        | [@Kostov6](https://github.com/Kostov6), [@plkokanov](https://github.com/plkokanov)           |
-v1.34   | August ?, 2025        | [@tobschli](https://github.com/tobschli), [@ScheererJ](https://github.com/ScheererJ)         |
-v1.35   | December ?, 2025      | [@timuthy](https://github.com/timuthy), [@rfranzke](https://github.com/rfranzke)             |
 v1.36   | April ?, 2026         | [@oliver-goetz](https://github.com/oliver-goetz), [@ary1992](https://github.com/ary1992)     |
 v1.37   | August ?, 2026        | [@acumino](https://github.com/acumino), [@shafeeqes](https://github.com/shafeeqes)           |
 v1.38   | December ?, 2026      | [@ialidzhikov](https://github.com/ialidzhikov), TBD                                          |
@@ -39,6 +36,10 @@ v1.38   | December ?, 2026      | [@ialidzhikov](https://github.com/ialidzhikov)
   v1.29   | December 13, 2023     | [@acumino](https://github.com/acumino)                                                       |
   v1.30   | April 17, 2024        | [@shafeeqes](https://github.com/shafeeqes)                                                   |
   v1.31   | August 13, 2024       | [@ialidzhikov](https://github.com/ialidzhikov)                                               |
+  v1.32   | December 11, 2024     | [@marc1404](https://github.com/marc1404), [@LucaBernstein](https://github.com/LucaBernstein) |
+  v1.33   | April 23, 2025        | [@Kostov6](https://github.com/Kostov6), [@plkokanov](https://github.com/plkokanov)           |
+  v1.34   | August 27, 2025       | [@tobschli](https://github.com/tobschli), [@ScheererJ](https://github.com/ScheererJ)         |
+  v1.35   | December 17, 2025     | [@timuthy](https://github.com/timuthy), [@rfranzke](https://github.com/rfranzke)             |
 </details>
 
 ## Introduction
@@ -99,40 +100,30 @@ There is a CI/CD job that runs periodically and releases a new `hyperkube` image
 
 ### Adapting Gardener
 
-<!-- // TODO(marc1404): Reference `compare-k8s-feature-gates.sh` script once it has been fixed (https://github.com/gardener/gardener/issues/11198). -->
 - Allow instantiation of a Kubernetes client for the new minor version and update the `README.md`:
   - See [this](https://github.com/gardener/gardener/pull/11197/commits/223bdc0ebdf79f02ac1e50fabe2b92bec3fc1e36) and [this](https://github.com/gardener/gardener/pull/11197/commits/8f1f73c6a0ce74ec952e817451244c4fa86e6bc8) example commit.
   - The list of supported versions is meanwhile maintained [here](../../pkg/utils/validation/kubernetesversion/version.go) in the `SupportedVersions` variable.
 - Maintain the Kubernetes feature gates used for validation of `Shoot` resources:
   - The feature gates are maintained in [this](../../pkg/utils/validation/features/featuregates.go) file.
-  - To maintain this list for new Kubernetes versions follow this guide:
-    - **Alpha & Beta Feature Gates:**
-      - Open: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/#feature-gates-for-alpha-or-beta-features
-      - Search the page for the new Kubernetes version, e.g. "1.32".
-      - Add new alpha feature gates that have been added "Since" the new Kubernetes version.
-      - Change the `Default` for Beta feature gates that have been promoted "Since" the new Kubernetes version.
-    - **Graduated & Deprecated Feature Gates:**
-      - Open: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/#feature-gates-for-graduated-or-deprecated-features
-      - Search the page for the new Kubernetes version, e.g. "1.32".
-      - Change `LockedToDefaultInVersion` for GA and Deprecated feature gates that have been graduated/deprecated "Since" the new Kubernetes version.
-    - **Removed Feature Gates:**
-      - Open: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates-removed/#feature-gates-that-are-removed
-      - Search the page for the **current** Kubernetes version, e.g. if the new version is "1.32", search for "1.31".
-      - Set `RemovedInVersion` to the **new** Kubernetes version for feature gates that have been removed after the **current** Kubernetes version according to the "To" column.
-  - See [this](https://github.com/gardener/gardener/pull/5255/commits/97923b0604300ff805def8eae981ed388d5e4a83) example commit.
+  - To maintain this list for new Kubernetes versions, run `hack/compare-k8s-feature-gates.sh <old-version> <new-version>` (e.g. `hack/compare-k8s-feature-gates.sh 1.34 1.35`).
+  - It will present 3 lists of feature gates: those added and those removed in `<new-version>` compared to `<old-version>` and feature gates that got locked to default in `<new-version>`.
+  - Add all added feature gates to the map with `<new-version>` as `AddedInVersion` and no `RemovedInVersion`.
+  - For any removed feature gates, add `<new-version>` as `RemovedInVersion` to the already existing feature gate in the map.
+  - For feature gates locked to default, add `<new-version>` as `LockedToDefaultInVersion` and the corresponding `LockedValue` to the already existing feature gate in the map.
+  - See [this](https://github.com/gardener/gardener/pull/9689/commits) example PR how it handles feature gate maintenance by using `compare-k8s-feature-gates.sh`
 - Maintain the Kubernetes `kube-apiserver` admission plugins used for validation of `Shoot` resources:
   - The admission plugins are maintained in [this](../../pkg/utils/validation/admissionplugins/admissionplugins.go) file.
   - See [this](https://github.com/gardener/gardener/pull/11197/commits/116422c95d2c520629e3460376a69de97b5e3b1a) and [this](https://github.com/gardener/gardener/pull/9689/commits/94a1bf1bf0d6c0ffb7c59f87f1ccff1d6363ccc2) example commit.
   - To maintain this list for new Kubernetes versions, run `hack/compare-k8s-admission-plugins.sh <old-version> <new-version>` (e.g. `hack/compare-k8s-admission-plugins.sh 1.26 1.27`).
   - It will present 2 lists of admission plugins: those added and those removed in `<new-version>` compared to `<old-version>`.
-  - Add all added admission plugins to the `admissionPluginsVersionRanges` map with `<new-version>` as `AddedInVersion` and no `RemovedInVersion`.
+  - Add all added admission plugins to the `admissionPluginsVersionRanges` map with `<new-version>` as `AddedInVersion` and no `RemovedInVersion`. Set `AllowsConfiguration` to `true` when the new admission plugin allows configuration. To determine whether the admission plugin allows configuration, check the plugin's `Register()` method, whether it uses configuration or not. Be careful that functions that are called within the method can take the config as part of their signature, but ultimately do not use it.  ([ref (uses config)](https://github.com/kubernetes/kubernetes/blob/b346ac0f8e013cedb8d91b4065d385f84e81c43e/staging/src/k8s.io/apiserver/pkg/admission/plugin/resourcequota/admission.go#L47-L61), [ref (does not use config)](https://github.com/kubernetes/kubernetes/blob/61774cd7176cae0c0324d23ab20e6c6b3038153f/plugin/pkg/admission/storage/persistentvolume/resize/admission.go#L38-L43))
   - For any removed admission plugins, add `<new-version>` as `RemovedInVersion` to the already existing admission plugin in the map.
   - In local setup, create a shoot with all of the newly added admission plugins disabled. Make sure that the shoot creation and deletion will succeed. If it fails, that means some of the admission plugins are required. Flag any admission plugins that are required (plugins that must not be disabled in the `Shoot` spec) by setting the `Required` boolean variable to true for the admission plugin in the map.
   - Check the [Kubernetes documentation for admission controllers](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/) if any newly added admission plugin is not recommended for production usage. Example: `The Kubernetes project recommends that you do not use the SecurityContextDeny admission controller`. Note that this admission controller was removed in Kubernetes 1.30 in [this PR](https://github.com/gardener/gardener/pull/9689) and that's why it is not mentioned in the latest Kubernetes documentation. Flag those admission plugins by setting the `Forbidden` boolean variable to true for the admission plugin in the map.
 - Maintain the Kubernetes `kube-apiserver` API groups used for validation of `Shoot` resources:
   - The API groups are maintained in [this](../../pkg/utils/validation/apigroups/apigroups.go) file.
   - See [this](https://github.com/gardener/gardener/pull/11197/commits/73b655475ac2565a9fdf098f10bab9cfdbed961a) example commit.
-  - To maintain this list for new Kubernetes versions, run `hack/compare-k8s-api-groups.sh <old-version> <new-version>` (e.g. `hack/compare-k8s-api-groups.sh 1.26 1.27`).
+  - To maintain this list for new Kubernetes versions, run `hack/compare-k8s-api-groups.sh <old-version> <new-version>` (e.g. `hack/compare-k8s-api-groups.sh 1.34 1.35`).
   - It will present 2 lists of API GroupVersions and 2 lists of API GroupVersionResources: those added and those removed in `<new-version>` compared to `<old-version>`.
   - Add all added group versions to the `apiGroupVersionRanges` map and group version resources to the `apiGVRVersionRanges` map with `<new-version>` as `AddedInVersion` and no `RemovedInVersion`.
   - For any removed APIs, add `<new-version>` as `RemovedInVersion` to the already existing API in the corresponding map.
@@ -140,7 +131,7 @@ There is a CI/CD job that runs periodically and releases a new `hyperkube` image
 - Maintain the Kubernetes `kube-controller-manager` controllers for each API group used in deploying required KCM controllers based on active APIs:
   - The API groups are maintained in [this](../../pkg/utils/kubernetes/controllers.go) file.
   - See [this](https://github.com/gardener/gardener/pull/11197/commits/15f8ad3486edc629ecaaa5e30f10619737d01316) example commit.
-  - To maintain this list for new Kubernetes versions, run `hack/compute-k8s-controllers.sh <old-version> <new-version>` (e.g. `hack/compute-k8s-controllers.sh 1.28 1.29`).
+  - To maintain this list for new Kubernetes versions, run `hack/compute-k8s-controllers.sh <old-version> <new-version>` (e.g. `hack/compute-k8s-controllers.sh 1.34 1.35`).
   - If it complains that the path for the controller is not present in the map, check the release branch of the new Kubernetes version and find the correct path for the missing/wrong controller. You can do so by checking the file `cmd/kube-controller-manager/app/controllermanager.go` and where the controller is initialized from. As of now, there is no straight-forward way to map each controller to its file. If this has improved, please enhance the script.
   - If the paths are correct, it will present 2 lists of controllers: those added and those removed for each API group in `<new-version>` compared to `<old-version>`.
   - Add all added controllers to the `APIGroupControllerMap` map and under the corresponding API group with `<new-version>` as `AddedInVersion` and no `RemovedInVersion`.
@@ -182,33 +173,6 @@ After the PR in `gardener/gardener` for the support of the new version has been 
 Provider extensions are using upstream `cloud-controller-manager` images.
 Make sure to adopt the new `cloud-controller-manager` release for the new Kubernetes minor version ([example PR](https://github.com/gardener/gardener-extension-provider-aws/pull/1055)).
 
-Some of the cloud providers are not using upstream `cloud-controller-manager` images for some of the supported Kubernetes versions.
-Instead, we build and maintain the images ourselves:
-
-- [cloud-provider-gcp](https://github.com/gardener/cloud-provider-gcp)
-
-Use the instructions below in case you need to maintain a release branch for such `cloud-controller-manager` image:
-
-<details>
-
-<summary>Expand the instructions!</summary>
-
-Until we switch to upstream images, you need to update the Kubernetes dependencies and release a new image.
-The required steps are as follows:
-
-- Checkout the `legacy-cloud-provider` branch of the respective repository
-- Bump the versions in the `Dockerfile` ([example commit](https://github.com/gardener/cloud-provider-gcp/commit/b7eb3f56b252aaf29adc78406672574b1bc17495)).
-- Update the `VERSION` to `vX.Y.Z-dev` where `Z` is the latest available Kubernetes patch version for the `vX.Y` minor version.
-- Update the `k8s.io/*` dependencies in the `go.mod` file to `vX.Y.Z` and run `go mod tidy` ([example commit](https://github.com/gardener/cloud-provider-gcp/commit/d41cc9f035bcc4893b40d90a4f617c4d436c5d62)).
-- Checkout a new `release-vX.Y` branch and release it ([example](https://github.com/gardener/cloud-provider-gcp/commits/release-v1.23))
-
-> As you are already on it, it is great if you also bump the `k8s.io/*` dependencies for the last three minor releases as well.
-In this case, you need to check out the `release-vX.{Y-{1,2,3}}` branches and only perform the last three steps ([example branch](https://github.com/gardener/cloud-provider-gcp/commits/release-v1.20), [example commit](https://github.com/gardener/cloud-provider-gcp/commit/372aa43fbacdeb76b3da9f6fad6cfd924d916227)).
-
-Now you need to update the new releases in the `imagevector/images.yaml` of the respective provider extension so that they are used (see this [example commit](https://github.com/gardener/gardener-extension-provider-aws/pull/942/commits/7e5c0d95ff95d65459d13ae7f79a030049322c71) for reference).
-
-</details>
-
 #### Maintaining Additional Images
 
 Provider extensions might also deploy additional images other than `cloud-controller-manager` that are specific for a given Kubernetes minor version.
@@ -240,6 +204,9 @@ Typically, the following validations should be performed:
 
 If everything looks good, then go ahead and file the PR ([example PR](https://github.com/gardener/gardener-extension-provider-aws/pull/480)).
 Generally, it is again great if you add the PRs also to the umbrella issue so that they can be tracked more easily.
+
+Once the release is published that adds support for the new Kubernetes version, update the [Supported Kubernetes Versions](../usage/shoot-operations/supported_k8s_versions.md) table and the [`supported-kubernetes-versions.yaml`](../../supported-kubernetes-versions.yaml) file accordingly.
+We consider a new Kubernetes version supported by Gardener with the release of `gardener/gardener` and keep support for at least 14 months after the publish date of the release.
 
 ### Bump Golang dependencies for `k8s.io/*` and `sigs.k8s.io/controller-runtime`
 

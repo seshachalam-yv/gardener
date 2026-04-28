@@ -21,12 +21,12 @@ var _ = Describe("ScrapeConfigs", func() {
 			Expect(seed.CentralScrapeConfigs()).To(HaveExactElements(
 				&monitoringv1alpha1.ScrapeConfig{
 					ObjectMeta: metav1.ObjectMeta{
-						Name: "prometheus",
+						Name: "prometheus-seed",
 					},
 					Spec: monitoringv1alpha1.ScrapeConfigSpec{
 						RelabelConfigs: []monitoringv1.RelabelConfig{{
 							Action:      "replace",
-							Replacement: ptr.To("prometheus"),
+							Replacement: ptr.To("prometheus-seed"),
 							TargetLabel: "job",
 						}},
 						StaticConfigs: []monitoringv1alpha1.StaticConfig{{
@@ -44,10 +44,10 @@ var _ = Describe("ScrapeConfigs", func() {
 						MetricsPath:     ptr.To("/federate"),
 						Params: map[string][]string{
 							"match[]": {
-								`{job="cadvisor",namespace=~"extension-(.+)"}`,
-								`{job="cadvisor",namespace="garden"}`,
-								`{job="cadvisor",namespace=~"istio-(.+)"}`,
-								`{job="cadvisor",namespace="kube-system"}`,
+								`{__name__=~"container_.+",job="cadvisor",namespace=~"extension-(.+)"}`,
+								`{__name__=~"container_.+",job="cadvisor",namespace="garden"}`,
+								`{__name__=~"container_.+",job="cadvisor",namespace=~"istio-(.+)"}`,
+								`{__name__=~"container_.+",job="cadvisor",namespace="kube-system"}`,
 							},
 						},
 						KubernetesSDConfigs: []monitoringv1alpha1.KubernetesSDConfig{{
@@ -71,7 +71,7 @@ var _ = Describe("ScrapeConfigs", func() {
 						MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
 							SourceLabels: []monitoringv1.LabelName{"__name__"},
 							Action:       "keep",
-							Regex:        `^(container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_throttled_seconds_total|container_cpu_usage_seconds_total|container_fs_inodes_total|container_fs_limit_bytes|container_fs_usage_bytes|container_last_seen|container_memory_working_set_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_oom_events_total)$`,
+							Regex:        `^(container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_throttled_seconds_total|container_cpu_usage_seconds_total|container_fs_inodes_total|container_fs_limit_bytes|container_fs_usage_bytes|container_fs_reads_total|container_fs_writes_total|container_last_seen|container_memory_working_set_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_oom_events_total)$`,
 						}},
 					},
 				},

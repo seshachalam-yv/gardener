@@ -1,0 +1,170 @@
+// SPDX-FileCopyrightText: SAP SE or an SAP affiliate company and Gardener contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package graph
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	toolscache "k8s.io/client-go/tools/cache"
+	bootstraptokenapi "k8s.io/cluster-bootstrap/token/api"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/api/seedmanagement/v1alpha1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
+	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/bootstraptoken"
+)
+
+func (g *graph) setupGardenletWatch(ctx context.Context, informer cache.Informer) error {
+	_, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			if gardenlet, ok := obj.(*seedmanagementv1alpha1.Gardenlet); ok {
+				g.handleGardenletCreateOrUpdate(ctx, gardenlet)
+				return
+			}
+		},
+
+		UpdateFunc: func(_, newObj any) {
+			if gardenlet, ok := newObj.(*seedmanagementv1alpha1.Gardenlet); ok {
+				g.handleGardenletCreateOrUpdate(ctx, gardenlet)
+				return
+			}
+		},
+
+		DeleteFunc: func(obj any) {
+			if tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown); ok {
+				obj = tombstone.Obj
+			}
+
+			if gardenlet, ok := obj.(*seedmanagementv1alpha1.Gardenlet); ok {
+				g.handleGardenletDelete(gardenlet.Name, gardenlet.Namespace)
+				return
+			}
+		},
+	})
+	return err
+}
+
+func (g *graph) handleGardenletCreateOrUpdate(ctx context.Context, gardenlet *seedmanagementv1alpha1.Gardenlet) {
+	start := time.Now()
+	defer func() {
+		metricUpdateDuration.WithLabelValues("Gardenlet", "Create").Observe(time.Since(start).Seconds())
+	}()
+	g.lock.Lock()
+	defer g.lock.Unlock()
+
+	if g.forSelfHostedShoots {
+		g.handleGardenletCreateOrUpdateForShoots(gardenlet)
+	} else {
+		g.handleGardenletCreateOrUpdateForSeeds(ctx, gardenlet)
+	}
+}
+
+func (g *graph) handleGardenletDelete(name, namespace string) {
+	start := time.Now()
+	defer func() {
+		metricUpdateDuration.WithLabelValues("Gardenlet", "Delete").Observe(time.Since(start).Seconds())
+	}()
+	g.lock.Lock()
+	defer g.lock.Unlock()
+
+	g.deleteVertex(VertexTypeGardenlet, namespace, name)
+}
+
+func (g *graph) handleGardenletCreateOrUpdateForSeeds(ctx context.Context, gardenlet *seedmanagementv1alpha1.Gardenlet) {
+	if strings.HasPrefix(gardenlet.Name, gardenletutils.ResourcePrefixSelfHostedShoot) {
+		return
+	}
+
+	g.deleteAllIncomingEdges(VertexTypeSecret, VertexTypeGardenlet, gardenlet.Namespace, gardenlet.Name)
+	g.deleteAllIncomingEdges(VertexTypeWorkloadIdentity, VertexTypeGardenlet, gardenlet.Namespace, gardenlet.Name)
+	g.deleteAllOutgoingEdges(VertexTypeGardenlet, gardenlet.Namespace, gardenlet.Name, VertexTypeSeed)
+
+	var (
+		gardenletVertex = g.getOrCreateVertex(VertexTypeGardenlet, gardenlet.Namespace, gardenlet.Name)
+		seedVertex      = g.getOrCreateVertex(VertexTypeSeed, "", gardenlet.Name)
+	)
+
+	g.addEdge(gardenletVertex, seedVertex)
+
+	seedTemplate, _, err := seedmanagementv1alpha1helper.ExtractSeedTemplateAndGardenletConfig(gardenlet.Name, &gardenlet.Spec.Config)
+	if err != nil {
+		return
+	}
+
+	if seedTemplate != nil && seedTemplate.Spec.Backup != nil {
+		var (
+			namespace = seedTemplate.Spec.Backup.CredentialsRef.Namespace
+			name      = seedTemplate.Spec.Backup.CredentialsRef.Name
+			vertex    *Vertex
+		)
+
+		if seedTemplate.Spec.Backup.CredentialsRef.APIVersion == securityv1alpha1.SchemeGroupVersion.String() &&
+			seedTemplate.Spec.Backup.CredentialsRef.Kind == "WorkloadIdentity" {
+			vertex = g.getOrCreateVertex(VertexTypeWorkloadIdentity, namespace, name)
+		} else if seedTemplate.Spec.Backup.CredentialsRef.APIVersion == corev1.SchemeGroupVersion.String() &&
+			seedTemplate.Spec.Backup.CredentialsRef.Kind == "Secret" {
+			vertex = g.getOrCreateVertex(VertexTypeSecret, namespace, name)
+		}
+		g.addEdge(vertex, gardenletVertex)
+	}
+
+	var allowBootstrap bool
+
+	seed := &gardencorev1beta1.Seed{}
+	if err := g.client.Get(ctx, client.ObjectKey{Name: gardenlet.Name}, seed); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return
+		}
+	} else if seed.Status.ClientCertificateExpirationTimestamp != nil && seed.Status.ClientCertificateExpirationTimestamp.UTC().Before(time.Now().UTC()) {
+		// Seed is registered but the client certificate expiration timestamp is expired.
+		allowBootstrap = true
+	} else if gardenlet.Annotations[v1beta1constants.GardenerOperation] == v1beta1constants.GardenerOperationRenewKubeconfig {
+		allowBootstrap = true
+	}
+
+	if allowBootstrap {
+		secretVertex := g.getOrCreateVertex(VertexTypeSecret, metav1.NamespaceSystem, bootstraptokenapi.BootstrapTokenSecretPrefix+bootstraptoken.TokenID(gardenlet.ObjectMeta))
+		g.addEdge(secretVertex, gardenletVertex)
+	}
+
+	if gardenlet.Spec.Deployment.Helm.OCIRepository.CABundleSecretRef != nil {
+		caBundleSecretVertex := g.getOrCreateVertex(VertexTypeSecret, gardenlet.Namespace, gardenlet.Spec.Deployment.Helm.OCIRepository.CABundleSecretRef.Name)
+		g.addEdge(caBundleSecretVertex, gardenletVertex)
+	}
+
+	if gardenlet.Spec.Deployment.Helm.OCIRepository.PullSecretRef != nil {
+		pullSecretVertex := g.getOrCreateVertex(VertexTypeSecret, gardenlet.Namespace, gardenlet.Spec.Deployment.Helm.OCIRepository.PullSecretRef.Name)
+		g.addEdge(pullSecretVertex, gardenletVertex)
+	}
+}
+
+func (g *graph) handleGardenletCreateOrUpdateForShoots(gardenlet *seedmanagementv1alpha1.Gardenlet) {
+	if !strings.HasPrefix(gardenlet.Name, gardenletutils.ResourcePrefixSelfHostedShoot) {
+		return
+	}
+
+	g.deleteAllIncomingEdges(VertexTypeSecret, VertexTypeGardenlet, gardenlet.Namespace, gardenlet.Name)
+	g.deleteAllOutgoingEdges(VertexTypeGardenlet, gardenlet.Namespace, gardenlet.Name, VertexTypeShoot)
+
+	var (
+		gardenletVertex = g.getOrCreateVertex(VertexTypeGardenlet, gardenlet.Namespace, gardenlet.Name)
+		shootVertex     = g.getOrCreateVertex(VertexTypeShoot, gardenlet.Namespace, strings.TrimPrefix(gardenlet.Name, gardenletutils.ResourcePrefixSelfHostedShoot))
+	)
+
+	g.addEdge(gardenletVertex, shootVertex)
+
+	// TODO(rfranzke): Check if we need to support the 'allowBootstrap' logic for self-hosted shoots as well (see
+	//  handling for seeds).
+}

@@ -5,17 +5,10 @@ description: Set of controllers with different responsibilities running once per
 
 ## Overview
 
-Initially, the `gardener-resource-manager` was a project similar to the [kube-addon-manager](https://github.com/kubernetes/kubernetes/tree/master/cluster/addons/addon-manager).
-It manages Kubernetes resources in a target cluster which means that it creates, updates, and deletes them.
-Also, it makes sure that manual modifications to these resources are reconciled back to the desired state.
+Gardener heavily utilizes Kubernetes resources for its operations.
+Therefore, any unintentional changes to those resources by a user or operator could lead to problems ranging from failure of a shoot, seed, or even the whole landscape. The `gardener-resource-manager` solves this problem by providing a way to define the desired state of a Kubernetes resource in a target cluster. It reverts any unexpected changes applied to it.
 
-In the Gardener project we were using the kube-addon-manager since more than two years.
-While we have progressed with our [extensibility story](../proposals/01-extensibility.md) (moving cloud providers out-of-tree), we had decided that the kube-addon-manager is no longer suitable for this use-case.
-The problem with it is that it needs to have its managed resources on its file system.
-This requires storing the resources in `ConfigMap`s or `Secret`s and mounting them to the kube-addon-manager pod during deployment time.
-The `gardener-resource-manager` uses `CustomResourceDefinition`s which allows to dynamically add, change, and remove resources with immediate action and without the need to reconfigure the volume mounts/restarting the pod.
-
-Meanwhile, the `gardener-resource-manager` has evolved to a more generic component comprising several controllers and webhook handlers.
+Apart from this functionality, `gardener-resource-manager` has evolved to a more generic component comprising several controllers and webhook handlers.
 It is deployed by gardenlet once per seed (in the `garden` namespace) and once per shoot (in the respective shoot namespaces in the seed).
 
 ## Component Configuration
@@ -245,7 +238,7 @@ Here, several possibilities are supported:
 
 By default, cluster id is not used. If cluster id is specified, the format is `<cluster id>:<namespace>/<objectname>`.
 
-In addition to the origin annotation, all objects managed by the resource manager get a dedicated label `resources.gardener.cloud/managed-by`. This label can be used to describe these objects with a [selector](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/). By default it is set to "gardener", but this can be overwritten by setting the `.conrollers.managedResources.managedByLabelValue` field in the component configuration.
+In addition to the origin annotation, all objects managed by the resource manager get a dedicated label `resources.gardener.cloud/managed-by`. This label can be used to describe these objects with a [selector](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/). By default it is set to "gardener", but this can be overwritten by setting the `.controllers.managedResources.managedByLabelValue` field in the component configuration.
 
 #### Compression
 
@@ -542,7 +535,9 @@ Otherwise, once approved, the `kube-controller-manager`'s `csrsigner` controller
 ### [`NetworkPolicy` Controller](../../pkg/resourcemanager/controller/networkpolicy)
 
 This controller reconciles `Service`s with a non-empty `.spec.podSelector`.
-It creates two `NetworkPolicy`s for each port in the `.spec.ports[]` list.
+It creates two `NetworkPolicy`s for each port in the `.spec.ports[]` list, but only if there are pods in the target namespace carrying the corresponding `networking.resources.gardener.cloud/to-*` label.
+When no matching pods exist, the policies are not created (or are deleted if they existed before).
+Pods appearing or disappearing with these labels trigger re-reconciliation of the affected services.
 For example:
 
 ```yaml
@@ -881,6 +876,10 @@ The highest possible value is `1800`.
 
 The controller adds the `node-agent.gardener.cloud/reconciliation-delay` annotation to nodes whose value is read by the [node-agent](node-agent.md)s.
 
+> [!NOTE]
+> Nodes which should never be updated in parallel and are marked for 'serial reconciliation' (e.g., control plane nodes for self-hosted shoot clusters) are excluded by this controller.
+> Read more about it [here](node-agent.md#serial-reconciliation).
+
 ## Webhooks
 
 ### Mutating Webhooks
@@ -1060,6 +1059,18 @@ Gardener enables this webhook to schedule pods of deployments across nodes and z
 
 Please note that the `gardener-resource-manager` itself as well as pods labelled with `topology-spread-constraints.resources.gardener.cloud/skip` are excluded from any mutations.
 
+#### Pod Scheduler Name
+
+This webhook mutates `Pod`s to set a custom scheduler name in `.spec.schedulerName`.
+It only overwrites the scheduler name when no custom scheduler name is already specified (i.e., when `.spec.schedulerName` is empty or set to `default-scheduler`).
+This webhook is useful when a custom scheduler (e.g., `bin-packing-scheduler`) should be used by default for all pods in certain namespaces.
+
+#### Seccomp Profile
+
+This webhook mutates `Pod`s to set a default seccomp profile in `.spec.securityContext.seccompProfile`.
+If the pod does not already have a seccomp profile specified, this webhook adds the `RuntimeDefault` seccomp profile type.
+This enhances security by ensuring that pods run with a seccomp profile that restricts the system calls they can make, reducing the attack surface.
+
 #### System Components Webhook
 
 If enabled, this webhook handles scheduling concerns for system components `Pod`s (except those managed by `DaemonSet`s).
@@ -1136,6 +1147,39 @@ spec:
 
 For mutating pods, the webhook needs to know the namespace of the istio ingress gateway responsible for the kube-apiserver and its host names.
 These values are stored in `istio-internal-load-balancing` configmap in the same namespace as the pod being mutated.
+
+#### Vertical Pod Autoscaler In-Place Or Recreate Update Mode
+
+When enabled, this webhook provides a mechanism of mutating `VerticalPodAutoscaler` [resources](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/deploy/vpa-crd.yaml)
+
+```yaml
+.spec.updatePolicy.updateMode
+```
+
+configured with `Auto` or `Recreate` to switch to update mode `InPlaceOrRecreate`, enabling _in-place_ `Pod` [resources updates](https://kubernetes.io/blog/2025/05/16/kubernetes-v1-33-in-place-pod-resize-beta/). Preserving the `resource-manager` scope, the following constraints apply:
+- _mutates_ all `vpa` resources __inside__ `kube-system` and `kubernetes-dashboards` namespaces on `Shoot` clusters
+- _mutates_ all `vpa` resources __outside__ `kube-system` and `kubernetes-dashboards` namespaces on `Seed` clusters
+
+In addition, to prevent the _mutation_ of certain `VerticalPodAutoscaler` [resources](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/deploy/vpa-crd.yaml) falling within the webhook's scope, the following _label_
+
+```
+vpa-in-place-updates.resources.gardener.cloud/skip
+```
+
+could be appended to the resource metadata. With the _label_ specified, the webhook will filter out the resources, leaving its current `updateMode` configuration.
+To indicate that a `vpa` resource has already been mutated by the _webhook_, an additional
+
+```
+vpa-in-place-updates.resources.gardener.cloud/mutated
+```
+
+_label_ gets added to the resource metadata.
+
+Available for deployment with both [gardenlet](https://github.com/gardener/gardener/blob/master/docs/concepts/gardenlet.md) and [gardener-operator](https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md), enabling the webhook happens by activating a dedicated _feature gate_ within the respective component manifest:
+
+```
+VPAInPlaceUpdates
+```
 
 ### Validating Webhooks
 

@@ -48,7 +48,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -78,14 +78,15 @@ This field is immutable.</p>
 <td>
 <code>credentialsRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectreference-v1-core">
 Kubernetes core/v1.ObjectReference
 </a>
 </em>
 </td>
 <td>
 <p>CredentialsRef is a reference to a resource holding the credentials.
-Accepted resources are core/v1.Secret and security.gardener.cloud/v1alpha1.WorkloadIdentity
+Accepted resources are core/v1.Secret, core.gardener.cloud/v1beta1.InternalSecret, and
+security.gardener.cloud/v1alpha1.WorkloadIdentity.
 This field is immutable.</p>
 </td>
 </tr>
@@ -93,7 +94,7 @@ This field is immutable.</p>
 <td>
 <code>quotas</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectreference-v1-core">
 []Kubernetes core/v1.ObjectReference
 </a>
 </em>
@@ -144,7 +145,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -377,7 +378,7 @@ k8s.io/apimachinery/pkg/runtime.RawExtension
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -523,7 +524,7 @@ string
 <td>
 <code>expirationTimestamp</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>

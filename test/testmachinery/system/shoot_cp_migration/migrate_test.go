@@ -19,9 +19,10 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	. "github.com/gardener/gardener/test/framework"
 	"github.com/gardener/gardener/test/framework/applications"
+	shootmigration "github.com/gardener/gardener/test/utils/shoots/migration"
 )
 
 const (
@@ -100,6 +101,15 @@ func validateConfig() {
 }
 
 func beforeMigration(ctx context.Context, t *ShootMigrationTest, guestBookApp *applications.GuestBookTest) error {
+	ginkgo.By("Mark osc hash secret")
+	if err := shootmigration.MarkOSCSecret(ctx, t.SourceSeedClient.Client(), t.SeedShootNamespace); err != nil {
+		return err
+	}
+
+	if err := t.PopulateBeforeMigrationComparisonElements(ctx); err != nil {
+		return err
+	}
+
 	if t.Shoot.Status.IsHibernated {
 		return nil
 	}
@@ -108,21 +118,13 @@ func beforeMigration(ctx context.Context, t *ShootMigrationTest, guestBookApp *a
 		return errors.New("the shoot must have the nginx-ingress addon enabled")
 	}
 
-	ginkgo.By("Mark osc hash secret")
-	if err := t.MarkOSCSecret(ctx); err != nil {
-		return err
-	}
-
 	ginkgo.By("Create test Secret and Service Account")
 	if err := t.CreateSecretAndServiceAccount(ctx); err != nil {
 		return err
 	}
 
 	ginkgo.By("Verify Guest Book Application")
-	initializedApp, err := initGuestBookTest(t)
-	if err != nil {
-		return err
-	}
+	initializedApp := initGuestBookTest(t)
 	*guestBookApp = *initializedApp
 	guestBookApp.DeployGuestBookApp(ctx)
 	guestBookApp.Test(ctx)
@@ -172,7 +174,7 @@ func cleanUp(ctx context.Context, t *ShootMigrationTest, guestBookApp applicatio
 	return nil
 }
 
-func initGuestBookTest(t *ShootMigrationTest) (*applications.GuestBookTest, error) {
+func initGuestBookTest(t *ShootMigrationTest) *applications.GuestBookTest {
 	sFramework := ShootFramework{
 		GardenerFramework: t.GardenerFramework,
 		TestDescription:   NewTestDescription("Guestbook App for CP Migration test"),

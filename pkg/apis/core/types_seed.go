@@ -121,14 +121,38 @@ type Backup struct {
 type SeedDNS struct {
 	// Provider configures a DNSProvider
 	Provider *SeedDNSProvider
+	// Internal configures DNS settings related to seed internal domain.
+	Internal *SeedDNSProviderConfig
+	// Defaults configures DNS settings related to seed default domains.
+	// When determining the DNS settings for a Shoot, the first matching entry in this list will take precedence.
+	Defaults []SeedDNSProviderConfig
 }
 
 // SeedDNSProvider configures a DNS provider
 type SeedDNSProvider struct {
 	// Type describes the type of the dns-provider, for example `aws-route53`
 	Type string
-	// SecretRef is a reference to a Secret object containing cloud provider credentials used for registering external domains.
-	SecretRef corev1.SecretReference
+
+	// CredentialsRef is a reference to a resource holding the credentials used for
+	// authentication with the DNS provider.
+	// Supported referenced resources are v1.Secrets and
+	// security.gardener.cloud/v1alpha1.WorkloadIdentity
+	CredentialsRef *corev1.ObjectReference
+}
+
+// SeedDNSProviderConfig configures a DNS provider.
+type SeedDNSProviderConfig struct {
+	// Type is the type of the DNS provider.
+	Type string
+	// Domain is the domain name to be used by the DNS provider.
+	Domain string
+	// Zone is the zone where the DNS records are managed.
+	Zone *string
+	// CredentialsRef is a reference to a resource holding the credentials used for
+	// authentication with the DNS provider.
+	// Supported referenced resources are v1.Secrets and
+	// security.gardener.cloud/v1alpha1.WorkloadIdentity
+	CredentialsRef corev1.ObjectReference
 }
 
 // Ingress configures the Ingress specific settings of the Seed cluster
@@ -202,7 +226,30 @@ type SeedSettings struct {
 	// TopologyAwareRouting controls certain settings for topology-aware traffic routing in the seed.
 	// See https://github.com/gardener/gardener/blob/master/docs/operations/topology_aware_routing.md.
 	TopologyAwareRouting *SeedSettingTopologyAwareRouting
+	// ZoneSelection controls whether shoot control plane zone placement is derived from the shoot's worker pool zones
+	// rather than randomly selected from seed zones.
+	// See https://github.com/gardener/gardener/blob/master/docs/operations/seed_settings.md#zone-selection.
+	ZoneSelection *SeedSettingZoneSelection
 }
+
+// SeedSettingZoneSelection controls whether shoot control plane zone placement is derived
+// from the shoot's worker pool zones rather than randomly selected from seed zones.
+type SeedSettingZoneSelection struct {
+	// Mode controls the zone selection behavior.
+	// "Prefer" tries to match worker pool zones to seed zones, falling back to random selection on mismatch.
+	// "Enforce" requires worker pool zones to be present in the seed's zone list; scheduling fails otherwise.
+	Mode ZoneSelectionMode
+}
+
+// ZoneSelectionMode is the mode for zone selection.
+type ZoneSelectionMode string
+
+const (
+	// ZoneSelectionModePrefer tries to match worker pool zones to seed zones, falling back to random selection on mismatch.
+	ZoneSelectionModePrefer ZoneSelectionMode = "Prefer"
+	// ZoneSelectionModeEnforce requires worker pool zones to be present in the seed's zone list; scheduling fails otherwise.
+	ZoneSelectionModeEnforce ZoneSelectionMode = "Enforce"
+)
 
 // SeedSettingExcessCapacityReservation controls the excess capacity reservation for shoot control planes in the
 // seed.
@@ -245,6 +292,12 @@ type SeedSettingLoadBalancerServices struct {
 	// ProxyProtocol controls whether ProxyProtocol is (optionally) allowed for the load balancer services.
 	// Defaults to nil, which is equivalent to not allowing ProxyProtocol.
 	ProxyProtocol *LoadBalancerServicesProxyProtocol
+	// ZonalIngress controls whether ingress gateways are deployed per availability zone.
+	// Defaults to true.
+	ZonalIngress *SeedSettingLoadBalancerServicesZonalIngress
+	// Class configures the Service.spec.loadBalancerClass field for the load balancer services on the seed.
+	// Note that changing the loadBalancerClass of existing LoadBalancer services is denied by Kubernetes.
+	Class *string
 }
 
 // SeedSettingLoadBalancerServicesZones controls settings, which are specific to the single-zone load balancers in a
@@ -273,6 +326,15 @@ type LoadBalancerServicesProxyProtocol struct {
 	Allowed bool
 }
 
+// SeedSettingLoadBalancerServicesZonalIngress controls the deployment of ingress gateways per availability zone.
+type SeedSettingLoadBalancerServicesZonalIngress struct {
+	// Enabled controls whether seed ingress gateways are deployed in each availability zone.
+	// Defaults to true, which provisions an ingress gateway load balancer for each availability zone.
+	// When disabled, only a single ingress gateway is deployed.
+	// See https://github.com/gardener/gardener/blob/master/docs/operations/seed_settings.md#zonal-ingress.
+	Enabled *bool
+}
+
 // SeedSettingVerticalPodAutoscaler controls certain settings for the vertical pod autoscaler components deployed in the
 // seed.
 type SeedSettingVerticalPodAutoscaler struct {
@@ -280,6 +342,12 @@ type SeedSettingVerticalPodAutoscaler struct {
 	// is enabled by default because Gardener heavily relies on a VPA being deployed. You should only disable this if
 	// your seed cluster already has another, manually/custom managed VPA deployment.
 	Enabled bool
+	// FeatureGates contains information about enabled feature gates.
+	FeatureGates map[string]bool
+	// MaxAllowed specifies the global maximum allowed (maximum amount of resources) that vpa-recommender can recommend for a container.
+	// The VerticalPodAutoscaler-level maximum allowed takes precedence over the global maximum allowed.
+	// For more information, see https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/examples.md#specifying-global-maximum-allowed-resources-to-prevent-pods-from-being-unschedulable.
+	MaxAllowed corev1.ResourceList
 }
 
 // SeedSettingDependencyWatchdog controls the dependency-watchdog settings for the seed.

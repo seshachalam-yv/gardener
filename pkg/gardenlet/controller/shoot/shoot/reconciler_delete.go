@@ -16,11 +16,10 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
-	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	botanistpkg "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
@@ -193,11 +192,6 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			SkipIf:       !cleanupShootResources,
 			Dependencies: flow.NewTaskIDs(deployKubeAPIServerService),
 		})
-		_ = g.Add(flow.Task{
-			Name:         "Ensuring advertised addresses for the Shoot",
-			Fn:           botanist.UpdateAdvertisedAddresses,
-			Dependencies: flow.NewTaskIDs(waitUntilKubeAPIServerServiceIsReady),
-		})
 		reconcileIstioInternalLoadbalancingConfigMap = g.Add(flow.Task{
 			Name:         "Reconcile Istio internal load balancing ConfigMap",
 			Fn:           flow.TaskFn(botanist.ReconcileIstioInternalLoadBalancingConfigMap).RetryUntilTimeout(defaultInterval, defaultTimeout),
@@ -209,6 +203,11 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			Fn:           flow.TaskFn(botanist.InitializeSecretsManagement).RetryUntilTimeout(defaultInterval, defaultTimeout),
 			SkipIf:       !nonTerminatingNamespace,
 			Dependencies: flow.NewTaskIDs(deployNamespace, reconcileIstioInternalLoadbalancingConfigMap),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Ensuring advertised addresses for the Shoot",
+			Fn:           botanist.UpdateAdvertisedAddresses,
+			Dependencies: flow.NewTaskIDs(initializeSecretsManagement, waitUntilKubeAPIServerServiceIsReady),
 		})
 		deployReferencedResources = g.Add(flow.Task{
 			Name:         "Deploying referenced resources",
@@ -259,7 +258,7 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		deployKubeAPIServer = g.Add(flow.Task{
 			Name: "Deploying Kubernetes API server",
 			Fn: flow.TaskFn(func(ctx context.Context) error {
-				return botanist.DeployKubeAPIServer(ctx, canEnableNodeAgentAuthorizerWebhook && features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer))
+				return botanist.DeployKubeAPIServer(ctx, canEnableNodeAgentAuthorizerWebhook)
 			}).RetryUntilTimeout(defaultInterval, defaultTimeout),
 			SkipIf: !cleanupShootResources,
 			Dependencies: flow.NewTaskIDs(
@@ -318,13 +317,13 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			Fn: flow.TaskFn(func(ctx context.Context) error {
 				return botanist.DeployKubeAPIServer(ctx, true)
 			}).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			SkipIf:       !features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer) || !cleanupShootResources || canEnableNodeAgentAuthorizerWebhook,
+			SkipIf:       !cleanupShootResources || canEnableNodeAgentAuthorizerWebhook,
 			Dependencies: flow.NewTaskIDs(waitUntilGardenerResourceManagerReady),
 		})
 		waitUntilKubeAPIServerWithNodeAgentAuthorizerIsReady = g.Add(flow.Task{
 			Name:         "Waiting until Kubernetes API server with node-agent-authorizer rolled out",
 			Fn:           botanist.Shoot.Components.ControlPlane.KubeAPIServer.Wait,
-			SkipIf:       !features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer) || !cleanupShootResources || canEnableNodeAgentAuthorizerWebhook,
+			SkipIf:       !cleanupShootResources || canEnableNodeAgentAuthorizerWebhook,
 			Dependencies: flow.NewTaskIDs(deployKubeAPIServerWithNodeAgentAuthorizer),
 		})
 		deployGardenerAccess = g.Add(flow.Task{
@@ -491,7 +490,6 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		deleteManagedResources = g.Add(flow.Task{
 			Name:         "Deleting managed resources",
 			Fn:           flow.TaskFn(botanist.DeleteManagedResources).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			SkipIf:       !cleanupShootResources,
 			Dependencies: flow.NewTaskIDs(syncPointCleanedKubernetesResources, waitUntilWorkerDeleted),
 		})
 		deleteDWDResources = g.Add(flow.Task{
@@ -505,7 +503,6 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		waitUntilManagedResourcesDeleted = g.Add(flow.Task{
 			Name:         "Waiting until managed resources have been deleted",
 			Fn:           flow.TaskFn(botanist.WaitUntilManagedResourcesDeleted).Timeout(10 * time.Minute),
-			SkipIf:       !cleanupShootResources,
 			Dependencies: flow.NewTaskIDs(deleteDWDResources),
 		})
 		deleteExtensionResourcesBeforeKubeAPIServer = g.Add(flow.Task{

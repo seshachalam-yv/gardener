@@ -24,8 +24,9 @@ import (
 	clientcmdlatest "k8s.io/client-go/tools/clientcmd/api/latest"
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 
+	nodeagenthelper "github.com/gardener/gardener/pkg/api/config/nodeagent/v1alpha1/helper"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/certificatesigningrequest"
 )
@@ -86,8 +87,8 @@ func RequestAndStoreKubeconfig(ctx context.Context, log logr.Logger, fs afero.Af
 }
 
 // GetAPIServerConfig reads the gardener-node-agent config file and returns the APIServer configuration.
-func GetAPIServerConfig(fs afero.Afero) (*nodeagentconfigv1alpha1.APIServer, error) {
-	nodeAgentConfigFile, err := fs.ReadFile(nodeagentconfigv1alpha1.ConfigFilePath)
+func GetAPIServerConfig(fs afero.Afero, configDir string) (*nodeagentconfigv1alpha1.APIServer, error) {
+	nodeAgentConfigFile, err := fs.ReadFile(nodeagenthelper.GetConfigFilePath(configDir))
 	if err != nil {
 		return nil, fmt.Errorf("error reading gardener-node-agent config file: %w", err)
 	}

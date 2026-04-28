@@ -25,6 +25,7 @@ import (
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/controllerutils/mapper"
 	predicateutils "github.com/gardener/gardener/pkg/controllerutils/predicate"
 	"github.com/gardener/gardener/pkg/extensions"
@@ -46,7 +47,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster, seedCluste
 		r.Clock = clock.RealClock{}
 	}
 	if r.Recorder == nil {
-		r.Recorder = gardenCluster.GetEventRecorderFor(ControllerName + "-controller")
+		r.Recorder = gardenCluster.GetEventRecorder(ControllerName + "-controller")
 	}
 	if r.GardenNamespace == "" {
 		r.GardenNamespace = v1beta1constants.GardenNamespace
@@ -58,6 +59,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster, seedCluste
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
 			RateLimiter:             r.RateLimiter,
+			ReconciliationTimeout:   controllerutils.DefaultReconciliationTimeout,
 		}).
 		WatchesRawSource(source.Kind[client.Object](
 			gardenCluster.GetCache(),

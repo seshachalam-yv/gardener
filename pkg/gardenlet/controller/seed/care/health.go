@@ -7,16 +7,18 @@ package care
 import (
 	"context"
 	"fmt"
-	"time"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	commonprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus"
+	"github.com/gardener/gardener/pkg/features"
 	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
@@ -35,14 +37,14 @@ func NewHealth(
 	seedClient client.Client,
 	clock clock.Clock,
 	namespace *string,
-	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration,
+	healthChecker *healthchecker.HealthChecker,
 ) HealthCheck {
 	return &health{
 		seedClient:    seedClient,
 		seed:          seed,
 		clock:         clock,
 		namespace:     namespace,
-		healthChecker: healthchecker.NewHealthChecker(seedClient, clock, conditionThresholds, seed.Status.LastOperation),
+		healthChecker: healthChecker,
 	}
 }
 
@@ -57,8 +59,18 @@ func (h *health) Check(
 		return conditions.ConvertToSlice()
 	}
 
-	newSystemComponentsCondition := h.checkSystemComponents(conditions.systemComponentsHealthy, managedResources)
-	return []gardencorev1beta1.Condition{v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, newSystemComponentsCondition, nil)}
+	prometheuses, err := h.listPrometheuses(ctx)
+	if err != nil {
+		conditions.systemComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, nil, err)
+		return conditions.ConvertToSlice()
+	}
+
+	var checkedConditions []gardencorev1beta1.Condition
+	checkedConditions = append(checkedConditions, v1beta1helper.NewConditionOrError(h.clock, conditions.systemComponentsHealthy, h.checkSystemComponents(ctx, conditions.systemComponentsHealthy, managedResources, prometheuses), nil))
+	if newEmergencyStopShootReconciliations := h.checkEmergencyStopShootReconciliations(conditions.emergencyStopShootReconciliations); newEmergencyStopShootReconciliations != nil {
+		checkedConditions = append(checkedConditions, v1beta1helper.NewConditionOrError(h.clock, conditions.emergencyStopShootReconciliations, newEmergencyStopShootReconciliations, nil))
+	}
+	return checkedConditions
 }
 
 func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.ManagedResource, error) {
@@ -75,25 +87,59 @@ func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.
 	return append(managedResourceListGarden.Items, managedResourceListIstioSystem.Items...), nil
 }
 
-func (h *health) checkSystemComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
+func (h *health) listPrometheuses(ctx context.Context) (*monitoringv1.PrometheusList, error) {
+	prometheusList := &monitoringv1.PrometheusList{}
+	if err := h.seedClient.List(ctx, prometheusList, client.InNamespace(ptr.Deref(h.namespace, v1beta1constants.GardenNamespace))); err != nil {
+		return nil, fmt.Errorf("failed listing Prometheuses in namespace %s: %w", ptr.Deref(h.namespace, v1beta1constants.GardenNamespace), err)
+	}
+
+	return prometheusList, nil
+}
+
+func (h *health) checkSystemComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
 	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
 		return managedResource.Spec.Class != nil
 	}, nil); exitCondition != nil {
 		return exitCondition
 	}
 
+	filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
+		return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.Gardenlet
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
+			return exitCondition
+		}
+	}
+
 	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "SystemComponentsRunning", "All system components are healthy."))
+}
+
+func (h *health) checkEmergencyStopShootReconciliations(condition gardencorev1beta1.Condition) *gardencorev1beta1.Condition {
+	if !v1beta1helper.HasShootReconciliationsDisabledAnnotation(h.seed) {
+		return nil
+	}
+	return ptr.To(v1beta1helper.UpdatedConditionWithClock(
+		h.clock,
+		condition,
+		gardencorev1beta1.ConditionTrue,
+		string(gardencorev1beta1.SeedEmergencyStopShootReconciliations),
+		"Reconciliations of Shoots managed by this Seed cluster are currently disabled by annotation.",
+	))
 }
 
 // SeedConditions contains all seed related conditions of the seed status subresource.
 type SeedConditions struct {
-	systemComponentsHealthy gardencorev1beta1.Condition
+	systemComponentsHealthy           gardencorev1beta1.Condition
+	emergencyStopShootReconciliations gardencorev1beta1.Condition
 }
 
 // ConvertToSlice returns the seed conditions as a slice.
 func (s SeedConditions) ConvertToSlice() []gardencorev1beta1.Condition {
 	return []gardencorev1beta1.Condition{
 		s.systemComponentsHealthy,
+		s.emergencyStopShootReconciliations,
 	}
 }
 
@@ -101,6 +147,7 @@ func (s SeedConditions) ConvertToSlice() []gardencorev1beta1.Condition {
 func (s SeedConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
 	return []gardencorev1beta1.ConditionType{
 		s.systemComponentsHealthy.Type,
+		s.emergencyStopShootReconciliations.Type,
 	}
 }
 
@@ -108,6 +155,7 @@ func (s SeedConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
 // All conditions are retrieved from the given 'status' or newly initialized.
 func NewSeedConditions(clock clock.Clock, status gardencorev1beta1.SeedStatus) SeedConditions {
 	return SeedConditions{
-		systemComponentsHealthy: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedSystemComponentsHealthy),
+		systemComponentsHealthy:           v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedSystemComponentsHealthy),
+		emergencyStopShootReconciliations: v1beta1helper.GetOrInitConditionWithClock(clock, status.Conditions, gardencorev1beta1.SeedEmergencyStopShootReconciliations),
 	}
 }

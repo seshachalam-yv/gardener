@@ -16,9 +16,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	kubernetesmock "github.com/gardener/gardener/pkg/client/kubernetes/mock"
@@ -32,11 +34,13 @@ import (
 
 var _ = Describe("CoreDNS", func() {
 	var (
-		ctrl     *gomock.Controller
-		botanist *Botanist
+		ctrl      *gomock.Controller
+		botanist  *Botanist
+		mockClock *testing.FakeClock
 	)
 
 	BeforeEach(func() {
+		mockClock = testing.NewFakeClock(time.Date(2025, 3, 30, 3, 33, 33, 33, time.UTC))
 		ctrl = gomock.NewController(GinkgoT())
 		botanist = &Botanist{Operation: &operation.Operation{}}
 		botanist.Shoot = &shootpkg.Shoot{}
@@ -47,6 +51,7 @@ var _ = Describe("CoreDNS", func() {
 				},
 			},
 		})
+		botanist.Clock = mockClock
 	})
 
 	AfterEach(func() {
@@ -64,7 +69,7 @@ var _ = Describe("CoreDNS", func() {
 		})
 
 		It("should successfully create a coredns interface", func() {
-			kubernetesClient.EXPECT().Client()
+			kubernetesClient.EXPECT().Client().AnyTimes()
 
 			coreDNS, err := botanist.DefaultCoreDNS()
 			Expect(coreDNS).NotTo(BeNil())
@@ -91,7 +96,7 @@ var _ = Describe("CoreDNS", func() {
 			})
 
 			It("should successfully create a coredns interface with cluster-proportional autoscaling enabled", func() {
-				kubernetesClient.EXPECT().Client()
+				kubernetesClient.EXPECT().Client().AnyTimes()
 
 				coreDNS, err := botanist.DefaultCoreDNS()
 				Expect(coreDNS).NotTo(BeNil())
@@ -105,9 +110,8 @@ var _ = Describe("CoreDNS", func() {
 			coreDNS          *mockcoredns.MockInterface
 			kubernetesClient *kubernetesmock.MockInterface
 			c                client.Client
-
-			ctx     = context.TODO()
-			fakeErr = errors.New("fake err")
+			ctx              = context.TODO()
+			fakeErr          = errors.New("fake err")
 		)
 
 		BeforeEach(func() {
@@ -134,27 +138,29 @@ var _ = Describe("CoreDNS", func() {
 				Nodes:   []net.IPNet{{IP: net.ParseIP("26.27.28.29")}, {IP: net.ParseIP("2001:db8::3")}},
 			}
 
-			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
-			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
-			coreDNS.EXPECT().SetClusterIPs(botanist.Shoot.Networks.CoreDNS)
 		})
 
 		It("should fail when the deploy function fails", func() {
-			kubernetesClient.EXPECT().Client().Return(c)
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
+			kubernetesClient.EXPECT().Client().Return(c).Times(2)
 
 			coreDNS.EXPECT().SetPodAnnotations(nil)
 			coreDNS.EXPECT().SetIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4})
 			coreDNS.EXPECT().Deploy(ctx).Return(fakeErr)
+			coreDNS.EXPECT().SetClusterIPs(botanist.Shoot.Networks.CoreDNS)
 
 			Expect(botanist.DeployCoreDNS(ctx)).To(MatchError(fakeErr))
 		})
 
 		It("should successfully deploy (coredns deployment not yet found)", func() {
-			kubernetesClient.EXPECT().Client().Return(c)
-
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
 			coreDNS.EXPECT().SetPodAnnotations(nil)
 			coreDNS.EXPECT().SetIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4})
 			coreDNS.EXPECT().Deploy(ctx)
+			coreDNS.EXPECT().SetClusterIPs(botanist.Shoot.Networks.CoreDNS)
 
 			Expect(botanist.DeployCoreDNS(ctx)).To(Succeed())
 		})
@@ -169,9 +175,14 @@ var _ = Describe("CoreDNS", func() {
 			shoot.Annotations = map[string]string{"shoot.gardener.cloud/tasks": "restartCoreAddons"}
 			botanist.Shoot.SetInfo(shoot)
 
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
+
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
 			coreDNS.EXPECT().SetPodAnnotations(map[string]string{"gardener.cloud/restarted-at": nowFunc().Format(time.RFC3339)})
 			coreDNS.EXPECT().SetIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4})
 			coreDNS.EXPECT().Deploy(ctx)
+			coreDNS.EXPECT().SetClusterIPs(botanist.Shoot.Networks.CoreDNS)
 
 			Expect(botanist.DeployCoreDNS(ctx)).To(Succeed())
 		})
@@ -179,7 +190,7 @@ var _ = Describe("CoreDNS", func() {
 		It("should successfully deploy (existing annotation found)", func() {
 			annotations := map[string]string{"gardener.cloud/restarted-at": "2014-02-13T10:36:36Z"}
 
-			kubernetesClient.EXPECT().Client().Return(c)
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
 			Expect(c.Create(ctx, &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "coredns",
@@ -194,9 +205,12 @@ var _ = Describe("CoreDNS", func() {
 				},
 			})).To(Succeed())
 
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
 			coreDNS.EXPECT().SetPodAnnotations(annotations)
 			coreDNS.EXPECT().SetIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4})
 			coreDNS.EXPECT().Deploy(ctx)
+			coreDNS.EXPECT().SetClusterIPs(botanist.Shoot.Networks.CoreDNS)
 
 			Expect(botanist.DeployCoreDNS(ctx)).To(Succeed())
 		})
@@ -210,13 +224,127 @@ var _ = Describe("CoreDNS", func() {
 					},
 				},
 			})
-			kubernetesClient.EXPECT().Client().Return(c)
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
 
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
 			coreDNS.EXPECT().SetPodAnnotations(nil)
 			coreDNS.EXPECT().SetIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4, gardencorev1beta1.IPFamilyIPv6})
+			coreDNS.EXPECT().SetClusterIPs(botanist.Shoot.Networks.CoreDNS)
 			coreDNS.EXPECT().Deploy(ctx)
 
 			Expect(botanist.DeployCoreDNS(ctx)).To(Succeed())
+		})
+
+		It("should use single-stack during migration when nodes migration constraint is present", func() {
+
+			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4, gardencorev1beta1.IPFamilyIPv6},
+					},
+				},
+				Status: gardencorev1beta1.ShootStatus{
+					Constraints: []gardencorev1beta1.Condition{
+						v1beta1helper.InitConditionWithClock(mockClock, gardencorev1beta1.ShootDualStackNodesMigrationReady),
+					},
+				},
+			})
+
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
+
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
+			coreDNS.EXPECT().SetPodAnnotations(nil)
+			coreDNS.EXPECT().SetIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4})
+			coreDNS.EXPECT().SetClusterIPs([]net.IP{net.ParseIP("18.19.20.21")})
+			coreDNS.EXPECT().Deploy(ctx)
+
+			Expect(botanist.DeployCoreDNS(ctx)).To(Succeed())
+		})
+
+		It("should use single-stack during migration when dual-stack migration constraint is progressing", func() {
+			constraint := v1beta1helper.InitConditionWithClock(mockClock, gardencorev1beta1.ShootDNSServiceMigrationReady)
+			nowFunc := func() time.Time {
+				return time.Date(1, 1, 1, 1, 1, 1, 1, time.UTC)
+			}
+			defer test.WithVar(&NowFunc, nowFunc)()
+
+			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4, gardencorev1beta1.IPFamilyIPv6},
+					},
+				},
+				Status: gardencorev1beta1.ShootStatus{
+					Constraints: []gardencorev1beta1.Condition{
+						v1beta1helper.UpdatedConditionWithClock(mockClock, constraint, gardencorev1beta1.ConditionProgressing, "DNSServiceMigration", "The shoot is migrating the kube-dns service."),
+					},
+				},
+			})
+
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
+
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
+			coreDNS.EXPECT().SetPodAnnotations(map[string]string{"gardener.cloud/restarted-at": nowFunc().Format(time.RFC3339)})
+			coreDNS.EXPECT().SetIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4})
+			coreDNS.EXPECT().SetClusterIPs([]net.IP{net.ParseIP("18.19.20.21")})
+			coreDNS.EXPECT().Deploy(ctx)
+
+			Expect(botanist.DeployCoreDNS(ctx)).To(Succeed())
+		})
+
+		It("should use dual-stack during migration when dual-stack migration constraint is true", func() {
+			constraint := v1beta1helper.InitConditionWithClock(mockClock, gardencorev1beta1.ShootDNSServiceMigrationReady)
+
+			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4, gardencorev1beta1.IPFamilyIPv6},
+					},
+				},
+				Status: gardencorev1beta1.ShootStatus{
+					Constraints: []gardencorev1beta1.Condition{
+						v1beta1helper.UpdatedConditionWithClock(mockClock, constraint, gardencorev1beta1.ConditionTrue, "DNSServiceMigration", "The shoot is migrating the kube-dns service."),
+					},
+				},
+			})
+
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
+
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
+			coreDNS.EXPECT().SetPodAnnotations(nil)
+			coreDNS.EXPECT().SetIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4, gardencorev1beta1.IPFamilyIPv6})
+			coreDNS.EXPECT().SetClusterIPs([]net.IP{net.ParseIP("18.19.20.21"), net.ParseIP("2001:db8::1")})
+			coreDNS.EXPECT().Deploy(ctx)
+
+			Expect(botanist.DeployCoreDNS(ctx)).To(Succeed())
+		})
+
+		It("should fail when no IP families are configured", func() {
+			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{},
+					},
+				},
+			})
+
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(gomock.Any()).Times(0)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(gomock.Any()).Times(0)
+			Expect(botanist.DeployCoreDNS(ctx)).To(MatchError("no IP families configured in shoot spec"))
+		})
+
+		It("should fail when no CoreDNS cluster IPs are available", func() {
+			botanist.Shoot.Networks.CoreDNS = []net.IP{}
+
+			kubernetesClient.EXPECT().Client().Return(c).AnyTimes()
+			coreDNS.EXPECT().SetNodeNetworkCIDRs(gomock.Any()).Times(0)
+			coreDNS.EXPECT().SetPodNetworkCIDRs(gomock.Any()).Times(0)
+			Expect(botanist.DeployCoreDNS(ctx)).To(MatchError("no CoreDNS cluster IPs available"))
 		})
 	})
 })

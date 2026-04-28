@@ -12,10 +12,11 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
 	"github.com/gardener/gardener/pkg/component/shared"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/logger"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -35,8 +36,12 @@ func (b *Botanist) DefaultResourceManager() (resourcemanager.Interface, error) {
 
 		values = resourcemanager.Values{
 			ClusterIdentity:                           b.Seed.GetInfo().Status.ClusterIdentity,
+			HighAvailabilityConfigWebhookEnabled:      true,
 			DefaultNotReadyToleration:                 defaultNotReadyTolerationSeconds,
 			DefaultUnreachableToleration:              defaultUnreachableTolerationSeconds,
+			FeatureGates: map[string]bool{
+				string(features.NodeReadinessController): features.DefaultFeatureGate.Enabled(features.NodeReadinessController),
+			},
 			IsWorkerless:                              b.Shoot.IsWorkerless,
 			KubernetesServiceHost:                     ptr.To(b.Shoot.ComputeOutOfClusterAPIServerAddress(true)),
 			LogLevel:                                  logger.InfoLevel,
@@ -54,18 +59,22 @@ func (b *Botanist) DefaultResourceManager() (resourcemanager.Interface, error) {
 			SystemComponentTolerations:          gardenerutils.ExtractSystemComponentsTolerations(b.Shoot.GetInfo().Spec.Provider.Workers),
 			TargetNamespaces:                    []string{metav1.NamespaceSystem, v1beta1constants.KubernetesDashboardNamespace, corev1.NamespaceNodeLease},
 			TopologyAwareRoutingEnabled:         b.Shoot.TopologyAwareRoutingEnabled,
+			// TODO(vitanovs): Remove the VPAInPlaceUpdates webhook once the
+			// VPAInPlaceUpdates feature gates is deprecated.
+			VPAInPlaceUpdatesEnabled: features.DefaultFeatureGate.Enabled(features.VPAInPlaceUpdates),
 		}
 	)
 
-	if b.Shoot.IsAutonomous() {
+	if b.Shoot.HasManagedInfrastructure() {
+		values.MachineNamespace = ptr.To(b.Shoot.ControlPlaneNamespace)
+	}
+
+	if b.Shoot.IsSelfHosted() {
 		values.KubernetesServiceHost = nil
 
-		if b.Shoot.RunsControlPlane() {
-			newFunc = shared.NewCombinedGardenerResourceManager
-			values.TargetNamespaces = nil
-		} else {
+		if !b.Shoot.RunsControlPlane() {
 			newFunc = shared.NewRuntimeGardenerResourceManager
-			// TODO(timebertt): consider disabling the highavailabilityconfig webhook
+			values.HighAvailabilityConfigWebhookEnabled = false
 			values.PriorityClassName = v1beta1constants.PriorityClassNameSeedSystemCritical
 		}
 	}

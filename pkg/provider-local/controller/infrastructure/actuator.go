@@ -27,17 +27,25 @@ import (
 )
 
 type actuator struct {
-	client client.Client
+	// runtimeClient uses provider-local's in-cluster config, e.g., for the seed/bootstrap cluster it runs in.
+	// It's used to interact with extension objects. By default, it's also used as the provider client to interact with
+	// infrastructure resources, unless a kubeconfig is specified in the cloudprovider secret.
+	runtimeClient client.Client
 }
 
 // NewActuator creates a new Actuator that updates the status of the handled Infrastructure resources.
 func NewActuator(mgr manager.Manager) infrastructure.Actuator {
 	return &actuator{
-		client: mgr.GetClient(),
+		runtimeClient: mgr.GetClient(),
 	}
 }
 
-func (a *actuator) Reconcile(ctx context.Context, _ logr.Logger, infrastructure *extensionsv1alpha1.Infrastructure, cluster *extensionscontroller.Cluster) error {
+func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, infrastructure *extensionsv1alpha1.Infrastructure, cluster *extensionscontroller.Cluster) error {
+	providerClient, err := local.GetProviderClient(ctx, log, a.runtimeClient, infrastructure.Spec.SecretRef)
+	if err != nil {
+		return fmt.Errorf("could not create client for infrastructure resources: %w", err)
+	}
+
 	networkPolicyAllowMachinePods := emptyNetworkPolicy("allow-machine-pods", infrastructure.Namespace)
 	networkPolicyAllowMachinePods.Spec = networkingv1.NetworkPolicySpec{
 		Ingress: []networkingv1.NetworkPolicyIngressRule{{
@@ -93,7 +101,7 @@ func (a *actuator) Reconcile(ctx context.Context, _ logr.Logger, infrastructure 
 	}
 
 	for _, ipFamily := range cluster.Shoot.Spec.Networking.IPFamilies {
-		ipPoolObj, err := ipPool(infrastructure.Namespace, string(ipFamily), *cluster.Shoot.Spec.Networking.Nodes)
+		ipPoolObj, err := ipPool(cluster.ObjectMeta, string(ipFamily), *cluster.Shoot.Spec.Networking.Nodes)
 		if err != nil {
 			return err
 		}
@@ -101,7 +109,7 @@ func (a *actuator) Reconcile(ctx context.Context, _ logr.Logger, infrastructure 
 	}
 
 	for _, obj := range objects {
-		if err := a.client.Patch(ctx, obj, client.Apply, local.FieldOwner, client.ForceOwnership); err != nil {
+		if err := providerClient.Patch(ctx, obj, client.Apply, local.FieldOwner, client.ForceOwnership); err != nil {
 			return err
 		}
 	}
@@ -122,22 +130,32 @@ func (a *actuator) Reconcile(ctx context.Context, _ logr.Logger, infrastructure 
 	if services := cluster.Shoot.Spec.Networking.Services; services != nil {
 		infrastructure.Status.Networking.Services = []string{*services}
 	}
-	return a.client.Status().Patch(ctx, infrastructure, patch)
+
+	return a.runtimeClient.Status().Patch(ctx, infrastructure, patch)
 }
 
-func (a *actuator) Delete(ctx context.Context, _ logr.Logger, infrastructure *extensionsv1alpha1.Infrastructure, _ *extensionscontroller.Cluster) error {
-	return kubernetesutils.DeleteObjects(ctx, a.client,
+func (a *actuator) Delete(ctx context.Context, log logr.Logger, infrastructure *extensionsv1alpha1.Infrastructure, _ *extensionscontroller.Cluster) error {
+	providerClient, err := local.GetProviderClient(ctx, log, a.runtimeClient, infrastructure.Spec.SecretRef)
+	if err != nil {
+		return fmt.Errorf("could not create client for infrastructure resources: %w", err)
+	}
+
+	return kubernetesutils.DeleteObjects(ctx, providerClient,
 		emptyNetworkPolicy("allow-machine-pods", infrastructure.Namespace),
-		emptyNetworkPolicy("allow-to-istio-ingress-gateway", infrastructure.Namespace),
-		emptyNetworkPolicy("allow-to-provider-local-coredns", infrastructure.Namespace),
 		emptyService(infrastructure.Namespace),
 		&metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "crd.projectcalico.org/v1", Kind: "IPPool"}, ObjectMeta: metav1.ObjectMeta{Name: IPPoolName(infrastructure.Namespace, string(gardencorev1beta1.IPFamilyIPv4))}},
 		&metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "crd.projectcalico.org/v1", Kind: "IPPool"}, ObjectMeta: metav1.ObjectMeta{Name: IPPoolName(infrastructure.Namespace, string(gardencorev1beta1.IPFamilyIPv6))}},
 	)
 }
 
-func (a *actuator) Migrate(ctx context.Context, log logr.Logger, infrastructure *extensionsv1alpha1.Infrastructure, cluster *extensionscontroller.Cluster) error {
-	return a.Delete(ctx, log, infrastructure, cluster)
+func (a *actuator) Migrate(context.Context, logr.Logger, *extensionsv1alpha1.Infrastructure, *extensionscontroller.Cluster) error {
+	// On migration, we don't explicitly delete objects, as we might still need them, e.g., for `gardenadm bootstrap`.
+	// After performing operation=migrate, the machine pods will keep running in the bootstrap cluster (kind), so we still
+	// need `NetworkPolicies`, etc.
+	// When performing an actual control plane migration of local shoots, we rely on the namespace controller to delete
+	// all namespaced objects and the garbage collector (owner references) to delete all cluster-scoped objects created by
+	// the Infrastructure controller.
+	return nil
 }
 
 func (a *actuator) ForceDelete(ctx context.Context, log logr.Logger, infrastructure *extensionsv1alpha1.Infrastructure, cluster *extensionscontroller.Cluster) error {
@@ -182,11 +200,16 @@ func IPPoolName(shootNamespace, ipFamily string) string {
 	return "shoot-machine-pods-" + shootNamespace + "-" + strings.ToLower(ipFamily)
 }
 
-func ipPool(shootNamespace, ipFamily, nodeCIDR string) (client.Object, error) {
+func ipPool(clusterMeta metav1.ObjectMeta, ipFamily, nodeCIDR string) (client.Object, error) {
 	return kubernetes.NewManifestReader([]byte(`apiVersion: crd.projectcalico.org/v1
 kind: IPPool
 metadata:
-  name: ` + IPPoolName(shootNamespace, ipFamily) + `
+  name: ` + IPPoolName(clusterMeta.Name, ipFamily) + `
+  ownerReferences:
+  - apiVersion: extensions.gardener.cloud/v1alpha1
+    kind: Cluster
+    name: ` + clusterMeta.Name + `
+    uid: ` + string(clusterMeta.UID) + `
 spec:
   cidr: ` + nodeCIDR + `
   ipipMode: Always

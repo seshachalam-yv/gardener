@@ -10,18 +10,21 @@ import (
 	"net/url"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
+	clientauthorizationv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	kubecorev1listers "k8s.io/client-go/listers/core/v1"
 
 	"github.com/gardener/gardener/pkg/api"
+	authenticationvalidation "github.com/gardener/gardener/pkg/api/authentication/validation"
 	authenticationapi "github.com/gardener/gardener/pkg/apis/authentication"
-	authenticationvalidation "github.com/gardener/gardener/pkg/apis/authentication/validation"
 	"github.com/gardener/gardener/pkg/apis/core"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	gardencorev1beta1listers "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
@@ -32,15 +35,17 @@ import (
 // KubeconfigREST implements a RESTStorage for a kubeconfig request.
 type KubeconfigREST struct {
 	// TODO(petersutter): Remove secretLister field from struct after v1.135 has been released, as the cluster CA should then only be read from the ConfigMap.
-	secretLister         kubecorev1listers.SecretLister
-	internalSecretLister gardencorev1beta1listers.InternalSecretLister
-	configMapLister      kubecorev1listers.ConfigMapLister
-	shootStorage         getter
-	maxExpirationSeconds int64
+	secretLister          kubecorev1listers.SecretLister
+	internalSecretLister  gardencorev1beta1listers.InternalSecretLister
+	configMapLister       kubecorev1listers.ConfigMapLister
+	shootStorage          getter
+	maxExpirationSeconds  int64
+	subjectAccessReviewer clientauthorizationv1.SubjectAccessReviewInterface
 
-	gvk                           schema.GroupVersionKind
-	newObjectFunc                 func() runtime.Object
-	clientCertificateOrganization string
+	gvk            schema.GroupVersionKind
+	newObjectFunc  func() runtime.Object
+	userGroupsFunc func(context.Context, user.Info, clientauthorizationv1.SubjectAccessReviewInterface) ([]string, error)
+	userNamePrefix string
 }
 
 var (
@@ -82,6 +87,11 @@ func (r *KubeconfigREST) Create(ctx context.Context, name string, obj runtime.Ob
 	userInfo, ok := genericapirequest.UserFrom(ctx)
 	if !ok {
 		return nil, apierrors.NewBadRequest("no user in context")
+	}
+
+	groups, err := r.userGroupsFunc(ctx, userInfo, r.subjectAccessReviewer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user groups: %w", err)
 	}
 
 	// prepare: get shoot object
@@ -152,8 +162,8 @@ func (r *KubeconfigREST) Create(ctx context.Context, name string, obj runtime.Ob
 		cpsc     = secrets.ControlPlaneSecretConfig{
 			Name: authName,
 			CertificateSecretConfig: &secrets.CertificateSecretConfig{
-				CommonName:   userInfo.GetName(),
-				Organization: []string{r.clientCertificateOrganization},
+				CommonName:   r.userNamePrefix + userInfo.GetName(),
+				Organization: groups,
 				CertType:     secrets.ClientCert,
 				Validity:     &validity,
 				SigningCA:    clientCACertificate,
@@ -203,4 +213,15 @@ func (r *KubeconfigREST) GroupVersionKind(schema.GroupVersion) schema.GroupVersi
 
 type getter interface {
 	Get(ctx context.Context, name string, options *metav1.GetOptions) (runtime.Object, error)
+}
+
+func convertToAuthorizationExtraValue(extra map[string][]string) map[string]authorizationv1.ExtraValue {
+	if extra == nil {
+		return nil
+	}
+	ret := make(map[string]authorizationv1.ExtraValue, len(extra))
+	for k, v := range extra {
+		ret[k] = v
+	}
+	return ret
 }

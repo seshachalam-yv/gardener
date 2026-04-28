@@ -21,6 +21,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -34,15 +35,15 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/features"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	ctrlinstutils "github.com/gardener/gardener/pkg/gardenlet/controller/controllerinstallation/utils"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -62,7 +63,7 @@ const usablePortsRangeSize = 5
 // the process of being deleted when deleting a ControllerInstallation.
 var RequeueDurationWhenResourceDeletionStillPresent = 5 * time.Second
 
-// Reconciler reconciles ControllerInstallations and deploys them into the seed cluster or the autonomous shoot cluster.
+// Reconciler reconciles ControllerInstallations and deploys them into the seed cluster or the self-hosted shoot cluster.
 type Reconciler struct {
 	GardenClient          client.Client
 	GardenConfig          *rest.Config
@@ -78,14 +79,16 @@ type Reconciler struct {
 	// to nodes even when they are not ready yet. Furthermore, the replicas are set to 1 and a usable port range is
 	// provided.
 	BootstrapControlPlaneNode bool
+	// SelfHostedShootMeta holds the namespace and name of the self-hosted shoot. When set, this reconciler runs in the
+	// context of a self-hosted shoot (e.g., in gardenadm or in the shoot gardenlet).
+	SelfHostedShootMeta *types.NamespacedName
 }
 
-// Reconcile reconciles ControllerInstallations and deploys them into the seed cluster or the autonomous shoot cluster.
+// Reconcile reconciles ControllerInstallations and deploys them into the seed cluster or the self-hosted shoot cluster.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
 
-	gardenCtx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
+	gardenCtx := ctx
 
 	seedCtx, cancel := controllerutils.GetChildReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
 	defer cancel()
@@ -97,6 +100,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, fmt.Errorf("error retrieving object from store: %w", err)
+	}
+
+	if controllerInstallation.Spec.SeedRef == nil {
+		return reconcile.Result{}, nil
 	}
 
 	if controllerInstallation.DeletionTimestamp != nil {
@@ -162,7 +169,7 @@ func (r *Reconciler) reconcile(
 		}
 	}
 
-	var helmValues map[string]interface{}
+	var helmValues map[string]any
 	if controllerDeployment.Helm != nil && controllerDeployment.Helm.Values != nil {
 		if err := json.Unmarshal(controllerDeployment.Helm.Values.Raw, &helmValues); err != nil {
 			conditionValid = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionValid, gardencorev1beta1.ConditionFalse, "ChartInformationInvalid", fmt.Sprintf("chart values cannot be unmarshalled: %+v", err))
@@ -213,11 +220,19 @@ func (r *Reconciler) reconcile(
 		}
 	}
 
-	var (
+	var gardenAccessSecret *gardenerutils.AccessSecret
+	if r.SelfHostedShootMeta != nil {
 		gardenAccessSecret = gardenerutils.NewGardenAccessSecret("extension", namespace.Name).
-					WithServiceAccountName(v1beta1constants.ExtensionGardenServiceAccountPrefix + controllerInstallation.Name).
-					WithServiceAccountLabels(map[string]string{v1beta1constants.LabelControllerRegistrationName: controllerRegistration.Name})
+			WithServiceAccountName(extensionServiceAccountName(r.SelfHostedShootMeta.Name, controllerInstallation.Name)).
+			WithServiceAccountNamespace(r.SelfHostedShootMeta.Namespace).
+			WithServiceAccountLabels(map[string]string{v1beta1constants.LabelControllerRegistrationName: controllerRegistration.Name})
+	} else {
+		gardenAccessSecret = gardenerutils.NewGardenAccessSecret("extension", namespace.Name).
+			WithServiceAccountName(v1beta1constants.ExtensionGardenServiceAccountPrefix + controllerInstallation.Name).
+			WithServiceAccountLabels(map[string]string{v1beta1constants.LabelControllerRegistrationName: controllerRegistration.Name})
+	}
 
+	var (
 		volumeProvider  string
 		volumeProviders []gardencorev1beta1.SeedVolumeProvider
 	)
@@ -263,8 +278,8 @@ func (r *Reconciler) reconcile(
 		},
 	}
 
-	if metav1.HasLabel(seed.ObjectMeta, v1beta1constants.LabelAutonomousShootCluster) {
-		gardenerValues["gardener"].(map[string]any)["autonomousShootCluster"] = true
+	if metav1.HasLabel(seed.ObjectMeta, v1beta1constants.LabelSelfHostedShootCluster) {
+		gardenerValues["gardener"].(map[string]any)["selfHostedShootCluster"] = true
 	}
 
 	if genericGardenKubeconfigSecretName != "" {
@@ -286,7 +301,7 @@ func (r *Reconciler) reconcile(
 	archive := controllerDeployment.Helm.RawChart
 	if len(archive) == 0 {
 		var err error
-		seedSubCtx := context.WithValue(seedCtx, oci.ContextKeyPullSecretNamespace, gardenerutils.ComputeGardenNamespace(seed.Name))
+		seedSubCtx := context.WithValue(seedCtx, oci.ContextKeySecretNamespace, gardenerutils.ComputeGardenNamespace(seed.Name))
 		archive, err = r.HelmRegistry.Pull(seedSubCtx, controllerDeployment.Helm.OCIRepository)
 		if err != nil {
 			conditionValid = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionValid, gardencorev1beta1.ConditionFalse, "OCIChartCannotBePulled", fmt.Sprintf("chart pulling process failed: %+v", err))
@@ -349,17 +364,22 @@ func (r *Reconciler) reconcile(
 				})
 			})
 		},
-		r.MutateSpecForControlPlaneNodeBootstrapping,
+		r.MutateSpecForSelfHostedShootExtensions,
 	); err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed to inject garden access secrets: %w", err)
 	}
+
+	managedResourceName := gardenerutils.ManagedResourceNameForControllerInstallation(controllerInstallation)
 
 	if err := managedresources.Create(
 		seedCtx,
 		r.SeedClientSet.Client(),
 		r.GardenNamespace,
-		controllerInstallation.Name,
-		map[string]string{ctrlinstutils.LabelKeyControllerInstallationName: controllerInstallation.Name},
+		managedResourceName,
+		map[string]string{
+			ctrlinstutils.LabelKeyControllerInstallationName: controllerInstallation.Name,
+			ctrlinstutils.LabelKeyControllerRegistrationName: controllerInstallation.Spec.RegistrationRef.Name,
+		},
 		false,
 		v1beta1constants.SeedResourceManagerClass,
 		secretData,
@@ -367,14 +387,14 @@ func (r *Reconciler) reconcile(
 		nil,
 		nil,
 	); err != nil {
-		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "InstallationFailed", fmt.Sprintf("Creation of ManagedResource %q failed: %+v", controllerInstallation.Name, err))
+		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "InstallationFailed", fmt.Sprintf("Creation of ManagedResource %q failed: %+v", managedResourceName, err))
 		return reconcile.Result{}, err
 	}
 
 	if conditionInstalled.Status == gardencorev1beta1.ConditionUnknown {
 		// initially set condition to Pending
 		// care controller will update condition based on 'ResourcesApplied' condition of ManagedResource
-		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "InstallationPending", fmt.Sprintf("Installation of ManagedResource %q is still pending.", controllerInstallation.Name))
+		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "InstallationPending", fmt.Sprintf("Installation of ManagedResource %q is still pending.", managedResourceName))
 	}
 
 	return reconcile.Result{}, nil
@@ -411,26 +431,28 @@ func (r *Reconciler) delete(
 		return reconcile.Result{}, err
 	}
 
+	managedResourceName := gardenerutils.ManagedResourceNameForControllerInstallation(controllerInstallation)
+
 	mr := &resourcesv1alpha1.ManagedResource{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      controllerInstallation.Name,
+			Name:      managedResourceName,
 			Namespace: r.GardenNamespace,
 		},
 	}
 
 	if err := client.IgnoreNotFound(managedresources.Delete(seedCtx, r.SeedClientSet.Client(), mr.Namespace, mr.Name, false)); err != nil {
 		log.Info("Deletion of ManagedResource and its secrets failed", "managedResource", client.ObjectKeyFromObject(mr))
-		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "DeletionFailed", fmt.Sprintf("Deletion of ManagedResource %q and its secrets failed: %+v", controllerInstallation.Name, err))
+		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "DeletionFailed", fmt.Sprintf("Deletion of ManagedResource %q and its secrets failed: %+v", managedResourceName, err))
 		return reconcile.Result{}, err
 	}
 
 	if err := r.SeedClientSet.Client().Get(seedCtx, client.ObjectKeyFromObject(mr), mr); err == nil {
 		log.Info("Deletion of ManagedResource is still pending", "managedResource", client.ObjectKeyFromObject(mr))
-		msg := fmt.Sprintf("Deletion of ManagedResource %q is still pending.", controllerInstallation.Name)
+		msg := fmt.Sprintf("Deletion of ManagedResource %q is still pending.", managedResourceName)
 		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "DeletionPending", msg)
 		return reconcile.Result{RequeueAfter: RequeueDurationWhenResourceDeletionStillPresent}, nil
 	} else if !apierrors.IsNotFound(err) {
-		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "DeletionFailed", fmt.Sprintf("Deletion of ManagedResource %q failed: %+v", controllerInstallation.Name, err))
+		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "DeletionFailed", fmt.Sprintf("Deletion of ManagedResource %q failed: %+v", managedResourceName, err))
 		return reconcile.Result{}, err
 	}
 
@@ -448,10 +470,18 @@ func (r *Reconciler) delete(
 
 	conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "DeletionSuccessful", "Deletion of old resources succeeded.")
 
-	gardenClusterServiceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
-		Name:      v1beta1constants.ExtensionGardenServiceAccountPrefix + controllerInstallation.Name,
-		Namespace: gardenerutils.ComputeGardenNamespace(seed.Name),
-	}}
+	var gardenClusterServiceAccount *corev1.ServiceAccount
+	if r.SelfHostedShootMeta != nil {
+		gardenClusterServiceAccount = &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name:      extensionServiceAccountName(r.SelfHostedShootMeta.Name, controllerInstallation.Name),
+			Namespace: r.SelfHostedShootMeta.Namespace,
+		}}
+	} else {
+		gardenClusterServiceAccount = &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name:      v1beta1constants.ExtensionGardenServiceAccountPrefix + controllerInstallation.Name,
+			Namespace: gardenerutils.ComputeGardenNamespace(seed.Name),
+		}}
+	}
 	if err := r.GardenClient.Delete(gardenCtx, gardenClusterServiceAccount); client.IgnoreNotFound(err) != nil {
 		conditionInstalled = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionInstalled, gardencorev1beta1.ConditionFalse, "DeletionFailed", fmt.Sprintf("Deletion of ServiceAccount %q in garden cluster failed: %+v", client.ObjectKeyFromObject(gardenClusterServiceAccount), err))
 		return reconcile.Result{}, err
@@ -582,33 +612,40 @@ func objectEnablesGardenKubeconfig(o runtime.Object) bool {
 	return !ok || v == "true"
 }
 
-// MutateSpecForControlPlaneNodeBootstrapping adapts host network, replicas, tolerations and usable ports range for
-// autonomous shoot clusters if necessary.
-func (r *Reconciler) MutateSpecForControlPlaneNodeBootstrapping(obj runtime.Object) error {
-	if !r.BootstrapControlPlaneNode {
+// MutateSpecForSelfHostedShootExtensions adapts host network, replicas, tolerations and usable ports range for
+// self-hosted shoot clusters if necessary.
+func (r *Reconciler) MutateSpecForSelfHostedShootExtensions(obj runtime.Object) error {
+	if r.SelfHostedShootMeta == nil {
 		return nil
 	}
 
-	if deployment, ok := obj.(*appsv1.Deployment); ok {
-		deployment.Spec.Replicas = ptr.To(int32(1))
-		deployment.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
-		deployment.Spec.Strategy.RollingUpdate = nil
+	if r.BootstrapControlPlaneNode {
+		if deployment, ok := obj.(*appsv1.Deployment); ok {
+			deployment.Spec.Replicas = ptr.To(int32(1))
+			deployment.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
+			deployment.Spec.Strategy.RollingUpdate = nil
+		}
 	}
+
 	return kubernetesutils.VisitPodSpec(obj, func(podSpec *corev1.PodSpec) {
-		podSpec.HostNetwork = r.BootstrapControlPlaneNode
-		podSpec.Tolerations = append(podSpec.Tolerations,
-			corev1.Toleration{Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule},
-			corev1.Toleration{Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute},
-		)
-		kubernetesutils.InjectKubernetesServiceHostEnv(podSpec.InitContainers, "localhost")
-		kubernetesutils.InjectKubernetesServiceHostEnv(podSpec.Containers, "localhost")
+		if r.BootstrapControlPlaneNode {
+			podSpec.HostNetwork = r.BootstrapControlPlaneNode
+			kubernetesutils.InjectKubernetesServiceHostEnv(podSpec.InitContainers, "localhost")
+			kubernetesutils.InjectKubernetesServiceHostEnv(podSpec.Containers, "localhost")
+
+			// extensions must even start on unready nodes in order to deploy the CNI plugin (nodes only become ready
+			// when networking is available)
+			podSpec.Tolerations = append(podSpec.Tolerations, corev1.Toleration{Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule})
+		}
+
+		podSpec.Tolerations = append(podSpec.Tolerations, corev1.Toleration{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists})
 	})
 }
 
 // CalculateUsablePorts returns the next usable port range for the next controller installation.
 func (r *Reconciler) CalculateUsablePorts() ([]int, error) {
 	var ports []int
-	for i := 0; i < usablePortsRangeSize; i++ {
+	for range usablePortsRangeSize {
 		p, _, err := netutils.SuggestPort("")
 		if err != nil {
 			return nil, fmt.Errorf("failed to find a usable port: %w", err)
@@ -616,4 +653,10 @@ func (r *Reconciler) CalculateUsablePorts() ([]int, error) {
 		ports = append(ports, p)
 	}
 	return ports, nil
+}
+
+// extensionServiceAccountName returns the name of the garden ServiceAccount for an extension in a self-hosted shoot
+// cluster. The format is extension-shoot--<shoot-name>--<controller-installation-name>.
+func extensionServiceAccountName(shootName, controllerInstallationName string) string {
+	return v1beta1constants.ExtensionShootServiceAccountPrefix + shootName + "--" + controllerInstallationName
 }

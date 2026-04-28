@@ -20,7 +20,10 @@ import (
 
 var _ = Describe("Seed Tests", Label("Seed", "default"), func() {
 	Describe("Renew gardenlet kubeconfig", Ordered, func() {
-		var s *SeedContext
+		var (
+			s        *SeedContext
+			verifier rotation.GardenletKubeconfigRotationVerifier
+		)
 
 		BeforeTestSetup(func() {
 			testContext := NewTestContext()
@@ -45,15 +48,19 @@ var _ = Describe("Seed Tests", Label("Seed", "default"), func() {
 			}
 
 			s = testContext.ForSeed(&seedList.Items[seedIndex])
+			ItShouldInitializeSeedClient(s)
 		})
 
-		verifier := rotation.GardenletKubeconfigRotationVerifier{
-			GardenReader:                       s.GardenClient,
-			SeedReader:                         s.GardenClient,
-			Seed:                               s.Seed,
-			GardenletKubeconfigSecretName:      "gardenlet-kubeconfig",
-			GardenletKubeconfigSecretNamespace: "garden",
-		}
+		It("Create gardenlet kubeconfig rotation verifier", func(_ SpecContext) {
+			// #nosec: G101 -- This is a secret name reference, not a hardcoded credential.
+			verifier = rotation.GardenletKubeconfigRotationVerifier{
+				GardenReader:                       s.GardenClient,
+				SeedReader:                         s.SeedClient,
+				Seed:                               s.Seed,
+				GardenletKubeconfigSecretName:      "gardenlet-kubeconfig",
+				GardenletKubeconfigSecretNamespace: "garden",
+			}
+		})
 
 		It("Verify before gardenlet kubeconfig rotation", func(ctx SpecContext) {
 			verifier.Before(ctx)

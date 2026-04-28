@@ -14,9 +14,7 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
-	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils"
-	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
@@ -32,7 +30,6 @@ var _ = Describe("CredentialsBinding controller test", func() {
 	)
 
 	BeforeEach(func() {
-		DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.ShootCredentialsBinding, true))
 		secret = &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      testID + "-" + utils.ComputeSHA256Hex([]byte(testNamespace.Name + CurrentSpecReport().LeafNodeLocation.String()))[:8],
@@ -92,7 +89,13 @@ var _ = Describe("CredentialsBinding controller test", func() {
 							Name:    "cpu-worker",
 							Minimum: 2,
 							Maximum: 2,
-							Machine: gardencorev1beta1.Machine{Type: "large"},
+							Machine: gardencorev1beta1.Machine{
+								Type: "large",
+								Image: &gardencorev1beta1.ShootMachineImage{
+									Name:    "some-image",
+									Version: ptr.To("1.0.0"),
+								},
+							},
 						},
 					},
 				},
@@ -171,7 +174,7 @@ var _ = Describe("CredentialsBinding controller test", func() {
 			By("Ensure finalizer and labels got added to Secret and Quota")
 			Eventually(func(g Gomega) {
 				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-				g.Expect(secret.Finalizers).To(ConsistOf("gardener.cloud/gardener"))
+				g.Expect(secret.Finalizers).To(ConsistOf("gardener.cloud/credentialsbinding"))
 				g.Expect(secret.Labels).To(And(
 					HaveKeyWithValue("provider.shoot.gardener.cloud/"+providerType, "true"),
 					HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),
@@ -194,7 +197,7 @@ var _ = Describe("CredentialsBinding controller test", func() {
 			By("Ensure finalizer and labels got removed from Secret and Quota")
 			Eventually(func(g Gomega) {
 				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-				g.Expect(secret.Finalizers).NotTo(ContainElement("gardener.cloud/gardener"))
+				g.Expect(secret.Finalizers).NotTo(ContainElement("gardener.cloud/credentialsbinding"))
 				g.Expect(secret.Labels).NotTo(HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"))
 			}).Should(Succeed())
 
@@ -208,7 +211,7 @@ var _ = Describe("CredentialsBinding controller test", func() {
 			By("Ensure finalizer and labels got added to Secret and Quota")
 			Eventually(func(g Gomega) {
 				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-				g.Expect(secret.Finalizers).To(ConsistOf("gardener.cloud/gardener"))
+				g.Expect(secret.Finalizers).To(ConsistOf("gardener.cloud/credentialsbinding"))
 				g.Expect(secret.Labels).To(And(
 					HaveKeyWithValue("provider.shoot.gardener.cloud/"+providerType, "true"),
 					HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),
@@ -239,7 +242,7 @@ var _ = Describe("CredentialsBinding controller test", func() {
 			By("Ensure finalizer and labels are still present on Secret and Quota")
 			Consistently(func(g Gomega) {
 				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-				g.Expect(secret.Finalizers).To(ConsistOf("gardener.cloud/gardener"))
+				g.Expect(secret.Finalizers).To(ConsistOf("gardener.cloud/credentialsbinding"))
 				g.Expect(secret.Labels).To(And(
 					HaveKeyWithValue("provider.shoot.gardener.cloud/"+providerType, "true"),
 					HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),

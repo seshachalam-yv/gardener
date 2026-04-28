@@ -12,7 +12,7 @@ import (
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
 	blackboxexporterconfig "github.com/prometheus/blackbox_exporter/config"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,7 +33,6 @@ import (
 	"github.com/gardener/gardener/pkg/component"
 	gardenprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/garden"
 	shootprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
-	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -44,7 +43,8 @@ import (
 )
 
 const (
-	labelValue = "blackbox-exporter"
+	labelValue    = "blackbox-exporter"
+	containerName = "blackbox-exporter"
 
 	volumeMountPathConfig = "/etc/blackbox_exporter"
 	dataKeyConfig         = "blackbox.yaml"
@@ -116,16 +116,13 @@ func (b *blackboxExporter) Deploy(ctx context.Context) error {
 		return managedresources.CreateForSeedWithLabels(ctx, b.client, b.namespace, b.managedResourceName(), false, map[string]string{v1beta1constants.LabelCareConditionType: v1beta1constants.ObservabilityComponentsHealthy}, data)
 	}
 
-	for _, scrapeConfig := range b.values.ScrapeConfigs {
-		if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.client, scrapeConfig, func() error { return nil }); err != nil {
-			return err
-		}
+	monitoringData, err := b.computeMonitoringResourcesData()
+	if err != nil {
+		return err
 	}
 
-	for _, prometheusRule := range b.values.PrometheusRules {
-		if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.client, prometheusRule, func() error { return nil }); err != nil {
-			return err
-		}
+	if err := managedresources.CreateForSeedWithLabels(ctx, b.client, b.namespace, b.monitoringResourcesManagedResourceName(), false, map[string]string{v1beta1constants.LabelCareConditionType: v1beta1constants.ObservabilityComponentsHealthy}, monitoringData); err != nil {
+		return err
 	}
 
 	return managedresources.CreateForShoot(ctx, b.client, b.namespace, b.managedResourceName(), managedresources.LabelValueGardener, false, data)
@@ -135,6 +132,11 @@ func (b *blackboxExporter) Destroy(ctx context.Context) error {
 	if b.values.ClusterType == component.ClusterTypeSeed {
 		return managedresources.DeleteForSeed(ctx, b.client, b.namespace, b.managedResourceName())
 	}
+
+	if err := managedresources.DeleteForSeed(ctx, b.client, b.namespace, b.monitoringResourcesManagedResourceName()); err != nil {
+		return err
+	}
+
 	return managedresources.DeleteForShoot(ctx, b.client, b.namespace, b.managedResourceName())
 }
 
@@ -143,6 +145,10 @@ func (b *blackboxExporter) managedResourceName() string {
 		return "blackbox-exporter"
 	}
 	return "shoot-core-blackbox-exporter"
+}
+
+func (b *blackboxExporter) monitoringResourcesManagedResourceName() string {
+	return b.managedResourceName() + "-monitoring-resources"
 }
 
 func (b *blackboxExporter) runtimeNamespace() string {
@@ -234,7 +240,7 @@ func (b *blackboxExporter) computeResourcesData() (map[string][]byte, error) {
 						},
 						Containers: []corev1.Container{
 							{
-								Name:  "blackbox-exporter",
+								Name:  containerName,
 								Image: b.values.Image,
 								Args: []string{
 									fmt.Sprintf("--config.file=%s/%s", volumeMountPathConfig, dataKeyConfig),
@@ -359,14 +365,18 @@ func (b *blackboxExporter) computeResourcesData() (map[string][]byte, error) {
 					Name:       deployment.Name,
 				},
 				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 						{
-							ContainerName:       vpaautoscalingv1.DefaultContainerResourcePolicy,
+							ContainerName:       containerName,
 							ControlledValues:    ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 							ControlledResources: &[]corev1.ResourceName{corev1.ResourceMemory},
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},
@@ -463,6 +473,21 @@ func (b *blackboxExporter) computeResourcesData() (map[string][]byte, error) {
 		service,
 		vpa,
 	)
+}
+
+func (b *blackboxExporter) computeMonitoringResourcesData() (map[string][]byte, error) {
+	registry := managedresources.NewRegistry(kubernetes.SeedScheme, kubernetes.SeedCodec, kubernetes.SeedSerializer)
+	var monitoringResources []client.Object
+
+	for _, scrapeConfig := range b.values.ScrapeConfigs {
+		monitoringResources = append(monitoringResources, scrapeConfig)
+	}
+
+	for _, prometheusRule := range b.values.PrometheusRules {
+		monitoringResources = append(monitoringResources, prometheusRule)
+	}
+
+	return registry.AddAllAndSerialize(monitoringResources...)
 }
 
 func getLabels() map[string]string {

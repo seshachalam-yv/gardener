@@ -4,15 +4,14 @@
 
 package kubernetes
 
-import versionutils "github.com/gardener/gardener/pkg/utils/version"
+import (
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
+)
 
 // APIGroupControllerMap is a map for the Kubernetes API groups and the corresponding controllers for them.
 var APIGroupControllerMap = map[string]map[string]versionutils.VersionRange{
 	"internal/v1alpha1": {
 		"storage-version-gc": {},
-	},
-	"admissionregistration/v1beta1": {
-		"validatingadmissionpolicy-status-controller": {AddedInVersion: "1.28", RemovedInVersion: "1.30"},
 	},
 	"admissionregistration/v1": {
 		"validatingadmissionpolicy-status-controller": {AddedInVersion: "1.30"},
@@ -51,10 +50,12 @@ var APIGroupControllerMap = map[string]map[string]versionutils.VersionRange{
 	},
 	"certificates/v1alpha1": {
 		"kube-apiserver-serving-clustertrustbundle-publisher-controller": {AddedInVersion: "1.32"},
+		"podcertificaterequest-cleaner-controller":                       {AddedInVersion: "1.34", RemovedInVersion: "1.35"},
 	},
 	"certificates/v1beta1": {
 		"csrsigning": {},
 		"kube-apiserver-serving-clustertrustbundle-publisher-controller": {AddedInVersion: "1.33"},
+		"podcertificaterequest-cleaner-controller":                       {AddedInVersion: "1.35"},
 	},
 	"coordination/v1": {
 		"nodelifecycle":      {},
@@ -82,24 +83,33 @@ var APIGroupControllerMap = map[string]map[string]versionutils.VersionRange{
 	"rbac/v1": {
 		"clusterrole-aggregation": {},
 	},
+	"resource/v1": {
+		"device-taint-eviction-controller": {AddedInVersion: "1.34"},
+		"resourceclaim-controller":         {AddedInVersion: "1.34"},
+	},
 	"resource/v1alpha2": {
 		"resource-claim-controller": {RemovedInVersion: "1.31"},
 	},
 	"resource/v1alpha3": {
-		"resource-claim-controller": {AddedInVersion: "1.31", RemovedInVersion: "1.32"},
+		"device-taint-eviction-controller": {AddedInVersion: "1.35"},
+		"resource-claim-controller":        {AddedInVersion: "1.31", RemovedInVersion: "1.32"},
 	},
 	"resource/v1beta1": {
-		"resource-claim-controller":        {AddedInVersion: "1.32"},
-		"device-taint-eviction-controller": {AddedInVersion: "1.33"},
+		"device-taint-eviction-controller": {AddedInVersion: "1.33", RemovedInVersion: "1.34"},
+		"resource-claim-controller":        {AddedInVersion: "1.32", RemovedInVersion: "1.34"},
 	},
 	"storage/v1": {
-		"selinux-warning-controller": {AddedInVersion: "1.32"},
+		"selinux-warning-controller":                  {AddedInVersion: "1.32"},
+		"volumeattributesclass-protection-controller": {AddedInVersion: "1.34"},
 	},
 	"storage/v1beta1": {
-		"volumeattributesclass-protection-controller": {AddedInVersion: "1.32"},
+		"volumeattributesclass-protection-controller": {AddedInVersion: "1.32", RemovedInVersion: "1.34"},
 	},
 	"storagemigration/v1alpha1": {
-		"storage-version-migrator-controller": {AddedInVersion: "1.30"},
+		"storage-version-migrator-controller": {AddedInVersion: "1.30", RemovedInVersion: "1.35"},
+	},
+	"storagemigration/v1beta1": {
+		"storage-version-migrator-controller": {AddedInVersion: "1.35"},
 	},
 	"v1": {
 		"attachdetach":                         {},
@@ -117,7 +127,6 @@ var APIGroupControllerMap = map[string]map[string]versionutils.VersionRange{
 		"endpointslice":                        {},
 		"endpointslicemirroring":               {},
 		"ephemeral-volume":                     {},
-		"garbagecollector":                     {RemovedInVersion: "1.30"},
 		"horizontalpodautoscaling":             {},
 		"job":                                  {},
 		"legacy-service-account-token-cleaner": {AddedInVersion: "1.28"},

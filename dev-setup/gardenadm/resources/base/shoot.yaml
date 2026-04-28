@@ -4,6 +4,11 @@ metadata:
   name: root
   namespace: garden
 spec:
+  cloudProfile:
+    kind: CloudProfile
+    name: local
+  dns:
+    domain: root.garden.external.local.gardener.cloud
   region: local
   provider:
     type: local
@@ -19,15 +24,22 @@ spec:
             namespace: garden
       machine:
         type: local
+        image:
+          name: local
       minimum: 1
       maximum: 1
     - name: worker
       machine:
         type: local
+        image:
+          name: local
       minimum: 1
-      maximum: 1
+      # Setting max > min triggers the deployment of the cluster-autoscaler
+      maximum: 2
+      systemComponents:
+        allow: false
   kubernetes:
-    version: 1.32.0
+    version: 1.33.0
     kubelet:
       seccompDefault: true
       serializeImagePulls: false
@@ -40,4 +52,5 @@ spec:
     type: calico
     pods: 10.3.0.0/16
     services: 10.4.0.0/16
-    nodes: 10.1.0.0/16 # pod network range of the kind cluster
+    # Must be within 10.0.0.0/16 (subnet of kind pod CIDR 10.0.0.0/15, but disjoint with seed pod CIDR 10.1.0.0/16).
+    nodes: 10.0.0.0/16

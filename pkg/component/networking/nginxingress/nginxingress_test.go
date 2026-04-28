@@ -98,7 +98,7 @@ var _ = Describe("NginxIngress", func() {
 				ConfigData:                configMapData,
 				LoadBalancerAnnotations:   loadBalancerAnnotations,
 				VPAEnabled:                true,
-				WildcardIngressDomains:    []string{firstWildcardIngress, secondWildcardIngress},
+				Domains:                   []string{firstWildcardIngress, secondWildcardIngress},
 				IstioIngressGatewayLabels: map[string]string{istioLabelKey: istioLabelValue},
 			}
 		})
@@ -114,7 +114,6 @@ data:
 immutable: true
 kind: ConfigMap
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -128,7 +127,6 @@ metadata:
 				clusterRoleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
   name: gardener.cloud:seed:nginx-ingress
@@ -207,7 +205,6 @@ rules:
 				clusterRoleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
   name: gardener.cloud:seed:nginx-ingress
@@ -223,7 +220,6 @@ subjects:
 				roleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
   name: gardener.cloud:seed:nginx-ingress:role
@@ -273,7 +269,6 @@ rules:
 				roleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
   name: gardener.cloud:seed:nginx-ingress:role-binding
@@ -294,7 +289,6 @@ metadata:
     networking.istio.io/exportTo: '*'
     networking.resources.gardener.cloud/namespace-selectors: '[{"matchLabels":{"gardener.cloud/role":"istio-ingress"}}]'
     some: value
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -320,7 +314,6 @@ status:
 				serviceBackendYAML = `apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: nginx-ingress-k8s-backend
@@ -341,7 +334,6 @@ status:
 automountServiceAccountToken: false
 kind: ServiceAccount
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
   name: nginx-ingress
@@ -350,7 +342,6 @@ metadata:
 				ingressClassYAML = `apiVersion: networking.k8s.io/v1
 kind: IngressClass
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -361,7 +352,6 @@ spec:
 				podDisruptionBudgetYAML = `apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -383,27 +373,27 @@ status:
 				vpaYAML = `apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  creationTimestamp: null
   name: nginx-ingress-controller
   namespace: ` + namespace + `
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: nginx-ingress-controller
       minAllowed:
         memory: 100Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: nginx-ingress-controller
   updatePolicy:
-    updateMode: Auto
+    updateMode: Recreate
 status: {}
 `
 				deploymentBackendYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: nginx-ingress-k8s-backend
@@ -420,7 +410,6 @@ spec:
   strategy: {}
   template:
     metadata:
-      creationTimestamp: null
       labels:
         app: nginx-ingress
         component: nginx-ingress-k8s-backend
@@ -462,7 +451,6 @@ kind: Deployment
 metadata:
   annotations:
     ` + references.AnnotationKey(references.KindConfigMap, configMapName) + `: ` + configMapName + `
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -481,7 +469,6 @@ spec:
     metadata:
       annotations:
         ` + references.AnnotationKey(references.KindConfigMap, configMapName) + `: ` + configMapName + `
-      creationTimestamp: null
       labels:
         app: nginx-ingress
         component: controller
@@ -572,7 +559,6 @@ status: {}
 				destinationRuleYAML = `apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -585,7 +571,7 @@ spec:
   trafficPolicy:
     connectionPool:
       tcp:
-        maxConnections: 5000
+        maxConnectionDuration: 86400s
         tcpKeepalive:
           interval: 75s
           time: 7200s
@@ -602,7 +588,6 @@ status: {}
 				gatewayYAML = `apiVersion: networking.istio.io/v1beta1
 kind: Gateway
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -627,7 +612,6 @@ status: {}
 					return `apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -639,12 +623,12 @@ spec:
   gateways:
   - nginx-ingress-controller
   hosts:
-  - '` + values.WildcardIngressDomains[index] + `'
+  - '` + values.Domains[index] + `'
   tls:
   - match:
     - port: 443
       sniHosts:
-      - '` + values.WildcardIngressDomains[index] + `'
+      - '` + values.Domains[index] + `'
     route:
     - destination:
         host: nginx-ingress-controller.` + namespace + `.svc.cluster.local
@@ -659,7 +643,6 @@ kind: Lease
 metadata:
   annotations:
     resources.gardener.cloud/ignore: "true"
-  creationTimestamp: null
   name: ingress-controller-seed-leader
   namespace: ` + namespace + `
 spec: {}
@@ -754,7 +737,6 @@ data:
   foo: bar
 kind: ConfigMap
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -766,7 +748,6 @@ metadata:
 			ingressClassYAML = `apiVersion: networking.k8s.io/v1
 kind: IngressClass
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -782,7 +763,6 @@ spec:
 automountServiceAccountToken: false
 kind: ServiceAccount
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     release: addons
@@ -794,9 +774,7 @@ metadata:
 kind: NetworkPolicy
 metadata:
   annotations:
-    gardener.cloud/description: Allows all egress and ingress traffic for the nginx-ingress
-      controller.
-  creationTimestamp: null
+    gardener.cloud/description: Allows all egress and ingress traffic for the nginx-ingress controller.
   labels:
     origin: gardener
   name: gardener.cloud--allow-to-from-nginx
@@ -819,7 +797,6 @@ spec:
 			serviceBackendYAML = `apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: nginx-ingress-k8s-backend
@@ -842,7 +819,6 @@ status:
 			clusterRoleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     release: addons
@@ -925,7 +901,6 @@ kind: ClusterRoleBinding
 metadata:
   annotations:
     resources.gardener.cloud/delete-on-invalid-update: "true"
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     release: addons
@@ -945,7 +920,6 @@ kind: Service
 metadata:
   annotations:
     service.beta.kubernetes.io/aws-load-balancer-proxy-protocol: '*'
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -976,7 +950,6 @@ status:
 			deploymentBackendYAML = `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: nginx-ingress-k8s-backend
@@ -996,7 +969,6 @@ spec:
   strategy: {}
   template:
     metadata:
-      creationTimestamp: null
       labels:
         app: nginx-ingress
         component: nginx-ingress-k8s-backend
@@ -1045,7 +1017,6 @@ status: {}
 				out := `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     component: controller
@@ -1067,7 +1038,6 @@ spec:
     metadata:
       annotations:
         checksum/config: ` + utils.ComputeChecksum(configMapData) + `
-      creationTimestamp: null
       labels:
         app: nginx-ingress
         component: controller
@@ -1163,7 +1133,6 @@ status: {}
 			roleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     release: addons
@@ -1217,7 +1186,6 @@ kind: RoleBinding
 metadata:
   annotations:
     resources.gardener.cloud/delete-on-invalid-update: "true"
-  creationTimestamp: null
   labels:
     app: nginx-ingress
     release: addons
@@ -1236,21 +1204,22 @@ subjects:
 			vpaYAML = `apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  creationTimestamp: null
   name: addons-nginx-ingress-controller
   namespace: kube-system
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: nginx-ingress-controller
       minAllowed:
         memory: 100Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: addons-nginx-ingress-controller
   updatePolicy:
-    updateMode: Auto
+    updateMode: Recreate
 status: {}
 `
 
@@ -1259,7 +1228,6 @@ kind: Lease
 metadata:
   annotations:
     resources.gardener.cloud/ignore: "true"
-  creationTimestamp: null
   name: ingress-controller-leader
   namespace: kube-system
 spec: {}

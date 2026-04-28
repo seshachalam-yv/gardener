@@ -104,7 +104,7 @@ type SeedStatus struct {
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +optional
-	Conditions []Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,3,rep,name=conditions"`
+	Conditions []Condition `json:"conditions,omitempty" patchMergeKey:"type" patchStrategy:"merge" protobuf:"bytes,3,rep,name=conditions"`
 	// ObservedGeneration is the most recent generation observed for this Seed. It corresponds to the
 	// Seed's generation, which is updated on mutation by the API Server.
 	// +optional
@@ -157,20 +157,51 @@ type SeedDNS struct {
 	// Provider configures a DNSProvider
 	// +optional
 	Provider *SeedDNSProvider `json:"provider,omitempty" protobuf:"bytes,2,opt,name=provider"`
+	// Internal configures DNS settings related to seed internal domain.
+	// +optional
+	Internal *SeedDNSProviderConfig `json:"internal,omitempty" protobuf:"bytes,3,opt,name=internal"`
+	// Defaults configures DNS settings related to seed default domains.
+	// When determining the DNS settings for a Shoot, the first matching entry in this list will take precedence.
+	// +optional
+	Defaults []SeedDNSProviderConfig `json:"defaults,omitempty" protobuf:"bytes,4,rep,name=defaults"`
+}
+
+// SeedDNSProviderConfig configures a DNS provider.
+type SeedDNSProviderConfig struct {
+	// Type is the type of the DNS provider.
+	Type string `json:"type" protobuf:"bytes,1,opt,name=type"`
+	// Domain is the domain name to be used by the DNS provider.
+	Domain string `json:"domain" protobuf:"bytes,2,opt,name=domain"`
+	// Zone is the zone where the DNS records are managed.
+	// +optional
+	Zone *string `json:"zone,omitempty" protobuf:"bytes,3,opt,name=zone"`
+	// CredentialsRef is a reference to a resource holding the credentials used for
+	// authentication with the DNS provider.
+	// Supported referenced resources are v1.Secrets and
+	// security.gardener.cloud/v1alpha1.WorkloadIdentity
+	CredentialsRef corev1.ObjectReference `json:"credentialsRef" protobuf:"bytes,4,opt,name=credentialsRef"`
 }
 
 // SeedDNSProvider configures a DNSProvider for Seeds
 type SeedDNSProvider struct {
 	// Type describes the type of the dns-provider, for example `aws-route53`
 	Type string `json:"type" protobuf:"bytes,1,opt,name=type"`
-	// SecretRef is a reference to a Secret object containing cloud provider credentials used for registering external domains.
-	SecretRef corev1.SecretReference `json:"secretRef" protobuf:"bytes,2,opt,name=secretRef"`
+
+	// SecretRef is tombstoned to show why 2 is reserved protobuf tag.
+	// SecretRef corev1.SecretReference `json:"secretRef" protobuf:"bytes,2,opt,name=secretRef"`
 
 	// Domains is tombstoned to show why 3 is reserved protobuf tag.
 	// Domains *DNSIncludeExclude `json:"domains,omitempty" protobuf:"bytes,3,opt,name=domains"`
 
 	// Zones is tombstoned to show why 4 is reserved protobuf tag.
 	// Zones *DNSIncludeExclude `json:"zones,omitempty" protobuf:"bytes,4,opt,name=zones"`
+
+	// CredentialsRef is a reference to a resource holding the credentials used for
+	// authentication with the DNS provider.
+	// Supported referenced resources are v1.Secrets and
+	// security.gardener.cloud/v1alpha1.WorkloadIdentity
+	// +optional
+	CredentialsRef *corev1.ObjectReference `json:"credentialsRef,omitempty" protobuf:"bytes,5,opt,name=credentialsRef"`
 }
 
 // Ingress configures the Ingress specific settings of the cluster
@@ -271,7 +302,33 @@ type SeedSettings struct {
 	// See https://github.com/gardener/gardener/blob/master/docs/operations/topology_aware_routing.md.
 	// +optional
 	TopologyAwareRouting *SeedSettingTopologyAwareRouting `json:"topologyAwareRouting,omitempty" protobuf:"bytes,8,opt,name=topologyAwareRouting"`
+	// ZoneSelection controls whether shoot control plane zone placement is derived from the shoot's worker pool zones
+	// rather than randomly selected from seed zones.
+	// See https://github.com/gardener/gardener/blob/master/docs/operations/seed_settings.md#zone-selection.
+	// +optional
+	ZoneSelection *SeedSettingZoneSelection `json:"zoneSelection,omitempty" protobuf:"bytes,9,opt,name=zoneSelection"`
 }
+
+// SeedSettingZoneSelection controls whether shoot control plane zone placement is derived
+// from the shoot's worker pool zones rather than randomly selected from seed zones.
+type SeedSettingZoneSelection struct {
+	// Mode controls the zone selection behavior.
+	// "Prefer" tries to match worker pool zones to seed zones, falling back to random selection on mismatch.
+	// "Enforce" requires worker pool zones to be present in the seed's zone list; scheduling fails otherwise.
+	// +kubebuilder:validation:Enum=Prefer;Enforce
+	Mode ZoneSelectionMode `json:"mode" protobuf:"bytes,1,opt,name=mode,casttype=ZoneSelectionMode"`
+}
+
+// ZoneSelectionMode is the mode for zone selection.
+// +kubebuilder:validation:Enum=Prefer;Enforce
+type ZoneSelectionMode string
+
+const (
+	// ZoneSelectionModePrefer tries to match worker pool zones to seed zones, falling back to random selection on mismatch.
+	ZoneSelectionModePrefer ZoneSelectionMode = "Prefer"
+	// ZoneSelectionModeEnforce requires worker pool zones to be present in the seed's zone list; scheduling fails otherwise.
+	ZoneSelectionModeEnforce ZoneSelectionMode = "Enforce"
+)
 
 // SeedSettingExcessCapacityReservation controls the excess capacity reservation for shoot control planes in the seed.
 type SeedSettingExcessCapacityReservation struct {
@@ -321,6 +378,14 @@ type SeedSettingLoadBalancerServices struct {
 	// Defaults to nil, which is equivalent to not allowing ProxyProtocol.
 	// +optional
 	ProxyProtocol *LoadBalancerServicesProxyProtocol `json:"proxyProtocol,omitempty" protobuf:"bytes,4,opt,name=proxyProtocol"`
+	// ZonalIngress controls whether ingress gateways are deployed per availability zone.
+	// Defaults to true.
+	// +optional
+	ZonalIngress *SeedSettingLoadBalancerServicesZonalIngress `json:"zonalIngress,omitempty" protobuf:"bytes,5,opt,name=zonalIngress"`
+	// Class configures the Service.spec.loadBalancerClass field for the load balancer services on the seed.
+	// Note that changing the loadBalancerClass of existing LoadBalancer services is denied by Kubernetes.
+	// +optional
+	Class *string `json:"class,omitempty" protobuf:"bytes,6,opt,name=class"`
 }
 
 // SeedSettingLoadBalancerServicesZones controls settings, which are specific to the single-zone load balancers in a
@@ -352,6 +417,16 @@ type LoadBalancerServicesProxyProtocol struct {
 	Allowed bool `json:"allowed" protobuf:"bytes,1,opt,name=allowed"`
 }
 
+// SeedSettingLoadBalancerServicesZonalIngress controls the deployment of ingress gateways per availability zone.
+type SeedSettingLoadBalancerServicesZonalIngress struct {
+	// Enabled controls whether seed ingress gateways are deployed in each availability zone.
+	// Defaults to true, which provisions an ingress gateway load balancer for each availability zone.
+	// When disabled, only a single ingress gateway is deployed.
+	// See https://github.com/gardener/gardener/blob/master/docs/operations/seed_settings.md#zonal-ingress.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" protobuf:"bytes,1,opt,name=enabled"`
+}
+
 // SeedSettingVerticalPodAutoscaler controls certain settings for the vertical pod autoscaler components deployed in the
 // seed.
 type SeedSettingVerticalPodAutoscaler struct {
@@ -359,6 +434,16 @@ type SeedSettingVerticalPodAutoscaler struct {
 	// is enabled by default because Gardener heavily relies on a VPA being deployed. You should only disable this if
 	// your seed cluster already has another, manually/custom managed VPA deployment.
 	Enabled bool `json:"enabled" protobuf:"bytes,1,opt,name=enabled"`
+	// FeatureGates contains information about enabled feature gates.
+	// +optional
+	FeatureGates map[string]bool `json:"featureGates,omitempty" protobuf:"bytes,2,opt,name=featureGates"`
+	// MaxAllowed specifies the global maximum allowed (maximum amount of resources) that vpa-recommender can recommend for a container.
+	// The VerticalPodAutoscaler-level maximum allowed takes precedence over the global maximum allowed.
+	// For more information, see https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/examples.md#specifying-global-maximum-allowed-resources-to-prevent-pods-from-being-unschedulable.
+	//
+	// Defaults to nil (no maximum).
+	// +optional
+	MaxAllowed corev1.ResourceList `json:"maxAllowed,omitempty" protobuf:"bytes,3,rep,name=maxAllowed,casttype=k8s.io/api/core/v1.ResourceList,castkey=k8s.io/api/core/v1.ResourceName"`
 }
 
 // SeedSettingDependencyWatchdog controls the dependency-watchdog settings for the seed.
@@ -424,7 +509,7 @@ type SeedVolume struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	Providers []SeedVolumeProvider `json:"providers,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,2,rep,name=providers"`
+	Providers []SeedVolumeProvider `json:"providers,omitempty" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,2,rep,name=providers"`
 }
 
 // SeedVolumeProvider is a storage class provisioner type.
@@ -440,10 +525,10 @@ const (
 	SeedBackupBucketsReady ConditionType = "BackupBucketsReady"
 	// SeedExtensionsReady is a constant for a condition type indicating that the extensions are ready.
 	SeedExtensionsReady ConditionType = "ExtensionsReady"
-	// SeedGardenletReady is a constant for a condition type indicating that the Gardenlet is ready.
-	SeedGardenletReady ConditionType = "GardenletReady"
 	// SeedSystemComponentsHealthy is a constant for a condition type indicating the system components health.
 	SeedSystemComponentsHealthy ConditionType = "SeedSystemComponentsHealthy"
+	// SeedEmergencyStopShootReconciliations is a constant for a condition type indicating disabled shoot reconciliations.
+	SeedEmergencyStopShootReconciliations ConditionType = "EmergencyStopShootReconciliations"
 )
 
 // Resource constants for Gardener object types

@@ -22,6 +22,7 @@ import (
 	kubeproxyconfigv1alpha1 "k8s.io/kube-proxy/config/v1alpha1"
 	"k8s.io/utils/ptr"
 
+	gardencore "github.com/gardener/gardener/pkg/apis/core"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
@@ -29,7 +30,6 @@ import (
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
 	netutils "github.com/gardener/gardener/pkg/utils/net"
-	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
 const (
@@ -81,7 +81,16 @@ var (
 	conntrackFixScript string
 	//go:embed resources/cleanup.sh
 	cleanupScript string
+
+	// constraintK8sGreaterEqual1330Less1336 is a version constraint for versions >= 1.33.0, < 1.33.6.
+	constraintK8sGreaterEqual1330Less1336 *semver.Constraints
 )
+
+func init() {
+	var err error
+	constraintK8sGreaterEqual1330Less1336, err = semver.NewConstraint(">= 1.33.0, < 1.33.6")
+	utilruntime.Must(err)
+}
 
 func (k *kubeProxy) computeCentralResourcesData() (map[string][]byte, error) {
 	componentConfigRaw, err := k.getRawComponentConfig()
@@ -199,10 +208,8 @@ func (k *kubeProxy) computePoolResourcesData(pool WorkerPool) (map[string][]byte
 	var (
 		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
 
-		directoryOrCreate  = corev1.HostPathDirectoryOrCreate
-		fileOrCreate       = corev1.HostPathFileOrCreate
-		k8sGreaterEqual128 = versionutils.ConstraintK8sGreaterEqual128.Check(pool.KubernetesVersion)
-		k8sGreaterEqual129 = versionutils.ConstraintK8sGreaterEqual129.Check(pool.KubernetesVersion)
+		directoryOrCreate = corev1.HostPathDirectoryOrCreate
+		fileOrCreate      = corev1.HostPathFileOrCreate
 
 		daemonSet = &appsv1.DaemonSet{
 			ObjectMeta: metav1.ObjectMeta{
@@ -234,7 +241,7 @@ func (k *kubeProxy) computePoolResourcesData(pool WorkerPool) (map[string][]byte
 							v1beta1constants.LabelWorkerPool:              pool.Name,
 							v1beta1constants.LabelWorkerKubernetesVersion: pool.KubernetesVersion.String(),
 						},
-						InitContainers:    k.getInitContainers(pool.KubernetesVersion, pool.Image),
+						InitContainers:    k.getInitContainers(pool.Image, pool.KubernetesVersion),
 						PriorityClassName: "system-node-critical",
 						SecurityContext: &corev1.PodSecurityContext{
 							SeccompProfile: &corev1.SeccompProfile{
@@ -254,7 +261,7 @@ func (k *kubeProxy) computePoolResourcesData(pool WorkerPool) (map[string][]byte
 						HostNetwork:        true,
 						ServiceAccountName: k.serviceAccount.Name,
 						Containers: []corev1.Container{
-							k.getKubeProxyContainer(k8sGreaterEqual129, k8sGreaterEqual128, pool.Image, false),
+							k.getKubeProxyContainer(pool.Image, false, pool.KubernetesVersion),
 							{
 								// sidecar container with fix for conntrack
 								Name:            containerNameConntrackFix,
@@ -372,10 +379,8 @@ func (k *kubeProxy) computePoolResourcesData(pool WorkerPool) (map[string][]byte
 		daemonSet.Spec.Template.Spec.Containers[0].Resources.Limits = corev1.ResourceList{
 			corev1.ResourceMemory: resource.MustParse("2048Mi"),
 		}
-		if k8sGreaterEqual129 {
-			daemonSet.Spec.Template.Spec.InitContainers[1].Resources.Limits = corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-			}
+		daemonSet.Spec.Template.Spec.InitContainers[1].Resources.Limits = corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
 		}
 	}
 
@@ -392,7 +397,7 @@ func (k *kubeProxy) computePoolResourcesDataForMajorMinorVersionOnly(pool Worker
 	)
 
 	if k.values.VPAEnabled {
-		vpaUpdateMode := vpaautoscalingv1.UpdateModeAuto
+		vpaUpdateMode := vpaautoscalingv1.UpdateModeRecreate
 		controlledValues := vpaautoscalingv1.ContainerControlledValuesRequestsOnly
 		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{
@@ -419,7 +424,7 @@ func (k *kubeProxy) computePoolResourcesDataForMajorMinorVersionOnly(pool Worker
 							ControlledValues: &controlledValues,
 						},
 						{
-							ContainerName: containerNameConntrackFix,
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
 							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
@@ -466,7 +471,7 @@ func (k *kubeProxy) getRawComponentConfig() (string, error) {
 		FeatureGates: k.values.FeatureGates,
 	}
 
-	if !k.values.IPVSEnabled && len(k.values.PodNetworkCIDRs) > 0 {
+	if k.values.ProxyMode != gardencore.ProxyModeIPVS && len(k.values.PodNetworkCIDRs) > 0 {
 		if err := netutils.CheckDualStackForKubeComponents(k.values.PodNetworkCIDRs, "pod"); err != nil {
 			return "", err
 		}
@@ -478,13 +483,19 @@ func (k *kubeProxy) getRawComponentConfig() (string, error) {
 }
 
 func (k *kubeProxy) getMode() kubeproxyconfigv1alpha1.ProxyMode {
-	if k.values.IPVSEnabled {
+	switch k.values.ProxyMode {
+	case gardencore.ProxyModeIPTables:
+		return "iptables"
+	case gardencore.ProxyModeIPVS:
 		return "ipvs"
+	case gardencore.ProxyModeNFTables:
+		return "nftables"
+	default:
+		return "iptables"
 	}
-	return "iptables"
 }
 
-func (k *kubeProxy) getInitContainers(kubernetesVersion *semver.Version, image string) []corev1.Container {
+func (k *kubeProxy) getInitContainers(image string, kubernetesVersion *semver.Version) []corev1.Container {
 	initContainers := []corev1.Container{
 		{
 			Name:            "cleanup",
@@ -533,25 +544,17 @@ func (k *kubeProxy) getInitContainers(kubernetesVersion *semver.Version, image s
 		},
 	}
 
-	k8sGreaterEqual129 := versionutils.ConstraintK8sGreaterEqual129.Check(kubernetesVersion)
-	if k8sGreaterEqual129 {
-		k8sGreaterEqual128 := versionutils.ConstraintK8sGreaterEqual128.Check(kubernetesVersion)
-		initContainers = append(initContainers, k.getKubeProxyContainer(k8sGreaterEqual129, k8sGreaterEqual128, image, true))
-	}
+	initContainers = append(initContainers, k.getKubeProxyContainer(image, true, kubernetesVersion))
 
 	return initContainers
 }
 
-func (k *kubeProxy) getKubeProxyContainer(k8sGreaterEqual129, k8sGreaterEqual128 bool, image string, init bool) corev1.Container {
+func (k *kubeProxy) getKubeProxyContainer(image string, init bool, kubernetesVersion *semver.Version) corev1.Container {
 	container := corev1.Container{
 		Name:            containerName,
 		Image:           image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
-		Command: []string{
-			"/usr/local/bin/kube-proxy",
-			fmt.Sprintf("--config=%s/%s", volumeMountPathConfig, dataKeyConfig),
-			"--v=2",
-		},
+		Command:         k.computeCommand(init, kubernetesVersion),
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("20m"),
@@ -589,14 +592,11 @@ func (k *kubeProxy) getKubeProxyContainer(k8sGreaterEqual129, k8sGreaterEqual128
 		},
 	}
 
-	if !k8sGreaterEqual129 || init {
+	if init {
+		container.Name += "-init"
 		container.SecurityContext = &corev1.SecurityContext{
 			Privileged: ptr.To(true),
 		}
-	}
-	if init {
-		container.Name += "-init"
-		container.Command = append(container.Command, "--init-only")
 	} else {
 		container.Ports = []corev1.ContainerPort{{
 			Name:          portNameMetrics,
@@ -605,14 +605,10 @@ func (k *kubeProxy) getKubeProxyContainer(k8sGreaterEqual129, k8sGreaterEqual128
 			Protocol:      corev1.ProtocolTCP,
 		}}
 
-		urlPath := "/healthz"
-		if k8sGreaterEqual128 {
-			urlPath = "/livez"
-		}
 		container.ReadinessProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Path:   urlPath,
+					Path:   "/livez",
 					Port:   intstr.FromInt32(portHealthz),
 					Scheme: corev1.URISchemeHTTP,
 				},
@@ -625,4 +621,28 @@ func (k *kubeProxy) getKubeProxyContainer(k8sGreaterEqual129, k8sGreaterEqual128
 	}
 
 	return container
+}
+
+func (k *kubeProxy) computeCommand(init bool, kubernetesVersion *semver.Version) []string {
+	command := []string{
+		"/usr/local/bin/kube-proxy",
+		fmt.Sprintf("--config=%s/%s", volumeMountPathConfig, dataKeyConfig),
+	}
+
+	// kube-proxy versions in the range [1.33.0, 1.33.6) are affected by https://github.com/kubernetes/kubernetes/issues/132678.
+	// For a Service without endpoints, kube-proxy logs thousands log entries per second of type:
+	// "Ignoring same-zone topology hints for service since no hints were provided for zone"
+	// That's why we reduce the log verbosity level from --v=2 to --v=1 for the kube-proxy container
+	// when the kube-proxy version is in the range [1.33.0, 1.33.6).
+	if !init && constraintK8sGreaterEqual1330Less1336.Check(kubernetesVersion) {
+		command = append(command, "--v=1")
+	} else {
+		command = append(command, "--v=2")
+	}
+
+	if init {
+		command = append(command, "--init-only")
+	}
+
+	return command
 }

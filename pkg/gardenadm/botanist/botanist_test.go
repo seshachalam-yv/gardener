@@ -24,8 +24,8 @@ import (
 	"github.com/gardener/gardener/pkg/utils/test"
 )
 
-var _ = Describe("AutonomousBotanist", func() {
-	Describe("#NewAutonomousBotanistFromManifests", func() {
+var _ = Describe("GardenadmBotanist", func() {
+	Describe("#NewGardenadmBotanistFromManifests", func() {
 		const configDir = "manifests"
 
 		var (
@@ -50,26 +50,70 @@ var _ = Describe("AutonomousBotanist", func() {
 		})
 
 		It("should fail if the directory does not exist", func() {
-			Expect(NewAutonomousBotanistFromManifests(ctx, log, nil, "does/not/exist", false)).Error().To(MatchError(fs.ErrNotExist))
+			Expect(NewGardenadmBotanistFromManifests(ctx, log, nil, "does/not/exist", false)).Error().To(MatchError(fs.ErrNotExist))
 		})
 
-		When("running the control plane (acting on the autonomous shoot cluster)", func() {
-			It("should create a new Autonomous Botanist", func() {
-				b, err := NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, true)
-				Expect(err).NotTo(HaveOccurred())
+		When("running the control plane (acting on the self-hosted shoot cluster)", func() {
+			Context("with unmanaged infrastructure", func() {
+				It("should create a new Self-Hosted Botanist", func() {
+					b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)
+					Expect(err).NotTo(HaveOccurred())
 
-				Expect(b.Shoot.CloudProfile.Name).To(Equal("stackit"))
-				Expect(b.Shoot.GetInfo().Name).To(Equal("gardenadm"))
-				Expect(b.Garden.Project.Name).To(Equal("gardenadm"))
-				Expect(b.Extensions).To(ConsistOf(
-					HaveField("ControllerRegistration.Name", "provider-stackit"),
-					HaveField("ControllerRegistration.Name", "networking-cilium"),
-				))
-				Expect(b.Seed.GetInfo()).To(HaveField("ObjectMeta.Labels", HaveKeyWithValue("seed.gardener.cloud/autonomous-shoot-cluster", "true")))
+					Expect(b.Shoot.CloudProfile.Name).To(Equal("stackit"))
+					Expect(b.Shoot.GetInfo().Name).To(Equal("gardenadm"))
+					Expect(b.Garden.Project.Name).To(Equal("gardenadm"))
+					Expect(b.Extensions).To(ConsistOf(
+						HaveField("ControllerRegistration.Name", "provider-stackit"),
+						HaveField("ControllerRegistration.Name", "networking-cilium"),
+					))
+					Expect(b.Seed.GetInfo()).To(HaveField("ObjectMeta.Labels", HaveKeyWithValue("seed.gardener.cloud/self-hosted-shoot-cluster", "true")))
+				})
+
+				It("should set the LastOperation to Restore when a bootstrap ShootState exists", func() {
+					fsys[configDir+"/bootstrap-shootstate.yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: core.gardener.cloud/v1beta1
+kind: ShootState
+metadata:
+  name: gardenadm
+`)}
+
+					b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)
+					Expect(err).NotTo(HaveOccurred())
+
+					Expect(b.Shoot.GetInfo().Status.LastOperation).NotTo(BeNil())
+					Expect(b.Shoot.GetInfo().Status.LastOperation.Type).To(Equal(gardencorev1beta1.LastOperationTypeRestore))
+					Expect(b.IsRestorePhase()).To(BeTrue())
+				})
+			})
+
+			Context("with managed infrastructure", func() {
+				BeforeEach(func() {
+					shootFile := fsys[configDir+"/shoot.yaml"]
+					shootFile.Data = append(shootFile.Data, []byte("\n  credentialsBindingName: provider-account\n")...)
+
+					fsys[configDir+"/shootstate.yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: core.gardener.cloud/v1beta1
+kind: ShootState
+metadata:
+  name: gardenadm
+`)}
+				})
+
+				It("should fail if the ShootState is missing", func() {
+					delete(fsys, configDir+"/shootstate.yaml")
+					Expect(NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)).Error().To(MatchError(ContainSubstring("ShootState is missing")))
+				})
+
+				It("should set the LastOperation to Restore and fetch the ShootState", func() {
+					b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)
+					Expect(err).NotTo(HaveOccurred())
+
+					Expect(b.Shoot.GetInfo().Status.LastOperation.Type).To(Equal(gardencorev1beta1.LastOperationTypeRestore))
+					Expect(b.Shoot.GetShootState().Name).To(Equal("gardenadm"))
+					Expect(b.IsRestorePhase()).To(BeTrue())
+				})
 			})
 
 			It("should use kube-system as the control plane namespace", func() {
-				b, err := NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, true)
+				b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(b.Shoot.ControlPlaneNamespace).To(Equal("kube-system"))
 			})
@@ -79,7 +123,7 @@ var _ = Describe("AutonomousBotanist", func() {
 				DeferCleanup(test.WithVar(&NewFs, func() afero.Fs { return fs }))
 
 				By("Generate new shoot UID and write it to the host")
-				b, err := NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, true)
+				b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)
 				Expect(err).NotTo(HaveOccurred())
 
 				uid := b.Shoot.GetInfo().Status.UID
@@ -92,7 +136,7 @@ var _ = Describe("AutonomousBotanist", func() {
 				Expect(string(content)).To(Equal(string(uid)))
 
 				By("Do not regenerate shoot UID when file is present on host")
-				b, err = NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, true)
+				b, err = NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(b.Shoot.GetInfo().Status.UID).To(Equal(uid))
@@ -103,8 +147,8 @@ var _ = Describe("AutonomousBotanist", func() {
 		})
 
 		When("not running the control plane (acting on the bootstrap cluster)", func() {
-			It("should create a new Autonomous Botanist", func() {
-				b, err := NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, false)
+			It("should create a new Self-Hosted Botanist", func() {
+				b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, false)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(b.Shoot.CloudProfile.Name).To(Equal("stackit"))
@@ -112,12 +156,13 @@ var _ = Describe("AutonomousBotanist", func() {
 				Expect(b.Garden.Project.Name).To(Equal("gardenadm"))
 				Expect(b.Extensions).To(ConsistOf(
 					HaveField("ControllerRegistration.Name", "provider-stackit"),
+					HaveField("ControllerRegistration.Name", "dns-local"),
 				))
-				Expect(b.Seed.GetInfo()).To(HaveField("ObjectMeta.Labels", Not(HaveKeyWithValue("seed.gardener.cloud/autonomous-shoot-cluster", "true"))))
+				Expect(b.Seed.GetInfo()).To(HaveField("ObjectMeta.Labels", Not(HaveKeyWithValue("seed.gardener.cloud/self-hosted-shoot-cluster", "true"))))
 			})
 
 			It("should use the technical ID as the control plane namespace", func() {
-				b, err := NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, false)
+				b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, false)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(b.Shoot.ControlPlaneNamespace).To(Equal("shoot--gardenadm--gardenadm"))
 			})
@@ -126,7 +171,7 @@ var _ = Describe("AutonomousBotanist", func() {
 				fs := afero.NewMemMapFs()
 				DeferCleanup(test.WithVar(&NewFs, func() afero.Fs { return fs }))
 
-				b, err := NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, false)
+				b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, false)
 				Expect(err).NotTo(HaveOccurred())
 
 				uid := b.Shoot.GetInfo().Status.UID
@@ -138,20 +183,28 @@ var _ = Describe("AutonomousBotanist", func() {
 		})
 
 		It("should create the secrets with the fake garden client", func() {
-			b, err := NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, false)
+			b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, false)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(b.GardenClient.Get(ctx, client.ObjectKey{Name: "secret1"}, &corev1.Secret{})).To(Succeed())
 			Expect(b.GardenClient.Get(ctx, client.ObjectKey{Name: "secret2"}, &corev1.Secret{})).To(Succeed())
+			Expect(b.GardenClient.Get(ctx, client.ObjectKey{Name: "secret-dns"}, &corev1.Secret{})).To(Succeed())
 		})
 
 		It("should create the secret binding and credentials binding", func() {
-			b, err := NewAutonomousBotanistFromManifests(ctx, log, nil, configDir, true)
+			b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(b.GardenClient.Get(ctx, client.ObjectKey{Name: "provider-account"}, &corev1.Secret{})).To(Succeed())
 			Expect(b.GardenClient.Get(ctx, client.ObjectKey{Name: "provider-account"}, &gardencorev1beta1.SecretBinding{})).To(Succeed())
 			Expect(b.GardenClient.Get(ctx, client.ObjectKey{Name: "provider-account"}, &securityv1alpha1.CredentialsBinding{})).To(Succeed())
+		})
+
+		It("should create the workload identity", func() {
+			b, err := NewGardenadmBotanistFromManifests(ctx, log, nil, configDir, true)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(b.GardenClient.Get(ctx, client.ObjectKey{Name: "local"}, &securityv1alpha1.WorkloadIdentity{})).To(Succeed())
 		})
 	})
 })
@@ -181,6 +234,12 @@ spec:
     workers:
     - name: control-plane
       controlPlane: {}
+  dns:
+    domain: api.gardenadm.local.gardener.cloud
+    providers:
+    - type: local
+      primary: true
+      secretName: secret-dns
   networking:
     type: cilium
     nodes: 10.1.0.0/16
@@ -230,6 +289,23 @@ metadata:
 apiVersion: core.gardener.cloud/v1beta1
 kind: ControllerRegistration
 metadata:
+  name: dns-local
+spec:
+  resources:
+  - kind: DNSRecord
+    type: local
+  deployment:
+    deploymentRefs:
+    - name: dns-local
+---
+apiVersion: core.gardener.cloud/v1
+kind: ControllerDeployment
+metadata:
+  name: dns-local
+---
+apiVersion: core.gardener.cloud/v1beta1
+kind: ControllerRegistration
+metadata:
   name: unused
 spec:
   resources:
@@ -255,6 +331,11 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: secret2
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret-dns
 ---
 apiVersion: v1
 kind: Secret
@@ -286,5 +367,17 @@ credentialsRef:
   kind: Secret
   name: provider-account
 quotas: []
+`)}
+	fsys[dir+"/workloadidentity.yaml"] = &fstest.MapFile{Data: []byte(`---
+apiVersion: security.gardener.cloud/v1alpha1
+kind: WorkloadIdentity
+metadata:
+  name: local
+spec:
+  audiences:
+    - audience1
+  targetSystem:
+    providerConfig: config
+    type: local
 `)}
 }

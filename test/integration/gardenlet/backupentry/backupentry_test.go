@@ -218,6 +218,10 @@ var _ = Describe("BackupEntry controller tests", func() {
 							Maximum: 2,
 							Machine: gardencorev1beta1.Machine{
 								Type: "large",
+								Image: &gardencorev1beta1.ShootMachineImage{
+									Name:    "some-image",
+									Version: ptr.To("1.0.0"),
+								},
 							},
 						},
 					},
@@ -432,9 +436,21 @@ var _ = Describe("BackupEntry controller tests", func() {
 					DNS: gardencorev1beta1.SeedDNS{
 						Provider: &gardencorev1beta1.SeedDNSProvider{
 							Type: "providerType",
-							SecretRef: corev1.SecretReference{
-								Name:      "some-secret",
-								Namespace: "some-namespace",
+							CredentialsRef: &corev1.ObjectReference{
+								APIVersion: "v1",
+								Kind:       "Secret",
+								Name:       "some-secret",
+								Namespace:  "some-namespace",
+							},
+						},
+						Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+							Type:   "providerType",
+							Domain: "internal.example.com",
+							CredentialsRef: corev1.ObjectReference{
+								APIVersion: "v1",
+								Kind:       "Secret",
+								Name:       "internal-domain-secret",
+								Namespace:  seedGardenNamespace.Name,
 							},
 						},
 					},

@@ -50,7 +50,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -109,7 +109,7 @@ k8s.io/apimachinery/pkg/runtime.RawExtension
 <td>
 <code>kubeconfigSecretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -175,7 +175,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -284,7 +284,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -327,7 +327,7 @@ int32
 <td>
 <code>selector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>
@@ -573,7 +573,7 @@ Image
 <td>
 <code>resources</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#resourcerequirements-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#resourcerequirements-v1-core">
 Kubernetes core/v1.ResourceRequirements
 </a>
 </em>
@@ -611,7 +611,7 @@ map[string]string
 <td>
 <code>additionalVolumes</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#volume-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#volume-v1-core">
 []Kubernetes core/v1.Volume
 </a>
 </em>
@@ -625,7 +625,7 @@ map[string]string
 <td>
 <code>additionalVolumeMounts</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#volumemount-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#volumemount-v1-core">
 []Kubernetes core/v1.VolumeMount
 </a>
 </em>
@@ -639,7 +639,7 @@ map[string]string
 <td>
 <code>env</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#envvar-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#envvar-v1-core">
 []Kubernetes core/v1.EnvVar
 </a>
 </em>
@@ -647,6 +647,20 @@ map[string]string
 <td>
 <em>(Optional)</em>
 <p>Env is the list of environment variables to set in the gardenlet container.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>tolerations</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#toleration-v1-core">
+[]Kubernetes core/v1.Toleration
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Tolerations are the tolerations to be applied to gardenlet pods.</p>
 </td>
 </tr>
 </tbody>
@@ -805,7 +819,7 @@ k8s.io/apimachinery/pkg/runtime.RawExtension
 <td>
 <code>kubeconfigSecretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -873,7 +887,8 @@ generation, which is updated on mutation by the API Server.</p>
 <a href="#seedmanagement.gardener.cloud/v1alpha1.GardenletDeployment">GardenletDeployment</a>)
 </p>
 <p>
-<p>Image specifies container image parameters.</p>
+<p>Image specifies container image parameters.
+Either Repository/Tag or Ref must be set, but not both.</p>
 </p>
 <table>
 <thead>
@@ -911,7 +926,7 @@ string
 <td>
 <code>pullPolicy</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#pullpolicy-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#pullpolicy-v1-core">
 Kubernetes core/v1.PullPolicy
 </a>
 </em>
@@ -920,6 +935,18 @@ Kubernetes core/v1.PullPolicy
 <em>(Optional)</em>
 <p>PullPolicy is the image pull policy. One of Always, Never, IfNotPresent.
 Defaults to Always if latest tag is specified, or IfNotPresent otherwise.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>ref</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Ref is the full image reference.</p>
 </td>
 </tr>
 </tbody>
@@ -957,7 +984,7 @@ int32
 <td>
 <code>selector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>
@@ -1296,7 +1323,7 @@ ManagedSeed&rsquo;s generation, which is updated on mutation by the API Server.<
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -1402,7 +1429,7 @@ PendingReplicaReason
 <td>
 <code>since</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>

@@ -1,0 +1,12 @@
+apiVersion: core.gardener.cloud/v1beta1
+kind: Shoot
+metadata:
+  name: root
+  namespace: garden
+spec:
+  secretBindingName: local
+  dns:
+    providers:
+    - type: local
+      primary: true
+      # secretName omitted, using secret of the secret binding

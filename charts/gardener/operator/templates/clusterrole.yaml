@@ -6,7 +6,7 @@ metadata:
   labels:
     app: gardener
     role: operator
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -52,6 +52,7 @@ rules:
   - patch
 - apiGroups:
   - ""
+  - events.k8s.io
   resources:
   - events
   verbs:
@@ -168,6 +169,7 @@ rules:
   resources:
   - etcds
   - etcdcopybackupstasks
+  - etcdopstasks
   verbs:
   - get
   - list
@@ -240,6 +242,22 @@ rules:
   - update
   - delete
 - apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - prometheuses
+  verbs:
+  - list
+  - watch
+  - get
+- apiGroups:
+  - operator.victoriametrics.com
+  resources:
+  - vlsingles
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - scheduling.k8s.io
   resources:
   - priorityclasses
@@ -251,3 +269,11 @@ rules:
   - watch
   - patch
   - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch

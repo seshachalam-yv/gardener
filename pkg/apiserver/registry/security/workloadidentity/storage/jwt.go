@@ -9,10 +9,10 @@ import (
 	"slices"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/user"
-	"k8s.io/utils/ptr"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
@@ -35,9 +35,9 @@ type gardener struct {
 }
 
 type ref struct {
-	Name      string  `json:"name"`
-	Namespace *string `json:"namespace,omitempty"`
-	UID       string  `json:"uid"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty,omitzero"`
+	UID       string `json:"uid"`
 }
 
 // contextObjects contains metadata information about the objects
@@ -75,7 +75,7 @@ func (r *TokenRequestREST) getGardenerClaims(workloadIdentity *securityapi.Workl
 		Gardener: gardener{
 			WorkloadIdentity: ref{
 				Name:      workloadIdentity.Name,
-				Namespace: ptr.To(workloadIdentity.Namespace),
+				Namespace: workloadIdentity.Namespace,
 				UID:       string(workloadIdentity.UID),
 			},
 		},
@@ -88,7 +88,7 @@ func (r *TokenRequestREST) getGardenerClaims(workloadIdentity *securityapi.Workl
 	if ctxObjects.shoot != nil {
 		gardenerClaims.Gardener.Shoot = &ref{
 			Name:      ctxObjects.shoot.GetName(),
-			Namespace: ptr.To(ctxObjects.shoot.GetNamespace()),
+			Namespace: ctxObjects.shoot.GetNamespace(),
 			UID:       string(ctxObjects.shoot.GetUID()),
 		}
 	}
@@ -117,7 +117,7 @@ func (r *TokenRequestREST) getGardenerClaims(workloadIdentity *securityapi.Workl
 	if ctxObjects.backupEntry != nil {
 		gardenerClaims.Gardener.BackupEntry = &ref{
 			Name:      ctxObjects.backupEntry.GetName(),
-			Namespace: ptr.To(ctxObjects.backupEntry.GetNamespace()),
+			Namespace: ctxObjects.backupEntry.GetNamespace(),
 			UID:       string(ctxObjects.backupEntry.GetUID()),
 		}
 	}
@@ -222,18 +222,18 @@ func (r *TokenRequestREST) resolveContextObject(user user.Info, ctxObj *security
 
 		if shootName := gardenerutils.GetShootNameFromOwnerReferences(backupEntry); shootName != "" {
 			shoot, err := r.shootListers.Shoots(backupEntry.GetNamespace()).Get(shootName)
-			if err != nil {
-				return nil, err
-			}
+			if err == nil {
+				shootTechnicalID, shootUID := gardenerutils.ExtractShootDetailsFromBackupEntryName(ctxObj.Name)
+				if shootTechnicalID == shoot.Status.TechnicalID && shootUID == shoot.GetUID() {
+					ctxObjects.shoot = shoot.GetObjectMeta()
 
-			shootTechnicalID, shootUID := gardenerutils.ExtractShootDetailsFromBackupEntryName(ctxObj.Name)
-			if shootTechnicalID == shoot.Status.TechnicalID && shootUID == shoot.GetUID() {
-				ctxObjects.shoot = shoot.GetObjectMeta()
-
-				if project, err = admissionutils.ProjectForNamespaceFromLister(r.projectLister, shoot.Namespace); err != nil {
-					return nil, err
+					if project, err = admissionutils.ProjectForNamespaceFromLister(r.projectLister, shoot.Namespace); err != nil {
+						return nil, err
+					}
+					ctxObjects.project = project.GetObjectMeta()
 				}
-				ctxObjects.project = project.GetObjectMeta()
+			} else if !apierrors.IsNotFound(err) {
+				return nil, err
 			}
 		}
 

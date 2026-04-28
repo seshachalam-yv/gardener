@@ -12,8 +12,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apiserver/pkg/admission"
 
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	plugin "github.com/gardener/gardener/plugin/pkg"
 )
 
@@ -35,6 +35,8 @@ func New() admission.MutationInterface {
 		Handler: admission.NewHandler(admission.Create),
 	}
 }
+
+var _ admission.MutationInterface = (*ShootVPA)(nil)
 
 // Admit defaults spec.kubernetes.verticalPodAutoscaler.enabled=true for new shoot clusters.
 func (c *ShootVPA) Admit(_ context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {

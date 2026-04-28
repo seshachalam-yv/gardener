@@ -44,6 +44,7 @@ import (
 	"github.com/gardener/gardener/pkg/component/observability/logging/vali"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/alertmanager"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus"
+	"github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector"
 	"github.com/gardener/gardener/pkg/component/observability/plutono"
 	shootsystem "github.com/gardener/gardener/pkg/component/shoot/system"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -55,6 +56,7 @@ type Builder struct {
 	cloudProfileFunc             func(context.Context, *gardencorev1beta1.Shoot) (*gardencorev1beta1.CloudProfile, error)
 	shootCredentialsFunc         func(context.Context, string, string, bool) (client.Object, error)
 	serviceAccountIssuerHostname func() (*string, error)
+	shootDNSFunc                 func() *gardencorev1beta1.DNS
 	seed                         *gardencorev1beta1.Seed
 	exposureClass                *gardencorev1beta1.ExposureClass
 	projectName                  string
@@ -69,7 +71,7 @@ type Shoot struct {
 
 	shootState atomic.Value
 
-	// Credentials is either [*corev1.Secret] or [*securityv1alpha1.WorkloadIdentity]
+	// Credentials is either [*corev1.Secret], [*gardencorev1bet1.InternalSecret], or [*securityv1alpha1.WorkloadIdentity]
 	Credentials   client.Object
 	CloudProfile  *gardencorev1beta1.CloudProfile
 	ExposureClass *gardencorev1beta1.ExposureClass
@@ -78,9 +80,12 @@ type Shoot struct {
 	ControlPlaneNamespace string
 	KubernetesVersion     *semver.Version
 
-	InternalClusterDomain string
+	// InternalClusterDomain is empty for self-hosted shoots, which only have an external domain (Shoot.spec.dns.domain).
+	InternalClusterDomain *string
+	// ExternalClusterDomain is nil if Shoot.Spec.DNS.Domain is unset.
 	ExternalClusterDomain *string
-	ExternalDomain        *gardenerutils.Domain
+	// ExternalDomain is nil if Shoot.Spec.DNS.Domain is unset.
+	ExternalDomain *gardenerutils.Domain
 
 	Purpose                                 gardencorev1beta1.ShootPurpose
 	IsWorkerless                            bool
@@ -98,6 +103,8 @@ type Shoot struct {
 	Networks                                *Networks
 	BackupEntryName                         string
 	OSCSyncJitterPeriod                     *metav1.Duration
+	EncryptionProviderToUse                 gardencorev1beta1.EncryptionProviderType
+	UsedEncryptionProvider                  gardencorev1beta1.EncryptionProviderType
 	ResourcesToEncrypt                      []string
 	EncryptedResources                      []string
 	ServiceAccountIssuerHostname            *string
@@ -137,6 +144,8 @@ type ControlPlane struct {
 	Prometheus               prometheus.Interface
 	ResourceManager          resourcemanager.Interface
 	Vali                     vali.Interface
+	OtelCollector            collector.Interface
+	VictoriaLogs             component.DeployWaiter
 	VerticalPodAutoscaler    vpa.Interface
 	VPNSeedServer            vpnseedserver.Interface
 }
@@ -166,6 +175,8 @@ type SystemComponents struct {
 	Namespaces          component.DeployWaiter
 	NodeLocalDNS        nodelocaldns.Interface
 	NodeProblemDetector component.DeployWaiter
+	// NodeReadinessController is the component for deploying the upstream Node Readiness Controller.
+	NodeReadinessController component.DeployWaiter
 	NodeExporter        component.DeployWaiter
 	Resources           shootsystem.Interface
 	VPNShoot            vpnshoot.Interface

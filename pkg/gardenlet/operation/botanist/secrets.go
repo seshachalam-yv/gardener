@@ -13,17 +13,15 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/gardener/tokenrequest"
@@ -42,7 +40,7 @@ func (b *Botanist) InitializeSecretsManagement(ctx context.Context) error {
 	// explicitly only done in case of restoration to prevent split-brain situations as described in
 	// https://github.com/gardener/gardener/issues/5377.
 	if b.IsRestorePhase() {
-		if err := b.restoreSecretsFromShootStateForSecretsManagerAdoption(ctx); err != nil {
+		if err := b.restoreSecretsFromShootState(ctx); err != nil {
 			return err
 		}
 	}
@@ -73,7 +71,7 @@ func (b *Botanist) lastSecretRotationStartTimes() map[string]time.Time {
 
 	if shootStatus := b.Shoot.GetInfo().Status; shootStatus.Credentials != nil && shootStatus.Credentials.Rotation != nil {
 		if shootStatus.Credentials.Rotation.CertificateAuthorities != nil && shootStatus.Credentials.Rotation.CertificateAuthorities.LastInitiationTime != nil {
-			for _, config := range caCertConfigurations(b.Shoot.IsWorkerless, b.Shoot.IsAutonomous()) {
+			for _, config := range caCertConfigurations(b.Shoot.IsWorkerless, b.Shoot.IsSelfHosted()) {
 				rotation[config.GetName()] = shootStatus.Credentials.Rotation.CertificateAuthorities.LastInitiationTime.Time
 			}
 			// The static token secret contains token for the health check of the kube-apiserver.
@@ -101,14 +99,13 @@ func (b *Botanist) lastSecretRotationStartTimes() map[string]time.Time {
 	return rotation
 }
 
-func (b *Botanist) restoreSecretsFromShootStateForSecretsManagerAdoption(ctx context.Context) error {
+func (b *Botanist) restoreSecretsFromShootState(ctx context.Context) error {
 	var fns []flow.TaskFn
 
 	for _, v := range b.Shoot.GetShootState().Spec.Gardener {
 		entry := v
 
-		if entry.Labels[secretsmanager.LabelKeyManagedBy] != secretsmanager.LabelValueSecretsManager ||
-			entry.Type != v1beta1constants.DataTypeSecret {
+		if entry.Type != v1beta1constants.DataTypeSecret {
 			continue
 		}
 
@@ -124,7 +121,23 @@ func (b *Botanist) restoreSecretsFromShootStateForSecretsManagerAdoption(ctx con
 				return err
 			}
 
-			secret := secretsmanager.Secret(objectMeta, data)
+			var secret *corev1.Secret
+			if objectMeta.Labels[secretsmanager.LabelKeyManagedBy] == secretsmanager.LabelValueSecretsManager {
+				secret = secretsmanager.Secret(objectMeta, data)
+			} else {
+				// TODO(plkokanov): Add ability to also restore the secret's immutability and type from the `ShootState`.
+				// For secrets that have the `managed-by: secrets-manager` label this information is inferred from the
+				// secret data and handled by the `secretsmanager.Secret(objectMeta, data)` function above.
+				// Currently only opaque secrets that do not have the `managed-by: secrets-manager` are expected to be persisted and restored.
+				// For more details, see https://github.com/gardener/gardener/issues/13262.
+				// Note that the e2e and testmachinery tests, check that the restored type and immutability matches the original.
+				secret = &corev1.Secret{
+					ObjectMeta: objectMeta,
+					Data:       data,
+					Type:       corev1.SecretTypeOpaque,
+				}
+			}
+
 			return client.IgnoreAlreadyExists(b.SeedClientSet.Client().Create(ctx, secret))
 		})
 	}
@@ -132,7 +145,7 @@ func (b *Botanist) restoreSecretsFromShootStateForSecretsManagerAdoption(ctx con
 	return flow.Parallel(fns...)(ctx)
 }
 
-func caCertConfigurations(isWorkerless, isAutonomous bool) []secretsutils.ConfigInterface {
+func caCertConfigurations(isWorkerless, isSelfHosted bool) []secretsutils.ConfigInterface {
 	certificateSecretConfigs := []secretsutils.ConfigInterface{
 		// The CommonNames for CA certificates will be overridden with the secret name by the secrets manager when
 		// generated to ensure that each CA has a unique common name. For backwards-compatibility, we still keep the
@@ -151,7 +164,7 @@ func caCertConfigurations(isWorkerless, isAutonomous bool) []secretsutils.Config
 			&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCAMetricsServer, CommonName: "metrics-server", CertType: secretsutils.CACert},
 		)
 
-		if !isAutonomous {
+		if !isSelfHosted {
 			certificateSecretConfigs = append(certificateSecretConfigs,
 				&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCAVPN, CommonName: "vpn", CertType: secretsutils.CACert},
 			)
@@ -193,7 +206,7 @@ func (b *Botanist) caCertGenerateOptionsFor(configName string) []secretsmanager.
 func (b *Botanist) generateCertificateAuthorities(ctx context.Context) error {
 	var caClientSecret *corev1.Secret
 
-	for _, config := range caCertConfigurations(b.Shoot.IsWorkerless, b.Shoot.IsAutonomous()) {
+	for _, config := range caCertConfigurations(b.Shoot.IsWorkerless, b.Shoot.IsSelfHosted()) {
 		caSecret, err := b.SecretsManager.Generate(ctx, config, b.caCertGenerateOptionsFor(config.GetName())...)
 		if err != nil {
 			return err
@@ -273,7 +286,7 @@ func (b *Botanist) generateCertificateAuthorities(ctx context.Context) error {
 func (b *Botanist) generateGenericTokenKubeconfig(ctx context.Context) error {
 	contextName := b.Shoot.ControlPlaneNamespace
 	kubeAPIServerAddress := b.Shoot.ComputeInClusterAPIServerAddress(true)
-	if features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) && v1beta1helper.IsShootIstioTLSTerminationEnabled(b.Shoot.GetInfo()) {
+	if b.ShootUsesIstioTLSTermination() {
 		// Add the failure tolerance type to the context name if high availability is enabled. This ensures that the
 		// generic token kubeconfig changes when a shoot is upgraded from non-HA to HA. The generic token kubeconfig is
 		// updated that the control plane pods are restarted and get the updated hosts alias for the kube-apiserver domain.
@@ -506,47 +519,35 @@ func (b *Botanist) reconcileWildcardIngressCertificate(ctx context.Context) erro
 // DeployCloudProviderSecret creates or updates the cloud provider secret in the Shoot namespace
 // in the Seed cluster.
 func (b *Botanist) DeployCloudProviderSecret(ctx context.Context) error {
+	var data map[string][]byte
+
 	switch credentials := b.Shoot.Credentials.(type) {
 	case *securityv1alpha1.WorkloadIdentity:
-		shootInfo := b.Shoot.GetInfo()
-		shootMeta := securityv1alpha1.ContextObject{
-			APIVersion: shootInfo.GroupVersionKind().GroupVersion().String(),
-			Kind:       shootInfo.Kind,
-			Namespace:  ptr.To(shootInfo.Namespace),
-			Name:       shootInfo.Name,
-			UID:        shootInfo.UID,
-		}
-
-		secret, err := workloadidentity.NewSecret(
-			v1beta1constants.SecretNameCloudProvider,
-			b.Shoot.ControlPlaneNamespace,
-			workloadidentity.For(credentials.Name, credentials.Namespace, credentials.Spec.TargetSystem.Type),
-			workloadidentity.WithProviderConfig(credentials.Spec.TargetSystem.ProviderConfig),
-			workloadidentity.WithContextObject(shootMeta),
-			workloadidentity.WithLabels(map[string]string{v1beta1constants.GardenerPurpose: v1beta1constants.SecretNameCloudProvider}),
+		return workloadidentity.Deploy(
+			ctx, b.SeedClientSet.Client(), credentials, v1beta1constants.SecretNameCloudProvider, b.Shoot.ControlPlaneNamespace,
+			nil, map[string]string{v1beta1constants.GardenerPurpose: v1beta1constants.SecretNameCloudProvider},
+			b.Shoot.GetInfo(),
 		)
-		if err != nil {
-			return err
-		}
-		return secret.Reconcile(ctx, b.SeedClientSet.Client())
+	case *gardencorev1beta1.InternalSecret:
+		data = credentials.Data
 	case *corev1.Secret:
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      v1beta1constants.SecretNameCloudProvider,
-				Namespace: b.Shoot.ControlPlaneNamespace,
-			},
-		}
-		_, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.SeedClientSet.Client(), secret, func() error {
-			secret.Annotations = map[string]string{}
-			secret.Labels = map[string]string{
-				v1beta1constants.GardenerPurpose: v1beta1constants.SecretNameCloudProvider,
-			}
-			secret.Type = corev1.SecretTypeOpaque
-			secret.Data = credentials.Data
-			return nil
-		})
-		return err
+		data = credentials.Data
 	default:
-		return fmt.Errorf("unexpected type %T, should be either Secret or WorkloadIdentity", credentials)
+		return fmt.Errorf("unexpected type %T, should be either Secret, InternalSecret, or WorkloadIdentity", credentials)
 	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      v1beta1constants.SecretNameCloudProvider,
+			Namespace: b.Shoot.ControlPlaneNamespace,
+		},
+	}
+	_, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.SeedClientSet.Client(), secret, func() error {
+		secret.Annotations = map[string]string{}
+		secret.Labels = map[string]string{v1beta1constants.GardenerPurpose: v1beta1constants.SecretNameCloudProvider}
+		secret.Type = corev1.SecretTypeOpaque
+		secret.Data = data
+		return nil
+	})
+	return err
 }

@@ -11,7 +11,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/admissioncontroller/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission/auditpolicy"
 	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission/authenticationconfig"
 	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission/authorizationconfig"
@@ -22,8 +21,12 @@ import (
 	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission/resourcesize"
 	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission/seedrestriction"
 	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission/shootkubeconfigsecretref"
+	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission/shootrestriction"
 	"github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission/updaterestriction"
 	seedauthorizer "github.com/gardener/gardener/pkg/admissioncontroller/webhook/auth/seed"
+	shootauthorizer "github.com/gardener/gardener/pkg/admissioncontroller/webhook/auth/shoot"
+	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/admissioncontroller/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
 )
 
 // AddToManager adds all webhook handlers to the given manager.
@@ -32,6 +35,11 @@ func AddToManager(
 	mgr manager.Manager,
 	cfg *admissioncontrollerconfigv1alpha1.AdmissionControllerConfiguration,
 ) error {
+	clientSet, err := kubernetes.NewWithConfig(kubernetes.WithRESTConfig(mgr.GetConfig()))
+	if err != nil {
+		return fmt.Errorf("failed setting up Kubernetes client: %w", err)
+	}
+
 	if err := auditpolicy.AddToManager(mgr); err != nil {
 		return fmt.Errorf("failed adding %s webhook handler: %w", auditpolicy.HandlerName, err)
 	}
@@ -74,14 +82,17 @@ func AddToManager(
 	}
 
 	if err := (&resourcesize.Handler{
-		Logger: mgr.GetLogger().WithName("webhook").WithName(resourcesize.HandlerName),
-		Config: cfg.Server.ResourceAdmissionConfiguration,
+		Logger:     mgr.GetLogger().WithName("webhook").WithName(resourcesize.HandlerName),
+		Config:     cfg.Server.ResourceAdmissionConfiguration,
+		APIReader:  mgr.GetAPIReader(),
+		RESTMapper: mgr.GetRESTMapper(),
 	}).AddToManager(mgr); err != nil {
 		return fmt.Errorf("failed adding %s webhook handler: %w", resourcesize.HandlerName, err)
 	}
 
 	if err := (&seedauthorizer.Webhook{
-		Logger: mgr.GetLogger().WithName("webhook").WithName(seedauthorizer.HandlerName),
+		Logger:    mgr.GetLogger().WithName("webhook").WithName(seedauthorizer.HandlerName),
+		ClientSet: clientSet,
 	}).AddToManager(ctx, mgr, cfg.Server.EnableDebugHandlers); err != nil {
 		return fmt.Errorf("failed adding %s webhook handler: %w", seedauthorizer.HandlerName, err)
 	}
@@ -92,6 +103,21 @@ func AddToManager(
 		Decoder: admission.NewDecoder(mgr.GetScheme()),
 	}).AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed adding %s webhook handler: %w", seedrestriction.HandlerName, err)
+	}
+
+	if err := (&shootauthorizer.Webhook{
+		Logger:    mgr.GetLogger().WithName("webhook").WithName(shootauthorizer.HandlerName),
+		ClientSet: clientSet,
+	}).AddToManager(ctx, mgr, cfg.Server.EnableDebugHandlers); err != nil {
+		return fmt.Errorf("failed adding %s webhook handler: %w", shootauthorizer.HandlerName, err)
+	}
+
+	if err := (&shootrestriction.Handler{
+		Logger:  mgr.GetLogger().WithName("webhook").WithName(shootrestriction.HandlerName),
+		Client:  mgr.GetClient(),
+		Decoder: admission.NewDecoder(mgr.GetScheme()),
+	}).AddToManager(ctx, mgr); err != nil {
+		return fmt.Errorf("failed adding %s webhook handler: %w", shootrestriction.HandlerName, err)
 	}
 
 	if err := (&shootkubeconfigsecretref.Handler{

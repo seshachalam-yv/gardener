@@ -16,22 +16,24 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/extensions"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/workloadidentity"
 )
@@ -49,7 +51,7 @@ type Reconciler struct {
 	SeedClient      client.Client
 	Config          gardenletconfigv1alpha1.BackupBucketControllerConfiguration
 	Clock           clock.Clock
-	Recorder        record.EventRecorder
+	Recorder        events.EventRecorder
 	GardenNamespace string
 	SeedName        string
 
@@ -61,8 +63,7 @@ type Reconciler struct {
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
 
-	gardenCtx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
+	gardenCtx := ctx
 
 	seedCtx, cancel := controllerutils.GetChildReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
 	defer cancel()
@@ -110,14 +111,21 @@ func (r *Reconciler) reconcileBackupBucket(
 	backupCredentials, err := kubernetesutils.GetCredentialsByObjectReference(gardenCtx, r.GardenClient, *backupBucket.Spec.CredentialsRef)
 	if err != nil {
 		log.Error(err, "Failed to get backup credentials", "credentialsRef", backupBucket.Spec.CredentialsRef)
-		r.Recorder.Eventf(backupBucket, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, "Failed to get backup credentials from reference %v: %w", backupBucket.Spec.CredentialsRef, err)
+		r.Recorder.Eventf(backupBucket, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, "Failed to get backup credentials from reference %v: %w", backupBucket.Spec.CredentialsRef, err)
 		return err
 	}
 
-	if !controllerutil.ContainsFinalizer(backupCredentials, gardencorev1beta1.ExternalGardenerName) {
-		log.Info("Adding finalizer to backup credentials", "gvk", backupCredentials.GetObjectKind().GroupVersionKind().String(), "key", client.ObjectKeyFromObject(backupCredentials))
-		if err := controllerutils.AddFinalizers(gardenCtx, r.GardenClient, backupCredentials, gardencorev1beta1.ExternalGardenerName); err != nil {
+	if !controllerutil.ContainsFinalizer(backupCredentials, finalizerName) {
+		log.Info("Adding finalizer to backup credentials", "finalizer", finalizerName, "gvk", backupCredentials.GetObjectKind().GroupVersionKind().String(), "key", client.ObjectKeyFromObject(backupCredentials))
+		if err := controllerutils.AddFinalizers(gardenCtx, r.GardenClient, backupCredentials, finalizerName); err != nil {
 			return fmt.Errorf("failed to add finalizer to backup credentials: %w", err)
+		}
+	}
+	// TODO(dimityrmirchev): Remove this handling in a future release
+	if controllerutil.ContainsFinalizer(backupCredentials, gardencorev1beta1.ExternalGardenerName) {
+		log.Info("Removing finalizer from backup credentials", "finalizer", gardencorev1beta1.ExternalGardenerName, "gvk", backupCredentials.GetObjectKind().GroupVersionKind().String(), "key", client.ObjectKeyFromObject(backupCredentials))
+		if err := controllerutils.RemoveFinalizers(gardenCtx, r.GardenClient, backupCredentials, gardencorev1beta1.ExternalGardenerName); err != nil {
+			return fmt.Errorf("failed to remove finalizer from backup credentials: %w", err)
 		}
 	}
 
@@ -235,7 +243,7 @@ func (r *Reconciler) reconcileBackupBucket(
 			Description: lastObservedError.Error(),
 		}
 
-		r.Recorder.Event(backupBucket, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, reconcileErr.Description)
+		r.Recorder.Eventf(backupBucket, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, reconcileErr.Description)
 
 		if updateErr := r.updateBackupBucketStatusError(gardenCtx, backupBucket, reconcileErr.Description, reconcileErr); updateErr != nil {
 			return fmt.Errorf("could not update status after reconciliation error: %w", updateErr)
@@ -309,7 +317,7 @@ func (r *Reconciler) deleteBackupBucket(
 		}
 	} else if err == nil {
 		if lastError := extensionBackupBucket.Status.LastError; lastError != nil {
-			r.Recorder.Event(backupBucket, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, lastError.Description)
+			r.Recorder.Eventf(backupBucket, nil, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, gardencorev1beta1.EventActionDelete, lastError.Description)
 
 			if updateErr := r.updateBackupBucketStatusError(gardenCtx, backupBucket, lastError.Description+" Operation will be retried.", lastError); updateErr != nil {
 				return reconcile.Result{}, fmt.Errorf("could not update status after deletion error: %w", updateErr)
@@ -330,9 +338,14 @@ func (r *Reconciler) deleteBackupBucket(
 
 	log.Info("Successfully deleted")
 
-	if controllerutil.ContainsFinalizer(backupCredentials, gardencorev1beta1.ExternalGardenerName) {
-		log.Info("Removing finalizer from credentials", "gvk", backupCredentials.GetObjectKind().GroupVersionKind().String(), "credentials", client.ObjectKeyFromObject(backupCredentials))
-		if err := controllerutils.RemoveFinalizers(gardenCtx, r.GardenClient, backupCredentials, gardencorev1beta1.ExternalGardenerName); err != nil {
+	// TODO(dimityrmirchev): Remove the handling of gardencorev1beta1.ExternalGardenerName in a future release
+	if controllerutil.ContainsFinalizer(backupCredentials, gardencorev1beta1.ExternalGardenerName) || controllerutil.ContainsFinalizer(backupCredentials, finalizerName) {
+		log.Info("Removing finalizers from credentials",
+			"finalizers", []string{gardencorev1beta1.ExternalGardenerName, finalizerName},
+			"gvk", backupCredentials.GetObjectKind().GroupVersionKind().String(),
+			"credentials", client.ObjectKeyFromObject(backupCredentials),
+		)
+		if err := controllerutils.RemoveFinalizers(gardenCtx, r.GardenClient, backupCredentials, gardencorev1beta1.ExternalGardenerName, finalizerName); err != nil {
 			return reconcile.Result{}, fmt.Errorf("failed to remove finalizer from credentials: %w", err)
 		}
 	}
@@ -361,24 +374,16 @@ func (r *Reconciler) reconcileBackupBucketExtensionSecret(ctx context.Context, e
 	switch credentials := backupCredentials.(type) {
 	case *corev1.Secret:
 		_, err := controllerutils.GetAndCreateOrMergePatch(ctx, r.SeedClient, extensionSecret, func() error {
-			metav1.SetMetaDataAnnotation(&extensionSecret.ObjectMeta, v1beta1constants.GardenerTimestamp, now)
+			extensionSecret.Annotations = map[string]string{v1beta1constants.GardenerTimestamp: now}
+			extensionSecret.Labels = nil
 			extensionSecret.Data = credentials.Data
 			return nil
 		})
 		return err
 	case *securityv1alpha1.WorkloadIdentity:
-		s, err := workloadidentity.NewSecret(
-			extensionSecret.Name,
-			extensionSecret.Namespace,
-			workloadidentity.For(credentials.GetName(), credentials.GetNamespace(), credentials.Spec.TargetSystem.Type),
-			workloadidentity.WithProviderConfig(credentials.Spec.TargetSystem.ProviderConfig),
-			workloadidentity.WithContextObject(securityv1alpha1.ContextObject{APIVersion: backupBucket.APIVersion, Kind: backupBucket.Kind, Name: backupBucket.GetName(), UID: backupBucket.GetUID()}),
-			workloadidentity.WithAnnotations(map[string]string{v1beta1constants.GardenerTimestamp: now}),
+		return workloadidentity.Deploy(ctx, r.SeedClient, credentials, extensionSecret.Name, extensionSecret.Namespace,
+			map[string]string{v1beta1constants.GardenerTimestamp: now}, nil, backupBucket,
 		)
-		if err != nil {
-			return err
-		}
-		return s.Reconcile(ctx, r.SeedClient)
 	default:
 		return fmt.Errorf("unsupported credentials type GVK: %q", backupCredentials.GetObjectKind().GroupVersionKind().String())
 	}
@@ -522,10 +527,14 @@ func generateGeneratedBackupBucketSecretName(backupBucketName string) string {
 }
 
 func workloadIdentitySecretChanged(backupBucket *gardencorev1beta1.BackupBucket, secretToCompareTo *corev1.Secret, workloadIdentity *securityv1alpha1.WorkloadIdentity) (bool, error) {
+	gvk, err := apiutil.GVKForObject(backupBucket, kubernetes.GardenScheme)
+	if err != nil {
+		return false, err
+	}
 	opts := []workloadidentity.SecretOption{
 		workloadidentity.For(workloadIdentity.GetName(), workloadIdentity.GetNamespace(), workloadIdentity.Spec.TargetSystem.Type),
 		workloadidentity.WithProviderConfig(workloadIdentity.Spec.TargetSystem.ProviderConfig),
-		workloadidentity.WithContextObject(securityv1alpha1.ContextObject{APIVersion: backupBucket.APIVersion, Kind: backupBucket.Kind, Name: backupBucket.GetName(), UID: backupBucket.GetUID()}),
+		workloadidentity.WithContextObject(securityv1alpha1.ContextObject{APIVersion: gvk.GroupVersion().String(), Kind: gvk.Kind, Name: backupBucket.GetName(), UID: backupBucket.GetUID()}),
 	}
 	if val, ok := secretToCompareTo.Annotations[v1beta1constants.GardenerTimestamp]; ok {
 		opts = append(opts, workloadidentity.WithAnnotations(map[string]string{v1beta1constants.GardenerTimestamp: val}))

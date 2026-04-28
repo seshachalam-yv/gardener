@@ -7,6 +7,7 @@ package backupbucketscheck
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/clock"
@@ -14,12 +15,11 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/seed/utils"
-	"github.com/gardener/gardener/pkg/controllerutils"
 )
 
 // Reconciler reconciles Seeds and maintains the BackupBucketsReady condition according to the observed status of the
@@ -34,9 +34,6 @@ type Reconciler struct {
 // referencing BackupBuckets.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, r.Config.SyncPeriod.Duration)
-	defer cancel()
 
 	seed := &gardencorev1beta1.Seed{}
 	if err := r.Client.Get(ctx, req.NamespacedName, seed); err != nil {
@@ -73,11 +70,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	switch {
 	case len(erroneousBackupBuckets) > 0:
-		errorMsg := "The following BackupBuckets have issues:"
+		var errorMsg strings.Builder
+		errorMsg.WriteString("The following BackupBuckets have issues:")
 		for _, bb := range erroneousBackupBuckets {
-			errorMsg += fmt.Sprintf("\n* %s", bb)
+			fmt.Fprintf(&errorMsg, "\n* %s", bb)
 		}
-		conditionBackupBucketsReady = utils.SetToProgressingOrFalse(r.Clock, conditionThreshold, conditionBackupBucketsReady, "BackupBucketsError", errorMsg)
+		conditionBackupBucketsReady = utils.SetToProgressingOrFalse(r.Clock, conditionThreshold, conditionBackupBucketsReady, "BackupBucketsError", errorMsg.String())
 		if updateErr := utils.PatchSeedCondition(ctx, log, r.Client.Status(), seed, conditionBackupBucketsReady); updateErr != nil {
 			return reconcile.Result{}, updateErr
 		}

@@ -28,18 +28,18 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/secrets"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
@@ -164,7 +164,7 @@ func GetShootNameFromOwnerReferences(objectMeta metav1.Object) string {
 }
 
 // NodeLabelsForWorkerPool returns a combined map of all user-specified and gardener-managed node labels.
-func NodeLabelsForWorkerPool(workerPool gardencorev1beta1.Worker, nodeLocalDNSEnabled bool, gardenerNodeAgentSecretName string) map[string]string {
+func NodeLabelsForWorkerPool(workerPool gardencorev1beta1.Worker, nodeLocalDNSEnabled bool, gardenerNodeAgentSecretName, region string) map[string]string {
 	// copy worker pool labels map
 	labels := utils.MergeStringMaps(workerPool.Labels)
 	if labels == nil {
@@ -193,6 +193,10 @@ func NodeLabelsForWorkerPool(workerPool gardencorev1beta1.Worker, nodeLocalDNSEn
 				labels[key] = "true"
 			}
 		}
+	}
+
+	if region != "" {
+		labels[corev1.LabelTopologyRegion] = region
 	}
 
 	return labels
@@ -317,6 +321,7 @@ type AccessSecret struct {
 	targetSecretName        string
 	targetSecretNamespace   string
 	serviceAccountLabels    map[string]string
+	serviceAccountNamespace string
 }
 
 // NewShootAccessSecret returns a new AccessSecret object and initializes it with an empty corev1.Secret object
@@ -363,6 +368,14 @@ func (s *AccessSecret) WithServiceAccountLabels(labels map[string]string) *Acces
 	return s
 }
 
+// WithServiceAccountNamespace overrides the namespace of the ServiceAccount to be created. If empty, the
+// TokenRequestor's TargetNamespace is used (or kube-system for shoot class). Use this when the ServiceAccount must
+// live in a different namespace than the TokenRequestor's default TargetNamespace.
+func (s *AccessSecret) WithServiceAccountNamespace(namespace string) *AccessSecret {
+	s.serviceAccountNamespace = namespace
+	return s
+}
+
 // WithTokenExpirationDuration sets the tokenExpirationDuration field of the AccessSecret.
 func (s *AccessSecret) WithTokenExpirationDuration(duration string) *AccessSecret {
 	s.tokenExpirationDuration = duration
@@ -393,6 +406,8 @@ func (s *AccessSecret) Reconcile(ctx context.Context, c client.Client) error {
 
 		if s.Class == resourcesv1alpha1.ResourceManagerClassShoot {
 			metav1.SetMetaDataAnnotation(&s.Secret.ObjectMeta, resourcesv1alpha1.ServiceAccountNamespace, metav1.NamespaceSystem)
+		} else if s.serviceAccountNamespace != "" {
+			metav1.SetMetaDataAnnotation(&s.Secret.ObjectMeta, resourcesv1alpha1.ServiceAccountNamespace, s.serviceAccountNamespace)
 		}
 
 		if s.serviceAccountLabels != nil {
@@ -453,52 +468,68 @@ func (s *AccessSecret) Reconcile(ctx context.Context, c client.Client) error {
 // object. The access secret name must be the name of a secret containing a JWT token which should be used by the
 // kubeconfig. If the object has multiple containers then the default is to inject it into all of them. If it should
 // only be done for a selection of containers then their respective names must be provided.
+//
+// Function expects that the provided object type is one of:
+// *corev1.Pod, *appsv1.Deployment, *appsv1beta2.Deployment, *appsv1beta1.Deployment, *appsv1.StatefulSet, *appsv1beta2.StatefulSet,
+// *appsv1beta1.StatefulSet, *appsv1.DaemonSet, *appsv1beta2.DaemonSet, *batchv1.Job, *batchv1.CronJob, *batchv1beta1.CronJob,
 func InjectGenericKubeconfig(obj runtime.Object, genericKubeconfigName, accessSecretName string, containerNames ...string) error {
 	return injectGenericKubeconfig(obj, genericKubeconfigName, accessSecretName, "kubeconfig", VolumeMountPathGenericKubeconfig, containerNames...)
 }
 
-func injectGenericKubeconfig(obj runtime.Object, genericKubeconfigName, accessSecretName, volumeName, mountPath string, containerNames ...string) error {
-	var (
-		volume = corev1.Volume{
-			Name: volumeName,
-			VolumeSource: corev1.VolumeSource{
-				Projected: &corev1.ProjectedVolumeSource{
-					DefaultMode: ptr.To[int32](420),
-					Sources: []corev1.VolumeProjection{
-						{
-							Secret: &corev1.SecretProjection{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: genericKubeconfigName,
-								},
-								Items: []corev1.KeyToPath{{
-									Key:  secrets.DataKeyKubeconfig,
-									Path: secrets.DataKeyKubeconfig,
-								}},
-								Optional: ptr.To(false),
+// GenerateGenericKubeconfigVolume generates a volume for the generic kubeconfig. The volume will contain two
+// projected secrets:
+// - The generic kubeconfig secret with the key 'kubeconfig'.
+// - The access secret with the key 'token'.
+func GenerateGenericKubeconfigVolume(genericKubeconfigName, accessSecretName, volumeName string) corev1.Volume {
+	return corev1.Volume{
+		Name: volumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{
+				DefaultMode: ptr.To[int32](420),
+				Sources: []corev1.VolumeProjection{
+					{
+						Secret: &corev1.SecretProjection{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: genericKubeconfigName,
 							},
+							Items: []corev1.KeyToPath{{
+								Key:  secrets.DataKeyKubeconfig,
+								Path: secrets.DataKeyKubeconfig,
+							}},
+							Optional: ptr.To(false),
 						},
-						{
-							Secret: &corev1.SecretProjection{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: accessSecretName,
-								},
-								Items: []corev1.KeyToPath{{
-									Key:  resourcesv1alpha1.DataKeyToken,
-									Path: resourcesv1alpha1.DataKeyToken,
-								}},
-								Optional: ptr.To(false),
+					},
+					{
+						Secret: &corev1.SecretProjection{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: accessSecretName,
 							},
+							Items: []corev1.KeyToPath{{
+								Key:  resourcesv1alpha1.DataKeyToken,
+								Path: resourcesv1alpha1.DataKeyToken,
+							}},
+							Optional: ptr.To(false),
 						},
 					},
 				},
 			},
-		}
+		},
+	}
+}
 
-		volumeMount = corev1.VolumeMount{
-			Name:      volume.Name,
-			MountPath: mountPath,
-			ReadOnly:  true,
-		}
+// GenerateGenericKubeconfigVolumeMount generates a volume mount for the generic kubeconfig volume.
+func GenerateGenericKubeconfigVolumeMount(volumeName, mountPath string) corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      volumeName,
+		MountPath: mountPath,
+		ReadOnly:  true,
+	}
+}
+
+func injectGenericKubeconfig(obj runtime.Object, genericKubeconfigName, accessSecretName, volumeName, mountPath string, containerNames ...string) error {
+	var (
+		volume      = GenerateGenericKubeconfigVolume(genericKubeconfigName, accessSecretName, volumeName)
+		volumeMount = GenerateGenericKubeconfigVolumeMount(volumeName, mountPath)
 	)
 
 	return kubernetesutils.VisitPodSpec(obj, func(podSpec *corev1.PodSpec) {
@@ -571,14 +602,14 @@ func IsIncompleteDNSConfigError(err error) bool {
 // already contains "internal", the result is constructed as "<shootName>.<shootProject>.<internalDomain>."
 // In case it does not, the word "internal" will be appended, resulting in
 // "<shootName>.<shootProject>.internal.<internalDomain>".
-func ConstructInternalClusterDomain(shootName, shootProject string, internalDomain *Domain) string {
+func ConstructInternalClusterDomain(shootName, shootProject string, internalDomain *Domain) *string {
 	if internalDomain == nil {
-		return ""
+		return nil
 	}
 	if strings.Contains(internalDomain.Domain, InternalDomainKey) {
-		return fmt.Sprintf("%s.%s.%s", shootName, shootProject, internalDomain.Domain)
+		return ptr.To(fmt.Sprintf("%s.%s.%s", shootName, shootProject, internalDomain.Domain))
 	}
-	return fmt.Sprintf("%s.%s.%s.%s", shootName, shootProject, InternalDomainKey, internalDomain.Domain)
+	return ptr.To(fmt.Sprintf("%s.%s.%s.%s", shootName, shootProject, InternalDomainKey, internalDomain.Domain))
 }
 
 // ConstructExternalClusterDomain constructs the external Shoot cluster domain, i.e. the domain which will be put
@@ -606,30 +637,36 @@ func ConstructExternalDomain(ctx context.Context, c client.Reader, shoot *garden
 	)
 
 	switch {
+	case v1beta1helper.IsShootSelfHosted(shoot.Spec.Provider.Workers) && !v1beta1helper.HasManagedInfrastructure(shoot):
+		// For self-hosted shoots w/o managed infrastructure, the external domain is managed outside of Gardener, but
+		// must be specified in the Shoot resource. Therefore, we do not have to set any secret/zone data here.
+		// When removing the "unmanaged provider" (https://github.com/gardener/gardener/issues/12212), replace this value
+		// with a bool field on the Domain type that is considered by the NeedsExternalDNS func.
+		externalDomain.Provider = core.DNSUnmanaged
+
 	case defaultDomain != nil:
-		externalDomain.SecretData = defaultDomain.SecretData
+		externalDomain.Credentials = defaultDomain.Credentials
 		externalDomain.Provider = defaultDomain.Provider
 		externalDomain.Zone = defaultDomain.Zone
 
 	case primaryProvider != nil:
-		if primaryProvider.SecretName != nil {
-			secret := &corev1.Secret{}
-			if err := c.Get(ctx, client.ObjectKey{Namespace: shoot.Namespace, Name: *primaryProvider.SecretName}, secret); err != nil {
-				return nil, fmt.Errorf("could not get dns provider secret %q: %+v", *shoot.Spec.DNS.Providers[0].SecretName, err)
+		if primaryProvider.CredentialsRef != nil {
+			credentials, err := kubernetesutils.GetCredentialsByCrossVersionObjectReference(ctx, c, *primaryProvider.CredentialsRef, shoot.Namespace)
+			if err != nil {
+				return nil, fmt.Errorf("could not get dns provider credentials from reference %q: %w", primaryProvider.CredentialsRef.String(), err)
 			}
-			externalDomain.SecretData = secret.Data
+			externalDomain.Credentials = credentials
 		} else {
 			if shootCredentials == nil {
 				return nil, fmt.Errorf("default domain is not present, secret for primary dns provider is required")
 			}
 			switch creds := shootCredentials.(type) {
 			case *corev1.Secret:
-				externalDomain.SecretData = creds.Data
+				externalDomain.Credentials = creds
 			case *securityv1alpha1.WorkloadIdentity:
-				// TODO(dimityrmirchev): This code should eventually handle shoot credentials being of type WorkloadIdentity
-				return nil, fmt.Errorf("shoot credentials of type WorkloadIdentity cannot be used as domain secret")
+				externalDomain.Credentials = creds
 			default:
-				return nil, fmt.Errorf("unexpected shoot credentials type")
+				return nil, fmt.Errorf("unexpected shoot credentials type %T", creds)
 			}
 		}
 		if primaryProvider.Type != nil {
@@ -684,6 +721,9 @@ func ComputeRequiredExtensionsForShoot(shoot *gardencorev1beta1.Shoot, seed *gar
 				requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.ContainerRuntimeResource, cr.Type))
 			}
 		}
+		if pool.ControlPlane != nil && pool.ControlPlane.Exposure != nil {
+			requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.SelfHostedShootExposureResource, *pool.ControlPlane.Exposure.Extension.Type))
+		}
 	}
 
 	if shoot.Spec.DNS != nil {
@@ -700,46 +740,28 @@ func ComputeRequiredExtensionsForShoot(shoot *gardencorev1beta1.Shoot, seed *gar
 		requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.DNSRecordResource, internalDomain.Provider))
 	}
 
-	if externalDomain != nil && externalDomain.Provider != core.DNSUnmanaged {
+	if externalDomain != nil && externalDomain.Provider != core.DNSUnmanaged && externalDomain.Provider != "" {
 		requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.DNSRecordResource, externalDomain.Provider))
 	}
 
-	for extensionType := range ComputeEnabledTypesForKindExtension(shoot, controllerRegistrationList) {
+	for extensionType := range ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList) {
 		requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.ExtensionResource, extensionType))
 	}
 
 	return requiredExtensions
 }
 
-// ComputeEnabledTypesForKindExtension computes the enabled extension types for a given Shoot and ControllerRegistrationList.
+// ComputeEnabledTypesForKindExtensionShoot computes the enabled extension types for a given Shoot and ControllerRegistrationList.
 // It considers extensions explicitly enabled or disabled in the Shoot specification and those automatically enabled
 // based on the ControllerRegistration resources.
-func ComputeEnabledTypesForKindExtension(shoot *gardencorev1beta1.Shoot, controllerRegistrationList *gardencorev1beta1.ControllerRegistrationList) sets.Set[string] {
-	var (
-		enabledTypes  = sets.New[string]()
-		disabledTypes = sets.New[string]()
-	)
-
-	for _, extension := range shoot.Spec.Extensions {
-		if ptr.Deref(extension.Disabled, false) {
-			disabledTypes.Insert(extension.Type)
-		} else {
-			enabledTypes.Insert(extension.Type)
-		}
-	}
-
-	for _, controllerRegistration := range controllerRegistrationList.Items {
-		for _, resource := range controllerRegistration.Spec.Resources {
-			if extensionEnabledForCluster(gardencorev1beta1.ClusterTypeShoot, resource, disabledTypes) {
-				if v1beta1helper.IsWorkerless(shoot) && !ptr.Deref(resource.WorkerlessSupported, false) {
-					continue
-				}
-				enabledTypes.Insert(resource.Type)
-			}
-		}
-	}
-
-	return enabledTypes
+func ComputeEnabledTypesForKindExtensionShoot(shoot *gardencorev1beta1.Shoot, controllerRegistrationList *gardencorev1beta1.ControllerRegistrationList) sets.Set[string] {
+	return computeEnabledTypesForKindExtension(
+		gardencorev1beta1.ClusterTypeShoot,
+		shoot.Spec.Extensions,
+		controllerRegistrationList,
+		func(res gardencorev1beta1.ControllerResource) bool {
+			return !v1beta1helper.IsWorkerless(shoot) || ptr.Deref(res.WorkerlessSupported, false)
+		})
 }
 
 // ExtensionsID returns an identifier for the given extension kind/type.
@@ -761,9 +783,15 @@ func ComputeTechnicalID(projectName string, shoot *gardencorev1beta1.Shoot) stri
 	return fmt.Sprintf("%s-%s--%s", v1beta1constants.TechnicalIDPrefix, projectName, shoot.Name)
 }
 
-// IsShootNamespace returns true if the given namespace is a shoot namespace, i.e. it starts with the technical id prefix.
-func IsShootNamespace(namespace string) bool {
-	return strings.HasPrefix(namespace, v1beta1constants.TechnicalIDPrefix)
+// IsShootNamespace returns true if the given namespace is a shoot control plane namespace, i.e., if it has the
+// garden.cloud/role=shoot label.
+func IsShootNamespace(ctx context.Context, reader client.Reader, namespaceName string) (bool, error) {
+	namespace := &corev1.Namespace{}
+	if err := reader.Get(ctx, client.ObjectKey{Name: namespaceName}, namespace); err != nil {
+		return false, err
+	}
+
+	return namespace.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleShoot, nil
 }
 
 // GetShootConditionTypes returns all known shoot condition types.
@@ -921,10 +949,10 @@ func CalculateWorkerPoolHashForInPlaceUpdate(workerPoolName string, kubernetesVe
 
 	data = append(data, CalculateDataStringForKubeletConfiguration(kubeletConfig)...)
 
-	var result string
+	var result strings.Builder
 	for _, v := range data {
-		result += utils.ComputeSHA256Hex([]byte(v))
+		result.WriteString(utils.ComputeSHA256Hex([]byte(v)))
 	}
 
-	return utils.ComputeSHA256Hex([]byte(result))[:16], nil
+	return utils.ComputeSHA256Hex([]byte(result.String()))[:16], nil
 }

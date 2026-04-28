@@ -30,15 +30,21 @@ func ReconcileVPAForGardenerComponent(ctx context.Context, c client.Client, name
 			Name:       name,
 		}
 		vpa.Spec.UpdatePolicy = &vpaautoscalingv1.PodUpdatePolicy{
-			UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+			UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 		}
 		vpa.Spec.ResourcePolicy = &vpaautoscalingv1.PodResourcePolicy{
-			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-				ContainerName: name,
-				MinAllowed: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("200Mi"),
+			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+				{
+					ContainerName: name,
+					MinAllowed: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("200Mi"),
+					},
 				},
-			}},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+				},
+			},
 		}
 		return nil
 	})

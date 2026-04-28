@@ -63,6 +63,7 @@ var _ = Describe("PrometheusOperator", func() {
 		clusterRole           *rbacv1.ClusterRole
 		clusterRoleBinding    *rbacv1.ClusterRoleBinding
 		clusterRolePrometheus *rbacv1.ClusterRole
+		rolePrometheusShoot   *rbacv1.Role
 	)
 
 	BeforeEach(func() {
@@ -185,7 +186,7 @@ var _ = Describe("PrometheusOperator", func() {
 				},
 			},
 		}
-		vpaUpdateMode := vpaautoscalingv1.UpdateModeAuto
+		vpaUpdateMode := vpaautoscalingv1.UpdateModeRecreate
 		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "prometheus-operator",
@@ -204,10 +205,14 @@ var _ = Describe("PrometheusOperator", func() {
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 						{
-							ContainerName: "*",
+							ContainerName: "prometheus-operator",
 							MinAllowed: corev1.ResourceList{
 								corev1.ResourceMemory: resource.MustParse("100Mi"),
 							},
+						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},
@@ -345,6 +350,23 @@ var _ = Describe("PrometheusOperator", func() {
 				},
 			},
 		}
+		rolePrometheusShoot = &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "prometheus-shoot",
+				Namespace: namespace,
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{""},
+					Resources: []string{
+						"services",
+						"endpoints",
+						"pods",
+					},
+					Verbs: []string{"get", "list", "watch"},
+				},
+			},
+		}
 	})
 
 	JustBeforeEach(func() {
@@ -410,6 +432,7 @@ var _ = Describe("PrometheusOperator", func() {
 					clusterRole,
 					clusterRoleBinding,
 					clusterRolePrometheus,
+					rolePrometheusShoot,
 				))
 			})
 		})

@@ -19,6 +19,7 @@ import (
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
 	"github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
+	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
 	"github.com/gardener/gardener/pkg/features"
 )
 
@@ -34,6 +35,7 @@ type IngressGatewayValues struct {
 	Annotations                        map[string]string
 	Labels                             map[string]string
 	NetworkPolicyLabels                map[string]string
+	LoadBalancerClass                  *string
 	ExternalTrafficPolicy              *corev1.ServiceExternalTrafficPolicy
 	Image                              string
 	IstiodNamespace                    string
@@ -76,9 +78,25 @@ func (i *istiod) generateIstioIngressGatewayChart(ctx context.Context) (*chartre
 			}
 		}
 
+		vpaUpdateMode := "InPlaceOrRecreate"
+		if !features.DefaultFeatureGate.Enabled(features.VPAInPlaceUpdates) {
+			vpaUpdateMode = "Recreate"
+		}
+
 		cpuRequests := "300m"
+		hpaCPUAverageValue := "2"
 		if enableAPIServerTLSTermination {
-			cpuRequests = "500m"
+			cpuRequests = "1"
+			hpaCPUAverageValue = "4"
+		}
+
+		httpProxy := map[string]any{
+			"enabled": istioIngressGateway.VPNEnabled,
+			"legacyPort": map[string]any{
+				"enabled": true,
+				"port":    vpnseedserver.GatewayPort,
+				"header":  "Reversed-VPN",
+			},
 		}
 
 		values := map[string]any{
@@ -86,6 +104,7 @@ func (i *istiod) generateIstioIngressGatewayChart(ctx context.Context) (*chartre
 			"labels":                             istioIngressGateway.Labels,
 			"networkPolicyLabels":                istioIngressGateway.NetworkPolicyLabels,
 			"annotations":                        istioIngressGateway.Annotations,
+			"loadBalancerClass":                  istioIngressGateway.LoadBalancerClass,
 			"externalTrafficPolicy":              istioIngressGateway.ExternalTrafficPolicy,
 			"dualStack":                          istioIngressGateway.DualStack,
 			"deployNamespace":                    false,
@@ -98,15 +117,15 @@ func (i *istiod) generateIstioIngressGatewayChart(ctx context.Context) (*chartre
 			"internalServiceName":                v1beta1constants.InternalSNIIngressServiceName,
 			"terminateLoadBalancerProxyProtocol": istioIngressGateway.TerminateLoadBalancerProxyProtocol,
 			"terminateAPIServerTLS":              enableAPIServerTLSTermination,
-			"vpn": map[string]any{
-				"enabled": istioIngressGateway.VPNEnabled,
-			},
-			"enforceSpreadAcrossHosts":                  istioIngressGateway.EnforceSpreadAcrossHosts,
-			"apiServerRequestHeaderUserName":            kubeapiserverconstants.RequestHeaderUserName,
-			"apiServerRequestHeaderGroup":               kubeapiserverconstants.RequestHeaderGroup,
+			"httpProxy":                          httpProxy,
+			"enforceSpreadAcrossHosts":           istioIngressGateway.EnforceSpreadAcrossHosts,
+			"apiServerRequestHeaderUserName":     kubeapiserverconstants.RequestHeaderUserName,
+			"apiServerRequestHeaderGroup":        kubeapiserverconstants.RequestHeaderGroup,
 			"apiServerAuthenticationDynamicMetadataKey": apiserverexposure.AuthenticationDynamicMetadataKey,
-			"cpuRequests":                               cpuRequests,
-			"kubernetesVersion":                         istioIngressGateway.KubernetesVersion,
+			"cpuRequests":        cpuRequests,
+			"hpaCPUAverageValue": hpaCPUAverageValue,
+			"vpaUpdateMode":      vpaUpdateMode,
+			"kubernetesVersion":  istioIngressGateway.KubernetesVersion,
 		}
 
 		if istioIngressGateway.MinReplicas != nil {

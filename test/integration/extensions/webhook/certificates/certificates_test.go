@@ -40,6 +40,7 @@ import (
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/utils"
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
@@ -225,14 +226,14 @@ var _ = Describe("Certificates tests", func() {
 				switchOptions = extensionscmdwebhook.NewSwitchOptions(
 					extensionscmdwebhook.Switch(shootMutatingWebhookName, newShootMutatingWebhook),
 				)
-				webhookOptions = extensionscmdwebhook.NewAddToManagerOptions(extensionName, shootWebhookManagedResourceName, shootNamespaceSelector, serverOptions, switchOptions)
+				webhookOptions = extensionscmdwebhook.NewAddToManagerOptions(extensionName, shootWebhookManagedResourceName, shootNamespaceSelector, nil, serverOptions, switchOptions)
 			)
 
 			shootWebhookConfig.ValidatingWebhookConfig = nil
 			Expect(webhookOptions.Complete()).To(Succeed())
 			webhookConfig := webhookOptions.Completed()
 			webhookConfig.Clock = fakeClock
-			atomicShootWebhookConfig, err = webhookConfig.AddToManager(ctx, mgr, nil, false)
+			atomicShootWebhookConfig, err = webhookConfig.AddToManager(ctx, mgr, nil)
 			Expect(err).NotTo(HaveOccurred())
 
 			defaultServer, ok = mgr.GetWebhookServer().(*webhook.DefaultServer)
@@ -371,7 +372,7 @@ var _ = Describe("Certificates tests", func() {
 						Name:      "gardener-extension-" + extensionName,
 						Namespace: extensionNamespace.Name,
 						Path:      ptr.To("/" + seedWebhookPath),
-						Port:      ptr.To[int32](443),
+						Port:      ptr.To[int32](12345),
 					},
 				},
 				Rules: []admissionregistrationv1.RuleWithOperations{
@@ -421,13 +422,13 @@ var _ = Describe("Certificates tests", func() {
 					extensionscmdwebhook.Switch(shootMutatingWebhookName, newShootMutatingWebhook),
 					extensionscmdwebhook.Switch(shootValidatingWebhookName, newShootValidatingWebhook),
 				)
-				webhookOptions = extensionscmdwebhook.NewAddToManagerOptions(extensionName, shootWebhookManagedResourceName, shootNamespaceSelector, serverOptions, switchOptions)
+				webhookOptions = extensionscmdwebhook.NewAddToManagerOptions(extensionName, shootWebhookManagedResourceName, shootNamespaceSelector, nil, serverOptions, switchOptions)
 			)
 
 			Expect(webhookOptions.Complete()).To(Succeed())
 			webhookConfig := webhookOptions.Completed()
 			webhookConfig.Clock = fakeClock
-			atomicShootWebhookConfig, err = webhookConfig.AddToManager(ctx, mgr, nil, false)
+			atomicShootWebhookConfig, err = webhookConfig.AddToManager(ctx, mgr, nil)
 			Expect(err).NotTo(HaveOccurred())
 
 			defaultServer, ok = mgr.GetWebhookServer().(*webhook.DefaultServer)
@@ -539,6 +540,36 @@ var _ = Describe("Certificates tests", func() {
 					g.Expect(err).NotTo(HaveOccurred())
 					return serverKey1
 				}).Should(Not(BeEmpty()))
+
+				By("Duplicating certificate secret")
+				Eventually(func(g Gomega) {
+					secretList := &corev1.SecretList{}
+					g.Expect(mgr.GetClient().List(ctx, secretList, client.InNamespace(extensionNamespace.Name), client.MatchingLabels{"name": extensionName + "-webhook-server"})).To(Succeed())
+					g.Expect(secretList.Items).To(HaveLen(1))
+				}).Should(Succeed())
+
+				secretList := &corev1.SecretList{}
+				Expect(testClient.List(ctx, secretList, client.InNamespace(extensionNamespace.Name), client.MatchingLabels{"name": extensionName + "-webhook-server"})).To(Succeed())
+				Expect(secretList.Items).To(HaveLen(1))
+
+				// Create a copy of the existing secret with a new name.
+				// This simulates the presence of an older secret that hasn't been cleaned up yet - see https://github.com/gardener/gardener/pull/12852
+				certSecret := secretList.Items[0]
+				certSecret.Name = certSecret.Name + "-new"
+				certSecret.ResourceVersion = ""
+				certSecret.Finalizers = append(certSecret.Finalizers, "dummy/finalizer")
+				Expect(testClient.Create(ctx, &certSecret)).To(Succeed())
+
+				DeferCleanup(func() {
+					Expect(controllerutils.RemoveAllFinalizers(ctx, testClient, &certSecret)).To(Succeed())
+					Expect(testClient.Delete(ctx, &certSecret)).To(Or(Succeed(), BeNotFoundError()))
+				})
+
+				Eventually(func(g Gomega) {
+					secretList := &corev1.SecretList{}
+					g.Expect(mgr.GetClient().List(ctx, secretList, client.InNamespace(extensionNamespace.Name), client.MatchingLabels{"name": extensionName + "-webhook-server"})).To(Succeed())
+					g.Expect(secretList.Items).To(HaveLen(2))
+				}).Should(Succeed())
 
 				By("Retrieve CA bundle again (after validity has expired)")
 				fakeClock.Step(30 * 24 * time.Hour)

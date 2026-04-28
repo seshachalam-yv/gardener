@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+sortOptions:
+  order: fifo
+
+resources:
+- ../../base
+
+components:
+- ../../../../gardenconfig/components/credentials/secret-project-garden-with-kind-kubeconfig
+
+patches:
+- path: patch-shoot-managed-infra.yaml
+- target:
+    kind: Shoot
+  patch: |
+    - op: add
+      path: /spec/provider/workers/0/machine/image/version
+      value: 1.0.0
+    - op: add
+      path: /spec/provider/workers/1/machine/image/version
+      value: 1.0.0
+# TODO: Add once implemented in provider local
+#    - op: add
+#      path: /spec/provider/workers/0/controlPlane/exposure
+#      value:
+#        extension: {}

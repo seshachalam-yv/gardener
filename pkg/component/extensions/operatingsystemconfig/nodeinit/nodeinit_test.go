@@ -6,19 +6,21 @@ package nodeinit_test
 
 import (
 	"context"
+	"fmt"
 	"unicode/utf8"
 
 	"github.com/Masterminds/semver/v3"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/component-base/version"
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/extensions/pkg/controller/operatingsystemconfig"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	. "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/nodeinit"
 	nodeagentcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/nodeagent"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 )
 
@@ -62,6 +64,8 @@ RestartSec=5
 StartLimitBurst=0
 EnvironmentFile=/etc/environment
 ExecStart=/var/lib/gardener-node-agent/init.sh
+StandardOutput=journal+console
+StandardError=journal+console
 [Install]
 WantedBy=multi-user.target`),
 					FilePaths: []string{"/var/lib/gardener-node-agent/init.sh"},
@@ -78,7 +82,7 @@ WantedBy=multi-user.target`),
 						},
 					},
 					extensionsv1alpha1.File{
-						Path:        "/var/lib/gardener-node-agent/config.yaml",
+						Path:        fmt.Sprintf("/var/lib/gardener-node-agent/config-%s.yaml", version.Get().GitVersion),
 						Permissions: ptr.To[uint32](0600),
 						Content: extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Encoding: "b64", Data: utils.EncodeBase64([]byte(`apiServer:
   caBundle: ` + utils.EncodeBase64(caBundle) + `
@@ -97,8 +101,6 @@ controllers:
     secretName: ` + oscSecretName + `
   token:
     syncPeriod: 12h0m0s
-featureGates:
-  NodeAgentAuthorizer: true
 kind: NodeAgentConfiguration
 logFormat: ""
 logLevel: ""
@@ -125,7 +127,12 @@ unmount() {
 trap unmount EXIT
 
 echo "> Pull gardener-node-agent image and mount it to the temporary directory"
-ctr images pull --hosts-dir "/etc/containerd/certs.d" "` + image + `"
+CTR_MAJOR=$(ctr version | grep Version | tail -n1 | awk '{print $2}' | cut -d '.' -f 1 | sed 's/[a-zA-Z]//g')
+CTR_EXTRA_ARGS=""
+if [ "$CTR_MAJOR" -gt 1 ]; then
+    CTR_EXTRA_ARGS="--skip-metadata"
+fi
+ctr images pull $CTR_EXTRA_ARGS --hosts-dir "/etc/containerd/certs.d" "` + image + `"
 ctr images mount "` + image + `" "$tmp_dir"
 
 echo "> Copy gardener-node-agent binary to host (/opt/bin) and make it executable"
@@ -134,7 +141,7 @@ cp -f "$tmp_dir/gardener-node-agent" "/opt/bin" || cp -f "$tmp_dir/ko-app/garden
 chmod +x "/opt/bin/gardener-node-agent"
 
 echo "> Bootstrap gardener-node-agent"
-exec "/opt/bin/gardener-node-agent" bootstrap --config="/var/lib/gardener-node-agent/config.yaml"
+exec "/opt/bin/gardener-node-agent" bootstrap --config-dir="/var/lib/gardener-node-agent"
 `)),
 							},
 						},
@@ -175,7 +182,7 @@ exec "/opt/bin/gardener-node-agent" bootstrap --config="/var/lib/gardener-node-a
 				_, files, err := Config(worker, image, config)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(files).To(ContainElement(extensionsv1alpha1.File{
-					Path:        "/var/lib/gardener-node-agent/config.yaml",
+					Path:        fmt.Sprintf("/var/lib/gardener-node-agent/config-%s.yaml", version.Get().GitVersion),
 					Permissions: ptr.To[uint32](0600),
 					Content: extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Encoding: "b64", Data: utils.EncodeBase64([]byte(`apiServer:
   caBundle: ` + utils.EncodeBase64(caBundle) + `
@@ -195,8 +202,6 @@ controllers:
     secretName: ` + oscSecretName + `
   token:
     syncPeriod: 12h0m0s
-featureGates:
-  NodeAgentAuthorizer: true
 kind: NodeAgentConfiguration
 logFormat: ""
 logLevel: ""

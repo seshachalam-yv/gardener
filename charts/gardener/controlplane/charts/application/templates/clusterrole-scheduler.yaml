@@ -14,12 +14,13 @@ metadata:
   labels:
     app: gardener
     role: scheduler
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
 - apiGroups:
   - ""
+  - events.k8s.io
   resources:
   - events
   verbs:
@@ -42,6 +43,7 @@ rules:
   - core.gardener.cloud
   resources:
   - seeds
+  - projects
   - cloudprofiles
   - namespacedcloudprofiles
   verbs:

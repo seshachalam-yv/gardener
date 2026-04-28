@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
@@ -254,11 +255,12 @@ func MapStringBoolToCommandLineParameter(m map[string]bool, param string) string
 
 	slices.Sort(keys)
 
-	out := param
+	var out strings.Builder
+	out.WriteString(param)
 	for _, key := range keys {
-		out += fmt.Sprintf("%s=%s,", key, strconv.FormatBool(m[key]))
+		fmt.Fprintf(&out, "%s=%s,", key, strconv.FormatBool(m[key]))
 	}
-	return strings.TrimSuffix(out, ",")
+	return strings.TrimSuffix(out.String(), ",")
 }
 
 // ReconcileServicePorts reconciles the existing service ports with the desired ports. This means that it takes the
@@ -405,13 +407,13 @@ func translateMicroTimestampSince(timestamp metav1.MicroTime) string {
 
 // MergeOwnerReferences merges the newReferences with the list of existing references.
 func MergeOwnerReferences(references []metav1.OwnerReference, newReferences ...metav1.OwnerReference) []metav1.OwnerReference {
-	uids := make(map[types.UID]struct{})
+	uids := sets.New[types.UID]()
 	for _, reference := range references {
-		uids[reference.UID] = struct{}{}
+		uids.Insert(reference.UID)
 	}
 
 	for _, newReference := range newReferences {
-		if _, ok := uids[newReference.UID]; !ok {
+		if !uids.Has(newReference.UID) {
 			references = append(references, newReference)
 		}
 	}

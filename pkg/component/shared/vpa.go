@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,12 +26,13 @@ func NewVerticalPodAutoscaler(
 	gardenNamespaceName string,
 	runtimeVersion *semver.Version,
 	secretsManager secretsmanager.Interface,
-	enabled bool,
+	maxAllowed corev1.ResourceList,
 	secretNameServerCA string,
 	priorityClassNameAdmissionController string,
 	priorityClassNameRecommender string,
 	priorityClassNameUpdater string,
 	isGardenCluster bool,
+	featureGates map[string]bool,
 ) (
 	component.DeployWaiter,
 	error,
@@ -57,7 +59,6 @@ func NewVerticalPodAutoscaler(
 		vpa.Values{
 			ClusterType:              component.ClusterTypeSeed,
 			IsGardenCluster:          isGardenCluster,
-			Enabled:                  enabled,
 			SecretNameServerCA:       secretNameServerCA,
 			RuntimeKubernetesVersion: runtimeVersion,
 			AdmissionController: vpa.ValuesAdmissionController{
@@ -68,6 +69,7 @@ func NewVerticalPodAutoscaler(
 				Image:                        imageRecommender.String(),
 				PriorityClassName:            priorityClassNameRecommender,
 				RecommendationMarginFraction: ptr.To(float64(0.05)),
+				MaxAllowed:                   maxAllowed,
 			},
 			Updater: vpa.ValuesUpdater{
 				EvictionTolerance:      ptr.To(float64(1.0)),
@@ -75,6 +77,7 @@ func NewVerticalPodAutoscaler(
 				Image:                  imageUpdater.String(),
 				PriorityClassName:      priorityClassNameUpdater,
 			},
+			FeatureGates: featureGates,
 		},
 	), nil
 }

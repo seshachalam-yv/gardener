@@ -116,7 +116,7 @@ var _ = Describe("Virtual", func() {
 				},
 				{
 					APIGroups: []string{"certificates.k8s.io"},
-					Resources: []string{"certificatesigningrequests/seedclient"},
+					Resources: []string{"certificatesigningrequests/seedclient", "certificatesigningrequests/shootclient"},
 					Verbs:     []string{"create"},
 				},
 			},
@@ -168,15 +168,19 @@ var _ = Describe("Virtual", func() {
 			},
 			Rules: []rbacv1.PolicyRule{
 				{
+					APIGroups: []string{"core.gardener.cloud"},
+					Resources: []string{"*"},
+					Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update", "manage-members", "modify-spec-tolerations-whitelist", "modify-spec-kubernetes", "modify-spec-machineimages", "modify-spec-providerconfig", "mark-self-hosted"},
+				},
+				{
 					APIGroups: []string{
-						"core.gardener.cloud",
 						"seedmanagement.gardener.cloud",
 						"dashboard.gardener.cloud",
 						"settings.gardener.cloud",
 						"operations.gardener.cloud",
 					},
 					Resources: []string{"*"},
-					Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update", "manage-members", "modify-spec-tolerations-whitelist", "modify-spec-kubernetes", "modify-spec-machineimages", "modify-spec-providerconfig"},
+					Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update"},
 				},
 				{
 					APIGroups: []string{"security.gardener.cloud"},
@@ -187,7 +191,12 @@ var _ = Describe("Virtual", func() {
 				},
 				{
 					APIGroups: []string{""},
-					Resources: []string{"events", "namespaces", "resourcequotas"},
+					Resources: []string{"events", "namespaces", "resourcequotas", "services", "endpoints"},
+					Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update"},
+				},
+				{
+					APIGroups: []string{"discovery.k8s.io"},
+					Resources: []string{"endpointslices"},
 					Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update"},
 				},
 				{
@@ -293,7 +302,12 @@ var _ = Describe("Virtual", func() {
 				},
 				{
 					APIGroups: []string{""},
-					Resources: []string{"events", "namespaces", "resourcequotas"},
+					Resources: []string{"events", "namespaces", "resourcequotas", "services", "endpoints"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+				{
+					APIGroups: []string{"discovery.k8s.io"},
+					Resources: []string{"endpointslices"},
 					Verbs:     []string{"get", "list", "watch"},
 				},
 				{
@@ -488,6 +502,11 @@ var _ = Describe("Virtual", func() {
 						"shoots/viewerkubeconfig",
 					},
 					Verbs: []string{"create"},
+				},
+				{
+					APIGroups: []string{gardencorev1beta1.GroupName},
+					Resources: []string{"shoots/finalizers"},
+					Verbs:     []string{"update"},
 				},
 				{
 					APIGroups: []string{"core.gardener.cloud"},

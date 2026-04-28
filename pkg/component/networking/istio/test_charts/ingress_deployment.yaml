@@ -4,7 +4,7 @@ metadata:
   name: istio-ingressgateway
   namespace: test-ingress
   labels:
-    app.kubernetes.io/version: 1.25.1
+    app.kubernetes.io/version: 1.27.1
     app: istio-ingressgateway
     foo: bar
 spec:
@@ -29,10 +29,13 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
         proxy.istio.io/config: |-
-          concurrency: 4
           protocolDetectionTimeout: 100ms
           runtimeValues:
             "overload.global_downstream_max_connections": "750000"
+            # Limits for mitigating HTTP/2 "Rapid Reset" DoS Vulnerability
+            # See also https://github.com/envoyproxy/envoy/security/advisories/GHSA-jhv4-f7mr-xx76
+            "overload.premature_reset_total_stream_count": "100"
+            "overload.premature_reset_min_stream_lifetime_seconds": "1"
     spec:
       serviceAccountName: istio-ingressgateway-service-account
       securityContext:
@@ -76,11 +79,7 @@ spec:
             requests:
               cpu: <CPU_REQUESTS>
               memory: 600Mi
-            limits:
-              memory: 4800Mi
           env:
-          - name: JWT_POLICY
-            value: third-party-jwt
           - name: PILOT_CERT_PROVIDER
             value: istiod
           - name: CA_ADDR

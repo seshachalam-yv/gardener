@@ -28,9 +28,11 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
+	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
 	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -43,8 +45,9 @@ const (
 	configMapName       = "apiserver-proxy-config"
 	name                = "apiserver-proxy"
 
-	adminPort           = 16910
+	// TODO(hown3d): Drop with RemoveHTTPProxyLegacyPort feature gate
 	proxySeedServerPort = 8132
+	adminPort           = 16910
 	portNameMetrics     = "metrics"
 
 	volumeNameConfig   = "proxy-config"
@@ -203,18 +206,25 @@ func (a *apiserverProxy) emptyScrapeConfig() *monitoringv1alpha1.ScrapeConfig {
 
 func (a *apiserverProxy) computeResourcesData() (map[string][]byte, error) {
 	var envoyYAML bytes.Buffer
-	reversedVPNHeaderValue := fmt.Sprintf("outbound|443||kube-apiserver.%s.svc.cluster.local", a.namespace)
+	gardenerDestinationHeaderValue := fmt.Sprintf("outbound|443||kube-apiserver.%s.svc.cluster.local", a.namespace)
 	if a.values.IstioTLSTermination {
-		reversedVPNHeaderValue = apiserverexposure.GetAPIServerProxyTargetClusterName(a.namespace)
+		gardenerDestinationHeaderValue = apiserverexposure.GetAPIServerProxyTargetClusterName(a.namespace)
+	}
+
+	seedServerPort := proxySeedServerPort
+	if features.DefaultFeatureGate.Enabled(features.UseUnifiedHTTPProxyPort) {
+		seedServerPort = vpnseedserver.HTTPProxyGatewayPort
 	}
 
 	if err := tplEnvoy.Execute(&envoyYAML, map[string]any{
-		"advertiseIPAddress":     a.values.advertiseIPAddress,
-		"dnsLookupFamily":        a.values.DNSLookupFamily,
-		"adminPort":              adminPort,
-		"proxySeedServerHost":    a.values.ProxySeedServerHost,
-		"proxySeedServerPort":    proxySeedServerPort,
-		"reversedVPNHeaderValue": reversedVPNHeaderValue,
+		"advertiseIPAddress":             a.values.advertiseIPAddress,
+		"dnsLookupFamily":                a.values.DNSLookupFamily,
+		"adminPort":                      adminPort,
+		"proxySeedServerHost":            a.values.ProxySeedServerHost,
+		"proxySeedServerPort":            seedServerPort,
+		"gardenerDestinationHeaderValue": gardenerDestinationHeaderValue,
+		// TODO(hown3d): Drop with RemoveHTTPProxyLegacyPort feature gate
+		"reversedVPNHeaderValue": gardenerDestinationHeaderValue,
 	}); err != nil {
 		return nil, err
 	}
@@ -320,9 +330,6 @@ func (a *apiserverProxy) computeResourcesData() (map[string][]byte, error) {
 										corev1.ResourceCPU:    resource.MustParse("20m"),
 										corev1.ResourceMemory: resource.MustParse("20Mi"),
 									},
-									Limits: corev1.ResourceList{
-										corev1.ResourceMemory: resource.MustParse("200Mi"),
-									},
 								},
 								SecurityContext: &corev1.SecurityContext{
 									AllowPrivilegeEscalation: ptr.To(false),
@@ -347,9 +354,6 @@ func (a *apiserverProxy) computeResourcesData() (map[string][]byte, error) {
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("5m"),
 										corev1.ResourceMemory: resource.MustParse("15Mi"),
-									},
-									Limits: corev1.ResourceList{
-										corev1.ResourceMemory: resource.MustParse("90Mi"),
 									},
 								},
 								SecurityContext: &corev1.SecurityContext{
@@ -377,9 +381,6 @@ func (a *apiserverProxy) computeResourcesData() (map[string][]byte, error) {
 									Requests: corev1.ResourceList{
 										corev1.ResourceCPU:    resource.MustParse("5m"),
 										corev1.ResourceMemory: resource.MustParse("30Mi"),
-									},
-									Limits: corev1.ResourceList{
-										corev1.ResourceMemory: resource.MustParse("1Gi"),
 									},
 								},
 								SecurityContext: &corev1.SecurityContext{

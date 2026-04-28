@@ -13,23 +13,38 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/features"
+	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
-var _ = Describe("CloudProfile controller tests", func() {
+var _ = DescribeTableSubtree("CloudProfile controller tests", func(isCapabilitiesCloudProfile bool) {
 	var (
 		cloudProfile *gardencorev1beta1.CloudProfile
 		shoot        *gardencorev1beta1.Shoot
 	)
 
 	BeforeEach(func() {
+		DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.CloudProfileCapabilities, true))
+		var CapabilityDefinition []gardencorev1beta1.CapabilityDefinition
+		if isCapabilitiesCloudProfile {
+			CapabilityDefinition = []gardencorev1beta1.CapabilityDefinition{
+				{
+					Name:   "architecture",
+					Values: []string{v1beta1constants.ArchitectureAMD64},
+				},
+			}
+		}
+
 		cloudProfile = &gardencorev1beta1.CloudProfile{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: testID + "-",
 				Labels:       map[string]string{testID: testRunID},
 			},
 			Spec: gardencorev1beta1.CloudProfileSpec{
-				Type: "some-provider",
+				MachineCapabilities: CapabilityDefinition,
+				Type:                "some-provider",
 				Kubernetes: gardencorev1beta1.KubernetesSettings{
 					Versions: []gardencorev1beta1.ExpirableVersion{{Version: "1.2.3"}},
 				},
@@ -91,7 +106,9 @@ var _ = Describe("CloudProfile controller tests", func() {
 		if shoot != nil {
 			By("Create Shoot")
 			shoot.Spec.CloudProfileName = &cloudProfile.Name
-			Expect(testClient.Create(ctx, shoot)).To(Succeed())
+			Eventually(func() error {
+				return testClient.Create(ctx, shoot)
+			}).Should(Succeed())
 			log.Info("Created shoot for test", "shoot", client.ObjectKeyFromObject(shoot))
 
 			By("Wait until manager has observed Shoot")
@@ -161,4 +178,7 @@ var _ = Describe("CloudProfile controller tests", func() {
 			}).Should(BeNotFoundError())
 		})
 	})
-})
+},
+	Entry("with capabilities in CloudProfile", true),
+	Entry("without capabilities in CloudProfile", false),
+)

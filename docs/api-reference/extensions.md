@@ -32,6 +32,8 @@ Resource Types:
 </li><li>
 <a href="#extensions.gardener.cloud/v1alpha1.OperatingSystemConfig">OperatingSystemConfig</a>
 </li><li>
+<a href="#extensions.gardener.cloud/v1alpha1.SelfHostedShootExposure">SelfHostedShootExposure</a>
+</li><li>
 <a href="#extensions.gardener.cloud/v1alpha1.Worker">Worker</a>
 </li></ul>
 <h3 id="extensions.gardener.cloud/v1alpha1.BackupBucket">BackupBucket
@@ -68,7 +70,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -125,7 +127,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -186,7 +188,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -269,7 +271,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -331,7 +333,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -452,7 +454,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -555,7 +557,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -674,7 +676,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -745,7 +747,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -806,7 +808,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -851,7 +853,7 @@ DefaultSpec
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -985,7 +987,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -1079,7 +1081,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -1136,7 +1138,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -1209,7 +1211,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -1340,7 +1342,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -1472,6 +1474,141 @@ OperatingSystemConfigStatus
 </tr>
 </tbody>
 </table>
+<h3 id="extensions.gardener.cloud/v1alpha1.SelfHostedShootExposure">SelfHostedShootExposure
+</h3>
+<p>
+<p>SelfHostedShootExposure contains the configuration for the exposure of a self-hosted shoot control plane.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>apiVersion</code></br>
+string</td>
+<td>
+<code>
+extensions.gardener.cloud/v1alpha1
+</code>
+</td>
+</tr>
+<tr>
+<td>
+<code>kind</code></br>
+string
+</td>
+<td><code>SelfHostedShootExposure</code></td>
+</tr>
+<tr>
+<td>
+<code>metadata</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
+Kubernetes meta/v1.ObjectMeta
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+Refer to the Kubernetes API documentation for the fields of the
+<code>metadata</code> field.
+</td>
+</tr>
+<tr>
+<td>
+<code>spec</code></br>
+<em>
+<a href="#extensions.gardener.cloud/v1alpha1.SelfHostedShootExposureSpec">
+SelfHostedShootExposureSpec
+</a>
+</em>
+</td>
+<td>
+<p>Specification of the SelfHostedShootExposure.
+If the object&rsquo;s deletion timestamp is set, this field is immutable.</p>
+<br/>
+<br/>
+<table>
+<tr>
+<td>
+<code>DefaultSpec</code></br>
+<em>
+<a href="#extensions.gardener.cloud/v1alpha1.DefaultSpec">
+DefaultSpec
+</a>
+</em>
+</td>
+<td>
+<p>
+(Members of <code>DefaultSpec</code> are embedded into this type.)
+</p>
+<p>DefaultSpec is a structure containing common fields used by all extension resources.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>credentialsRef</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectreference-v1-core">
+Kubernetes core/v1.ObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CredentialsRef is a reference to the cloud provider credentials.
+It is only set for shoots with managed infrastructure (i.e., if <code>Shoot.spec.{credentials,secret}BindingName</code> is set).</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>port</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<p>Port is the port number that should be exposed by the exposure mechanism.
+It is the port where the API server listens on the control plane nodes and the port on which the load balancer (or
+any other exposure mechanism) should listen on.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>endpoints</code></br>
+<em>
+<a href="#extensions.gardener.cloud/v1alpha1.ControlPlaneEndpoint">
+[]ControlPlaneEndpoint
+</a>
+</em>
+</td>
+<td>
+<p>Endpoints contains a list of healthy control plane nodes to expose.</p>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+<tr>
+<td>
+<code>status</code></br>
+<em>
+<a href="#extensions.gardener.cloud/v1alpha1.SelfHostedShootExposureStatus">
+SelfHostedShootExposureStatus
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="extensions.gardener.cloud/v1alpha1.Worker">Worker
 </h3>
 <p>
@@ -1506,7 +1643,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -1578,7 +1715,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -1678,7 +1815,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -1726,7 +1863,7 @@ DefaultStatus
 <td>
 <code>generatedSecretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -1813,7 +1950,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -1880,7 +2017,7 @@ DefaultStatus
 <td>
 <code>ipBlock</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#ipblock-v1-networking">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#ipblock-v1-networking">
 Kubernetes networking/v1.IPBlock
 </a>
 </em>
@@ -1989,7 +2126,7 @@ DefaultStatus
 <td>
 <code>ingress</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#loadbalanceringress-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#loadbalanceringress-v1-core">
 Kubernetes core/v1.LoadBalancerIngress
 </a>
 </em>
@@ -2022,7 +2159,7 @@ Kubernetes core/v1.LoadBalancerIngress
 <td>
 <code>lastInitiationTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>
@@ -2135,7 +2272,7 @@ config spec. It contains a reference to a secret as the result may contain confi
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -2191,7 +2328,7 @@ string
 <td>
 <code>scaleDownUnneededTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#duration-v1-meta">
 Kubernetes meta/v1.Duration
 </a>
 </em>
@@ -2205,7 +2342,7 @@ Kubernetes meta/v1.Duration
 <td>
 <code>scaleDownUnreadyTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#duration-v1-meta">
 Kubernetes meta/v1.Duration
 </a>
 </em>
@@ -2219,7 +2356,7 @@ Kubernetes meta/v1.Duration
 <td>
 <code>maxNodeProvisionTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#duration-v1-meta">
 Kubernetes meta/v1.Duration
 </a>
 </em>
@@ -2419,7 +2556,7 @@ This field is immutable.</p>
 <td>
 <code>selector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>
@@ -2488,6 +2625,49 @@ string
 </tr>
 </tbody>
 </table>
+<h3 id="extensions.gardener.cloud/v1alpha1.ControlPlaneEndpoint">ControlPlaneEndpoint
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#extensions.gardener.cloud/v1alpha1.SelfHostedShootExposureSpec">SelfHostedShootExposureSpec</a>)
+</p>
+<p>
+<p>ControlPlaneEndpoint is an endpoint that should be exposed.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>nodeName</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>NodeName is the name of the node to expose.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>addresses</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#nodeaddress-v1-core">
+[]Kubernetes core/v1.NodeAddress
+</a>
+</em>
+</td>
+<td>
+<p>Addresses is a list of addresses of type NodeAddress to expose.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="extensions.gardener.cloud/v1alpha1.ControlPlaneSpec">ControlPlaneSpec
 </h3>
 <p>
@@ -2551,7 +2731,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -2681,7 +2861,7 @@ DefaultSpec
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -2900,6 +3080,7 @@ bool
 <a href="#extensions.gardener.cloud/v1alpha1.InfrastructureSpec">InfrastructureSpec</a>, 
 <a href="#extensions.gardener.cloud/v1alpha1.NetworkSpec">NetworkSpec</a>, 
 <a href="#extensions.gardener.cloud/v1alpha1.OperatingSystemConfigSpec">OperatingSystemConfigSpec</a>, 
+<a href="#extensions.gardener.cloud/v1alpha1.SelfHostedShootExposureSpec">SelfHostedShootExposureSpec</a>, 
 <a href="#extensions.gardener.cloud/v1alpha1.WorkerSpec">WorkerSpec</a>)
 </p>
 <p>
@@ -2968,6 +3149,7 @@ k8s.io/apimachinery/pkg/runtime.RawExtension
 <a href="#extensions.gardener.cloud/v1alpha1.InfrastructureStatus">InfrastructureStatus</a>, 
 <a href="#extensions.gardener.cloud/v1alpha1.NetworkStatus">NetworkStatus</a>, 
 <a href="#extensions.gardener.cloud/v1alpha1.OperatingSystemConfigStatus">OperatingSystemConfigStatus</a>, 
+<a href="#extensions.gardener.cloud/v1alpha1.SelfHostedShootExposureStatus">SelfHostedShootExposureStatus</a>, 
 <a href="#extensions.gardener.cloud/v1alpha1.WorkerStatus">WorkerStatus</a>)
 </p>
 <p>
@@ -3252,6 +3434,20 @@ FileContent
 </td>
 <td>
 <p>Content describe the file&rsquo;s content.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>hostName</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>HostName contains the name of the host for host-specific configurations.
+If HostName is not empty the corresponding file will only be rolled out to the host with the specified name.
+Duplicate paths are only allowed if HostName is specified for all of them, none is nil and all values differ.</p>
 </td>
 </tr>
 </tbody>
@@ -3635,7 +3831,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -4039,7 +4235,7 @@ During dual-stack migration, this field may differ from the spec.</p>
 <td>
 <code>capacity</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#resourcelist-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#resourcelist-v1-core">
 Kubernetes core/v1.ResourceList
 </a>
 </em>
@@ -4052,7 +4248,7 @@ Kubernetes core/v1.ResourceList
 <td>
 <code>virtualCapacity</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#resourcelist-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#resourcelist-v1-core">
 Kubernetes core/v1.ResourceList
 </a>
 </em>
@@ -4503,6 +4699,7 @@ string
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Capabilities determine what operations a host is
 capable of performing. Defaults to
 - pull
@@ -4517,7 +4714,146 @@ capable of performing. Defaults to
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>CACerts are paths to public key certificates used for TLS.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>overridePath</code></br>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>OverridePath sets the &lsquo;override_path&rsquo; field to allow defining the API endpoint in the URL.
+See <a href="https://github.com/containerd/containerd/blob/cef8ce2ecb572bc8026323c0c3dfad9953b952f6/docs/hosts.md?override_path#override_path-field">https://github.com/containerd/containerd/blob/cef8ce2ecb572bc8026323c0c3dfad9953b952f6/docs/hosts.md?override_path#override_path-field</a> for more information.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="extensions.gardener.cloud/v1alpha1.SelfHostedShootExposureSpec">SelfHostedShootExposureSpec
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#extensions.gardener.cloud/v1alpha1.SelfHostedShootExposure">SelfHostedShootExposure</a>)
+</p>
+<p>
+<p>SelfHostedShootExposureSpec is the spec for an SelfHostedShootExposure resource.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>DefaultSpec</code></br>
+<em>
+<a href="#extensions.gardener.cloud/v1alpha1.DefaultSpec">
+DefaultSpec
+</a>
+</em>
+</td>
+<td>
+<p>
+(Members of <code>DefaultSpec</code> are embedded into this type.)
+</p>
+<p>DefaultSpec is a structure containing common fields used by all extension resources.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>credentialsRef</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectreference-v1-core">
+Kubernetes core/v1.ObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CredentialsRef is a reference to the cloud provider credentials.
+It is only set for shoots with managed infrastructure (i.e., if <code>Shoot.spec.{credentials,secret}BindingName</code> is set).</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>port</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<p>Port is the port number that should be exposed by the exposure mechanism.
+It is the port where the API server listens on the control plane nodes and the port on which the load balancer (or
+any other exposure mechanism) should listen on.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>endpoints</code></br>
+<em>
+<a href="#extensions.gardener.cloud/v1alpha1.ControlPlaneEndpoint">
+[]ControlPlaneEndpoint
+</a>
+</em>
+</td>
+<td>
+<p>Endpoints contains a list of healthy control plane nodes to expose.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="extensions.gardener.cloud/v1alpha1.SelfHostedShootExposureStatus">SelfHostedShootExposureStatus
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#extensions.gardener.cloud/v1alpha1.SelfHostedShootExposure">SelfHostedShootExposure</a>)
+</p>
+<p>
+<p>SelfHostedShootExposureStatus is the status for an SelfHostedShootExposure resource.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>DefaultStatus</code></br>
+<em>
+<a href="#extensions.gardener.cloud/v1alpha1.DefaultStatus">
+DefaultStatus
+</a>
+</em>
+</td>
+<td>
+<p>
+(Members of <code>DefaultStatus</code> are embedded into this type.)
+</p>
+<p>DefaultStatus is a structure containing common fields used by all extension resources.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>ingress</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#loadbalanceringress-v1-core">
+[]Kubernetes core/v1.LoadBalancerIngress
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Ingress is a list of endpoints of the exposure mechanism.</p>
 </td>
 </tr>
 </tbody>
@@ -4543,7 +4879,7 @@ capable of performing. Defaults to
 <td>
 <code>lastInitiationTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>
@@ -4828,7 +5164,7 @@ map[string]string
 <td>
 <code>taints</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#taint-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#taint-v1-core">
 []Kubernetes core/v1.Taint
 </a>
 </em>
@@ -4906,7 +5242,7 @@ k8s.io/apimachinery/pkg/runtime.RawExtension
 <td>
 <code>userDataSecretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretkeyselector-v1-core">
 Kubernetes core/v1.SecretKeySelector
 </a>
 </em>
@@ -5139,7 +5475,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#secretreference-v1-core">
 Kubernetes core/v1.SecretReference
 </a>
 </em>
@@ -5226,7 +5562,7 @@ the cluster-autoscaler properly.</p>
 <td>
 <code>machineDeploymentsLastUpdateTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>

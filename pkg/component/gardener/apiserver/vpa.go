@@ -28,7 +28,7 @@ func (g *gardenerAPIServer) verticalPodAutoscaler() *vpaautoscalingv1.VerticalPo
 				Name:       DeploymentName,
 			},
 			UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-				UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+				UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 			},
 			ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 				ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
@@ -43,6 +43,10 @@ func (g *gardenerAPIServer) verticalPodAutoscaler() *vpaautoscalingv1.VerticalPo
 							corev1.ResourceMemory: resource.MustParse("48G"),
 						},
 						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+					},
+					{
+						ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+						Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 					},
 				},
 			},

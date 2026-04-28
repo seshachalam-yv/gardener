@@ -6,15 +6,20 @@ package networkpolicy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,7 +32,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	"github.com/gardener/gardener/pkg/api/indexer"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/controllerutils"
 )
 
 // ControllerName is the name of the controller.
@@ -39,7 +46,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, targetCluster cluster.Clu
 		r.TargetClient = targetCluster.GetClient()
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor(ControllerName + "-controller")
+		r.Recorder = mgr.GetEventRecorder(ControllerName + "-controller")
 	}
 
 	for _, n := range r.Config.NamespaceSelectors {
@@ -66,11 +73,15 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, targetCluster cluster.Clu
 	namespace := &metav1.PartialObjectMetadata{}
 	namespace.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Namespace"))
 
+	pod := &metav1.PartialObjectMetadata{}
+	pod.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
 	c, err := builder.
 		ControllerManagedBy(mgr).
 		Named(ControllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
+			ReconciliationTimeout:   controllerutils.DefaultReconciliationTimeout,
 		}).
 		WatchesRawSource(source.Kind[client.Object](
 			targetCluster.GetCache(),
@@ -87,7 +98,13 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, targetCluster cluster.Clu
 		WatchesRawSource(source.Kind[client.Object](
 			targetCluster.GetCache(),
 			namespace,
-			handler.EnqueueRequestsFromMapFunc(r.MapToAllServices(mgr.GetLogger().WithValues("controller", ControllerName))),
+			r.EventHandlerForNamespace(mgr.GetLogger().WithValues("controller", ControllerName)),
+		)).
+		WatchesRawSource(source.Kind[client.Object](
+			targetCluster.GetCache(),
+			pod,
+			r.EventHandlerForPod(mgr.GetLogger().WithValues("controller", ControllerName)),
+			r.PodPredicate(),
 		)).
 		Build(r)
 	if err != nil {
@@ -189,24 +206,88 @@ func (r *Reconciler) MapNetworkPolicyToService(_ context.Context, obj client.Obj
 	}}}
 }
 
-// MapToAllServices is a handler.MapFunc for mapping a Namespace to all Services.
-func (r *Reconciler) MapToAllServices(log logr.Logger) handler.MapFunc {
-	return func(ctx context.Context, _ client.Object) []reconcile.Request {
-		serviceList := &metav1.PartialObjectMetadataList{}
-		serviceList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ServiceList"))
-		if err := r.TargetClient.List(ctx, serviceList); err != nil {
-			log.Error(err, "Failed to list services")
-			return nil
-		}
+// EventHandlerForNamespace returns an EventHandler that enqueues reconcile requests for Services
+// associated with the given Namespace object.
+func (r *Reconciler) EventHandlerForNamespace(log logr.Logger) handler.EventHandler {
+	return handler.Funcs{
+		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			r.requeueServicesForNamespace(ctx, e.Object, q, log)
+		},
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			if apiequality.Semantic.DeepEqual(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels()) {
+				return
+			}
 
-		var requests []reconcile.Request
+			requests := sets.New(r.getRelevantServiceForNamespace(ctx, e.ObjectOld, log)...).Union(sets.New(r.getRelevantServiceForNamespace(ctx, e.ObjectNew, log)...))
+			for req := range requests {
+				q.Add(req)
+			}
+		},
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			r.requeueServicesForNamespace(ctx, e.Object, q, log)
+		},
+		GenericFunc: func(ctx context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			r.requeueServicesForNamespace(ctx, e.Object, q, log)
+		},
+	}
+}
 
-		for _, service := range serviceList.Items {
-			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: service.Name, Namespace: service.Namespace}})
-		}
+// requeueServicesForNamespace is a helper to find and enqueue services that select a given namespace.
+func (r *Reconciler) requeueServicesForNamespace(ctx context.Context, namespace client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request], log logr.Logger) {
+	requests := r.getRelevantServiceForNamespace(ctx, namespace, log)
+	for _, request := range requests {
+		q.Add(request)
+	}
+}
 
+func (r *Reconciler) getRelevantServiceForNamespace(ctx context.Context, namespace client.Object, log logr.Logger) []reconcile.Request {
+	var requests []reconcile.Request
+
+	// Enqueue all services in the same namespace (uses the informer's built-in namespace index).
+	sameNsServiceList := &corev1.ServiceList{}
+	if err := r.TargetClient.List(ctx, sameNsServiceList, client.InNamespace(namespace.GetName())); err != nil {
+		log.Error(err, "Failed to list services in namespace", "namespace", namespace.GetName())
+		return nil
+	}
+	for _, service := range sameNsServiceList.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: service.Name, Namespace: service.Namespace}})
+	}
+
+	// Enqueue cross-namespace services that have namespace-selectors matching this namespace (uses the field index).
+	crossNsServiceList := &corev1.ServiceList{}
+	if err := r.TargetClient.List(ctx, crossNsServiceList, client.MatchingFields{indexer.ServiceNamespaceSelectors: "true"}); err != nil {
+		log.Error(err, "Failed to list services with namespace-selectors")
 		return requests
 	}
+
+	for _, service := range crossNsServiceList.Items {
+		if service.Namespace == namespace.GetName() {
+			continue
+		}
+
+		var namespaceSelectors []metav1.LabelSelector
+		if v, ok := service.Annotations[resourcesv1alpha1.NetworkingNamespaceSelectors]; ok {
+			if err := json.Unmarshal([]byte(v), &namespaceSelectors); err != nil {
+				log.Error(err, "Failed to parse NetworkingNamespaceSelectors", "service", service.Name)
+				continue
+			}
+		}
+
+		for _, namespaceSelector := range namespaceSelectors {
+			selector, err := metav1.LabelSelectorAsSelector(&namespaceSelector)
+			if err != nil {
+				log.Error(err, "Failed to convert LabelSelector", "service", service.Name)
+				continue
+			}
+
+			if selector.Matches(labels.Set(namespace.GetLabels())) {
+				requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: service.Name, Namespace: service.Namespace}})
+				break
+			}
+		}
+	}
+
+	return requests
 }
 
 // MapIngressToServices is a handler.MapFunc for mapping a Ingresses to all referenced services.
@@ -231,4 +312,129 @@ func (r *Reconciler) MapIngressToServices(_ context.Context, obj client.Object) 
 	}
 
 	return requests
+}
+
+// PodPredicate returns a predicate which filters for pods with `networking.resources.gardener.cloud/to-*` labels.
+func (r *Reconciler) PodPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return hasNetworkPolicyToLabels(e.Object.GetLabels())
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return !maps.Equal(getNetworkPolicyToLabels(e.ObjectOld.GetLabels()), getNetworkPolicyToLabels(e.ObjectNew.GetLabels()))
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return hasNetworkPolicyToLabels(e.Object.GetLabels())
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return hasNetworkPolicyToLabels(e.Object.GetLabels())
+		},
+	}
+}
+
+// EventHandlerForPod returns an EventHandler that tracks seen network policy label keys per
+// namespace, only enqueueing services when a namespace's key coverage changes.
+// This avoids redundant lookups during cache warmup where many pods per namespace would
+// trigger identical service mappings (cf. https://github.com/kubernetes-sigs/controller-runtime/issues/3466).
+// The event handler functions are called sequentially by the informer's processorListener
+// goroutine (cf. https://github.com/kubernetes/client-go/blob/v0.35.3/tools/cache/shared_informer.go),
+// so no synchronization is needed for the tracking map.
+func (r *Reconciler) EventHandlerForPod(log logr.Logger) handler.EventHandler {
+	var (
+		namespaceNameToPodLabelKeys = make(map[string]sets.Set[string])
+
+		enqueueForNamespace = func(ctx context.Context, namespaceName string, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			namespace := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: namespaceName}}
+			namespace.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Namespace"))
+			if err := r.TargetClient.Get(ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil {
+				log.Error(err, "Failed to get namespace for pod", "namespace", namespaceName)
+				return
+			}
+			r.requeueServicesForNamespace(ctx, namespace, q, log)
+		}
+
+		enqueueIfNewKeys = func(ctx context.Context, obj client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			var (
+				podKeys   = networkPolicyToLabelKeys(obj.GetLabels())
+				namespace = obj.GetNamespace()
+			)
+
+			existing := namespaceNameToPodLabelKeys[namespace]
+			if existing != nil && existing.HasAll(podKeys.UnsortedList()...) {
+				return
+			}
+
+			if existing == nil {
+				namespaceNameToPodLabelKeys[namespace] = podKeys
+			} else {
+				namespaceNameToPodLabelKeys[namespace] = existing.Union(podKeys)
+			}
+			enqueueForNamespace(ctx, namespace, q)
+		}
+	)
+
+	return handler.Funcs{
+		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueIfNewKeys(ctx, e.Object, q)
+		},
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			var (
+				oldKeys   = networkPolicyToLabelKeys(e.ObjectOld.GetLabels())
+				newKeys   = networkPolicyToLabelKeys(e.ObjectNew.GetLabels())
+				namespace = e.ObjectNew.GetNamespace()
+			)
+
+			existing := namespaceNameToPodLabelKeys[namespace]
+			if existing == nil {
+				existing = sets.New[string]()
+			}
+
+			namespaceNameToPodLabelKeys[namespace] = existing.Difference(oldKeys).Union(newKeys)
+			enqueueForNamespace(ctx, namespace, q)
+		},
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			var (
+				podKeys   = networkPolicyToLabelKeys(e.Object.GetLabels())
+				namespace = e.Object.GetNamespace()
+			)
+
+			if existing, ok := namespaceNameToPodLabelKeys[namespace]; ok {
+				namespaceNameToPodLabelKeys[namespace] = existing.Difference(podKeys)
+			}
+
+			enqueueForNamespace(ctx, namespace, q)
+		},
+		GenericFunc: func(ctx context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueueIfNewKeys(ctx, e.Object, q)
+		},
+	}
+}
+
+func hasNetworkPolicyToLabels(labels map[string]string) bool {
+	for k := range labels {
+		if strings.HasPrefix(k, resourcesv1alpha1.NetworkPolicyLabelKeyPrefix+"to-") {
+			return true
+		}
+	}
+	return false
+}
+
+func getNetworkPolicyToLabels(labels map[string]string) map[string]string {
+	result := make(map[string]string)
+	for k, v := range labels {
+		if strings.HasPrefix(k, resourcesv1alpha1.NetworkPolicyLabelKeyPrefix+"to-") {
+			result[k] = v
+		}
+	}
+	return result
+}
+
+func networkPolicyToLabelKeys(podLabels map[string]string) sets.Set[string] {
+	result := sets.New[string]()
+	for k := range podLabels {
+		if strings.HasPrefix(k, resourcesv1alpha1.NetworkPolicyLabelKeyPrefix+"to-") {
+			result.Insert(k)
+		}
+	}
+	return result
 }

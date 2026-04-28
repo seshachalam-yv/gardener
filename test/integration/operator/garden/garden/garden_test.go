@@ -18,11 +18,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientcmdlatest "k8s.io/client-go/tools/clientcmd/api/latest"
@@ -34,6 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/operator/v1alpha1"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
@@ -55,8 +55,6 @@ import (
 	"github.com/gardener/gardener/pkg/component/networking/nginxingress"
 	"github.com/gardener/gardener/pkg/component/shared"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/operator/apis/config/v1alpha1"
 	gardencontroller "github.com/gardener/gardener/pkg/operator/controller/garden/garden"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
@@ -162,10 +160,7 @@ var _ = Describe("Garden controller tests", func() {
 		Expect((&operationannotation.Reconciler{ForObject: func() client.Object { return &extensionsv1alpha1.Extension{} }}).AddToManager(mgr)).To(Succeed())
 
 		// Etcd and Extension CRDs are not available from the start, so we need to deploy them manually at first, so the operation annotation controllers can start.
-		mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{apiextensionsv1.SchemeGroupVersion})
-		mapper.Add(apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"), meta.RESTScopeRoot)
-		applier := kubernetes.NewApplier(testClient, mapper)
-		deployer, err := etcd.NewCRD(testClient, applier, semver.MustParse("1.30"))
+		deployer, err := etcd.NewCRD(testClient, semver.MustParse("1.30"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(component.OpWait(deployer).Deploy(ctx)).To(Succeed())
 
@@ -442,6 +437,7 @@ spec:
 		deployedCRDs := []string{
 			"etcds.druid.gardener.cloud",
 			"etcdcopybackupstasks.druid.gardener.cloud",
+			"etcdopstasks.druid.gardener.cloud",
 			"managedresources.resources.gardener.cloud",
 			"verticalpodautoscalers.autoscaling.k8s.io",
 			"verticalpodautoscalercheckpoints.autoscaling.k8s.io",
@@ -492,6 +488,14 @@ spec:
 			"perses.perses.dev",
 			"persesdashboards.perses.dev",
 			"persesdatasources.perses.dev",
+			"persesglobaldatasources.perses.dev",
+			// opentelemetry-operator
+			"instrumentations.opentelemetry.io",
+			"opampbridges.opentelemetry.io",
+			"opentelemetrycollectors.opentelemetry.io",
+			"targetallocators.opentelemetry.io",
+			// victoria-operator
+			"vlsingles.operator.victoriametrics.com",
 		}
 
 		By("Verify that the custom resource definitions have been created")
@@ -544,8 +548,11 @@ spec:
 		By("Verify that garden namespace was labeled and annotated appropriately")
 		Eventually(func(g Gomega) {
 			g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(testNamespace), testNamespace)).To(Succeed())
-			g.Expect(testNamespace.Labels).To(HaveKeyWithValue("pod-security.kubernetes.io/enforce", "privileged"))
-			g.Expect(testNamespace.Labels).To(HaveKeyWithValue("high-availability-config.resources.gardener.cloud/consider", "true"))
+			g.Expect(testNamespace.Labels).To(And(
+				HaveKeyWithValue("gardener.cloud/role", "garden"),
+				HaveKeyWithValue("pod-security.kubernetes.io/enforce", "privileged"),
+				HaveKeyWithValue("high-availability-config.resources.gardener.cloud/consider", "true"),
+			))
 			g.Expect(testNamespace.Annotations).To(HaveKeyWithValue("high-availability-config.resources.gardener.cloud/zones", "a,b,c"))
 		}).Should(Succeed())
 
@@ -583,6 +590,9 @@ spec:
 			"prometheus-operator",
 			"alertmanager-garden",
 			"perses-operator",
+			"opentelemetry-operator",
+			"opentelemetry-collector",
+			"victoria-operator",
 		))
 
 		By("Verify that the virtual garden control plane components have been deployed")
@@ -625,18 +635,29 @@ spec:
 		// no service controller or GRM running in this test which would make it ready, so let's fake this here.
 		By("Create and patch istio-ingress Service resource to report readiness")
 		var istioService *corev1.Service
+		var istioNamespace *corev1.Namespace
+
 		Eventually(func(g Gomega) {
+
+			istioNamespace = &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "virtual-garden-istio-ingress",
+				},
+			}
+
+			g.Expect(testClient.Create(ctx, istioNamespace)).To(Or(Succeed(), BeAlreadyExistsError()))
+
 			istioService = &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "istio-ingressgateway",
-					Namespace: "virtual-garden-istio-ingress",
+					Namespace: istioNamespace.Name,
 				},
 				Spec: corev1.ServiceSpec{
 					Type:  corev1.ServiceTypeLoadBalancer,
 					Ports: []corev1.ServicePort{{Protocol: corev1.ProtocolTCP, Port: 443}},
 				},
 			}
-			g.Expect(testClient.Create(ctx, istioService)).To(Succeed())
+			g.Expect(testClient.Create(ctx, istioService)).To(Or(Succeed(), BeAlreadyExistsError()))
 
 			patch := client.MergeFrom(istioService.DeepCopy())
 			istioService.Status.LoadBalancer.Ingress = append(istioService.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{Hostname: "localhost"})
@@ -644,7 +665,8 @@ spec:
 		}).Should(Succeed())
 
 		DeferCleanup(func() {
-			Expect(testClient.Delete(ctx, istioService)).To(Succeed())
+			Expect(testClient.Delete(ctx, istioService)).To(Or(Succeed()))
+			Expect(testClient.Delete(ctx, istioNamespace)).To(Or(Succeed()))
 		})
 
 		// The garden controller waits for the virtual-garden-kube-apiserver Deployment to be healthy, so let's fake
@@ -667,7 +689,7 @@ spec:
 
 			if desiredReplicas := int(ptr.Deref(deployment.Spec.Replicas, 1)); len(podList.Items) != desiredReplicas {
 				g.Expect(testClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(testNamespace.Name), client.MatchingLabels(kubeapiserver.GetLabels()))).To(Succeed())
-				for i := 0; i < desiredReplicas; i++ {
+				for i := range desiredReplicas {
 					g.Expect(testClient.Create(ctx, &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      fmt.Sprintf("virtual-garden-kube-apiserver-%d", i),
@@ -723,15 +745,6 @@ spec:
 			return test.ObjectNames(managedResourceList)
 		}).Should(ContainElements(
 			"shoot-core-gardener-resource-manager",
-		))
-
-		// The secret with the bootstrap certificate should be gone when virtual-garden-gardener-resource-manager was bootstrapped.
-		Eventually(func(g Gomega) []string {
-			secretList := &corev1.SecretList{}
-			g.Expect(testClient.List(ctx, secretList, client.InNamespace(testNamespace.Name))).To(Succeed())
-			return test.ObjectNames(secretList)
-		}).ShouldNot(ContainElement(
-			ContainSubstring("shoot-access-gardener-resource-manager-bootstrap-"),
 		))
 
 		// The garden controller waits for the virtual-garden-gardener-resource-manager Deployment to be healthy, so let's fake this here.
@@ -793,7 +806,7 @@ spec:
 
 			if desiredReplicas := int(ptr.Deref(deployment.Spec.Replicas, 1)); len(podList.Items) != desiredReplicas {
 				g.Expect(testClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(testNamespace.Name), client.MatchingLabels(map[string]string{"app": "kubernetes", "role": "controller-manager"}))).To(Succeed())
-				for i := 0; i < desiredReplicas; i++ {
+				for i := range desiredReplicas {
 					g.Expect(testClient.Create(ctx, &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      fmt.Sprintf("virtual-garden-kube-controller-manager-%d", i),

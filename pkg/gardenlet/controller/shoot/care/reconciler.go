@@ -13,19 +13,20 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardenlethelper "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	gardenlethelper "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -55,17 +56,14 @@ type Reconciler struct {
 	GardenClusterIdentity string
 	SeedName              string
 
-	gardenSecrets map[string]*corev1.Secret
+	gardenSecrets        map[string]*corev1.Secret
+	gardenInternalDomain *gardenerutils.Domain
+	gardenDefaultDomains []*gardenerutils.Domain
 }
 
 // Reconcile executes care operations, e.g. health checks or garbage collection.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	// Timeout for all calls (e.g. status updates), give status updates a bit of headroom if health checks
-	// themselves run into timeouts, so that we will still update the status with that timeout error.
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, r.Config.Controllers.ShootCare.SyncPeriod.Duration)
-	defer cancel()
 
 	shoot := &gardencorev1beta1.Shoot{}
 	if err := r.GardenClient.Get(ctx, req.NamespacedName, shoot); err != nil {
@@ -99,11 +97,48 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// Only read Garden secrets once because we don't rely on up-to-date secrets for health checks.
 	if r.gardenSecrets == nil {
-		secrets, err := gardenerutils.ReadGardenSecrets(careCtx, log, r.GardenClient, gardenerutils.ComputeGardenNamespace(*shoot.Status.SeedName), true)
+		seed := &gardencorev1beta1.Seed{ObjectMeta: metav1.ObjectMeta{
+			Name: r.SeedName,
+		}}
+
+		if err := r.GardenClient.Get(careCtx, client.ObjectKeyFromObject(seed), seed); err != nil {
+			return reconcile.Result{}, fmt.Errorf("error retrieving seed: %w", err)
+		}
+
+		secrets, err := gardenerutils.ReadGardenSecrets(
+			careCtx,
+			log,
+			r.GardenClient,
+			gardenerutils.ComputeGardenNamespace(*shoot.Status.SeedName),
+		)
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("error reading Garden secrets: %w", err)
 		}
+
+		internalDomain, err := gardenerutils.ReadGardenInternalDomain(
+			careCtx,
+			r.GardenClient,
+			gardenerutils.ComputeGardenNamespace(*shoot.Status.SeedName),
+			true,
+			seed.Spec.DNS.Internal,
+		)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("error reading Garden internal domain secret: %w", err)
+		}
+
+		defaultDomains, err := gardenerutils.ReadGardenDefaultDomains(
+			careCtx,
+			r.GardenClient,
+			gardenerutils.ComputeGardenNamespace(*shoot.Status.SeedName),
+			seed.Spec.DNS.Defaults,
+		)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("error reading Garden default domains: %w", err)
+		}
+
 		r.gardenSecrets = secrets
+		r.gardenInternalDomain = internalDomain
+		r.gardenDefaultDomains = defaultDomains
 	}
 
 	o, err := NewOperation(
@@ -116,6 +151,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		r.Identity,
 		r.GardenClusterIdentity,
 		r.gardenSecrets,
+		r.gardenInternalDomain,
+		r.gardenDefaultDomains,
 		shoot,
 	)
 	if err != nil {

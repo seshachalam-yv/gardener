@@ -11,16 +11,21 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	gomegatypes "github.com/onsi/gomega/types"
+	istionetworkingv1alpha3 "istio.io/api/networking/v1alpha3"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component/networking/istio"
 	. "github.com/gardener/gardener/pkg/component/shared"
+	"github.com/gardener/gardener/pkg/features"
+	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
 	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
 	"github.com/gardener/gardener/pkg/utils/test"
 )
@@ -36,6 +41,7 @@ type istioTestValues struct {
 	labels                             map[string]string
 	kubeAPIServerPolicyLabel           string
 	lbAnnotations                      map[string]string
+	loadBalancerClass                  *string
 	externalTrafficPolicy              *corev1.ServiceExternalTrafficPolicy
 	serviceExternalIP                  *string
 	servicePorts                       []corev1.ServicePort
@@ -67,6 +73,7 @@ func createIstio(testValues istioTestValues) istio.Interface {
 		testValues.labels,
 		testValues.kubeAPIServerPolicyLabel,
 		testValues.lbAnnotations,
+		testValues.loadBalancerClass,
 		testValues.externalTrafficPolicy,
 		testValues.serviceExternalIP,
 		testValues.servicePorts,
@@ -82,12 +89,9 @@ func createIstio(testValues istioTestValues) istio.Interface {
 }
 
 func checkIstio(istioDeploy istio.Interface, testValues istioTestValues) {
-	var minReplicas, maxReplicas *int
-
-	if zoneSize := len(testValues.zones); zoneSize > 1 {
-		minReplicas = ptr.To(zoneSize * 2)
-		maxReplicas = ptr.To(zoneSize * 6)
-	}
+	zoneSize := len(testValues.zones)
+	minReplicas := ptr.To(max(1, zoneSize) * 2)
+	maxReplicas := ptr.To(max(1, zoneSize) * 16)
 
 	networkPolicyLabels := map[string]string{
 		"networking.gardener.cloud/to-dns":                                     "allowed",
@@ -118,6 +122,7 @@ func checkIstio(istioDeploy istio.Interface, testValues istioTestValues) {
 				Image:                              testValues.ingressImageName,
 				IstiodNamespace:                    "istio-system",
 				Annotations:                        testValues.lbAnnotations,
+				LoadBalancerClass:                  testValues.loadBalancerClass,
 				ExternalTrafficPolicy:              testValues.externalTrafficPolicy,
 				MinReplicas:                        minReplicas,
 				MaxReplicas:                        maxReplicas,
@@ -142,27 +147,31 @@ func checkAdditionalIstioGateway(cl client.Client,
 	namespace string,
 	annotations map[string]string,
 	labels map[string]string,
+	loadBalancerClass *string,
 	externalTrafficPolicy *corev1.ServiceExternalTrafficPolicy,
 	serviceExternalIP *string,
 	zone *string,
 	dualstack bool) {
 	var (
 		zones                    []string
-		minReplicas              *int
-		maxReplicas              *int
 		enforceSpreadAcrossHosts bool
 		err                      error
 
 		ingressValues = istioDeploy.GetValues().IngressGateway
 	)
 
-	if zone == nil {
-		minReplicas = ingressValues[0].MinReplicas
-		maxReplicas = ingressValues[0].MaxReplicas
-	} else {
+	minReplicas := ingressValues[0].MinReplicas
+	maxReplicas := ingressValues[0].MaxReplicas
+
+	enforceSpreadAcrossHosts = ingressValues[0].EnforceSpreadAcrossHosts
+
+	if zone != nil {
 		zones = []string{*zone}
 
-		enforceSpreadAcrossHosts, err = ShouldEnforceSpreadAcrossHosts(context.Background(), cl, []string{*zone})
+		minReplicas = ptr.To(2)
+		maxReplicas = ptr.To(16)
+
+		enforceSpreadAcrossHosts, err = ShouldEnforceSpreadAcrossHosts(context.Background(), cl, zones)
 		Expect(err).ToNot(HaveOccurred())
 	}
 
@@ -171,6 +180,7 @@ func checkAdditionalIstioGateway(cl client.Client,
 		Image:                              ingressValues[0].Image,
 		IstiodNamespace:                    "istio-system",
 		Annotations:                        annotations,
+		LoadBalancerClass:                  loadBalancerClass,
 		ExternalTrafficPolicy:              externalTrafficPolicy,
 		MinReplicas:                        minReplicas,
 		MaxReplicas:                        maxReplicas,
@@ -199,6 +209,8 @@ var _ = Describe("Istio", func() {
 	)
 
 	BeforeEach(func() {
+		gardenletfeatures.RegisterFeatureGates()
+
 		zones = nil
 		istioDeploy = nil
 	})
@@ -216,6 +228,7 @@ var _ = Describe("Istio", func() {
 			labels:                             map[string]string{"some": "labelValue"},
 			kubeAPIServerPolicyLabel:           "to-all-test-kube-apiserver",
 			lbAnnotations:                      map[string]string{"some": "annotationValue"},
+			loadBalancerClass:                  ptr.To("non-default-load-balancer-class"),
 			externalTrafficPolicy:              &trafficPolicy,
 			serviceExternalIP:                  ptr.To("1.2.3.4"),
 			servicePorts:                       []corev1.ServicePort{{Port: 443}},
@@ -233,6 +246,16 @@ var _ = Describe("Istio", func() {
 		Context("with VPN enabled", func() {
 			BeforeEach(func() {
 				vpnEnabled = true
+			})
+
+			It("should successfully create a new Istio deployer", func() {
+				checkIstio(istioDeploy, testValues)
+			})
+		})
+
+		Context("with IstioTLSTermination enabled", func() {
+			BeforeEach(func() {
+				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.IstioTLSTermination, true))
 			})
 
 			It("should successfully create a new Istio deployer", func() {
@@ -314,6 +337,7 @@ var _ = Describe("Istio", func() {
 			namespace             string
 			annotations           map[string]string
 			labels                map[string]string
+			loadBalancerClass     *string
 			externalTrafficPolicy corev1.ServiceExternalTrafficPolicy
 			serviceExternalIP     *string
 			zone                  *string
@@ -327,6 +351,7 @@ var _ = Describe("Istio", func() {
 			labels = map[string]string{
 				"additional": "istio-ingress-label",
 			}
+			loadBalancerClass = ptr.To("non-default-load-balancer-class")
 			externalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster
 			serviceExternalIP = ptr.To("1.1.1.1")
 		})
@@ -341,6 +366,7 @@ var _ = Describe("Istio", func() {
 				namespace,
 				annotations,
 				labels,
+				loadBalancerClass,
 				&externalTrafficPolicy,
 				serviceExternalIP,
 				zone,
@@ -362,6 +388,7 @@ var _ = Describe("Istio", func() {
 					namespace,
 					annotations,
 					labels,
+					loadBalancerClass,
 					&externalTrafficPolicy,
 					serviceExternalIP,
 					zone,
@@ -375,6 +402,7 @@ var _ = Describe("Istio", func() {
 					namespace,
 					annotations,
 					labels,
+					loadBalancerClass,
 					&externalTrafficPolicy,
 					serviceExternalIP,
 					zone,
@@ -396,6 +424,7 @@ var _ = Describe("Istio", func() {
 					namespace,
 					annotations,
 					labels,
+					loadBalancerClass,
 					&externalTrafficPolicy,
 					serviceExternalIP,
 					zone,
@@ -409,6 +438,7 @@ var _ = Describe("Istio", func() {
 					namespace,
 					annotations,
 					labels,
+					loadBalancerClass,
 					&externalTrafficPolicy,
 					serviceExternalIP,
 					zone,
@@ -433,6 +463,7 @@ var _ = Describe("Istio", func() {
 						namespace,
 						annotations,
 						labels,
+						loadBalancerClass,
 						&externalTrafficPolicy,
 						serviceExternalIP,
 						zone,
@@ -446,6 +477,7 @@ var _ = Describe("Istio", func() {
 						namespace,
 						annotations,
 						labels,
+						loadBalancerClass,
 						&externalTrafficPolicy,
 						serviceExternalIP,
 						zone,
@@ -468,6 +500,7 @@ var _ = Describe("Istio", func() {
 					namespace,
 					annotations,
 					labels,
+					loadBalancerClass,
 					&externalTrafficPolicy,
 					serviceExternalIP,
 					zone,
@@ -481,6 +514,7 @@ var _ = Describe("Istio", func() {
 					namespace,
 					annotations,
 					labels,
+					loadBalancerClass,
 					&externalTrafficPolicy,
 					serviceExternalIP,
 					zone,
@@ -573,4 +607,143 @@ var _ = Describe("Istio", func() {
 			{ObjectMeta: metav1.ObjectMeta{Name: "node-3", Labels: map[string]string{"topology.kubernetes.io/zone": "z2"}}},
 		}, []string{"z3"}, false),
 	)
+
+	Describe("#AreZonalGatewaysInUse", func() {
+		var (
+			cl    client.Client
+			ctx   context.Context
+			zones []string
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			cl = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+			zones = []string{"zone-a", "zone-b", "zone-c"}
+		})
+
+		It("should return false when no gateways exist", func() {
+			inUse, err := AreZonalGatewaysInUse(ctx, cl, zones)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inUse).To(BeFalse())
+		})
+
+		It("should return false when only non-zonal gateways exist", func() {
+			gateway := &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      v1beta1constants.DeploymentNameKubeAPIServer,
+					Namespace: "shoot--project--test",
+				},
+				Spec: istionetworkingv1alpha3.Gateway{
+					Selector: map[string]string{
+						istio.DefaultZoneKey: "ingressgateway",
+					},
+				},
+			}
+			Expect(cl.Create(ctx, gateway)).To(Succeed())
+
+			inUse, err := AreZonalGatewaysInUse(ctx, cl, zones)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inUse).To(BeFalse())
+		})
+
+		It("should return false when gateway uses zonal ingress for different zone", func() {
+			gateway := &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      v1beta1constants.DeploymentNameKubeAPIServer,
+					Namespace: "shoot--project--test",
+				},
+				Spec: istionetworkingv1alpha3.Gateway{
+					Selector: map[string]string{
+						istio.DefaultZoneKey: "ingressgateway--zone--zone-x",
+					},
+				},
+			}
+			Expect(cl.Create(ctx, gateway)).To(Succeed())
+
+			inUse, err := AreZonalGatewaysInUse(ctx, cl, zones)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inUse).To(BeFalse())
+		})
+
+		It("should ignore non-shoot control plane gateways", func() {
+			gateway := &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gateway-test",
+					Namespace: "shoot--project--test",
+				},
+				Spec: istionetworkingv1alpha3.Gateway{
+					Selector: map[string]string{
+						istio.DefaultZoneKey: "ingressgateway--zone--zone-a",
+					},
+				},
+			}
+			Expect(cl.Create(ctx, gateway)).To(Succeed())
+
+			inUse, err := AreZonalGatewaysInUse(ctx, cl, zones)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inUse).To(BeFalse())
+		})
+
+		It("should return false when multiple non-zonal gateways exist", func() {
+			gateway1 := &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      v1beta1constants.DeploymentNameKubeAPIServer,
+					Namespace: "shoot--project--test",
+				},
+				Spec: istionetworkingv1alpha3.Gateway{
+					Selector: map[string]string{
+						istio.DefaultZoneKey: "ingressgateway",
+					},
+				},
+			}
+			gateway2 := &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      v1beta1constants.DeploymentNameVPNSeedServer,
+					Namespace: "shoot--project--test",
+				},
+				Spec: istionetworkingv1alpha3.Gateway{
+					Selector: map[string]string{
+						istio.DefaultZoneKey: "ingressgateway",
+					},
+				},
+			}
+			Expect(cl.Create(ctx, gateway1)).To(Succeed())
+			Expect(cl.Create(ctx, gateway2)).To(Succeed())
+
+			inUse, err := AreZonalGatewaysInUse(ctx, cl, zones)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inUse).To(BeFalse())
+		})
+
+		It("should return true when one gateway is zonal and one is not", func() {
+			gateway1 := &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      v1beta1constants.DeploymentNameKubeAPIServer,
+					Namespace: "shoot--project--test1",
+				},
+				Spec: istionetworkingv1alpha3.Gateway{
+					Selector: map[string]string{
+						istio.DefaultZoneKey: "ingressgateway--zone--zone-c",
+					},
+				},
+			}
+			gateway2 := &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      v1beta1constants.DeploymentNameKubeAPIServer,
+					Namespace: "shoot--project--test2",
+				},
+				Spec: istionetworkingv1alpha3.Gateway{
+					Selector: map[string]string{
+						istio.DefaultZoneKey: "ingressgateway",
+					},
+				},
+			}
+			Expect(cl.Create(ctx, gateway1)).To(Succeed())
+			Expect(cl.Create(ctx, gateway2)).To(Succeed())
+
+			inUse, err := AreZonalGatewaysInUse(ctx, cl, zones)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inUse).To(BeTrue())
+		})
+	})
 })

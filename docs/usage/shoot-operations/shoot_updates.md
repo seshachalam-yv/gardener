@@ -110,7 +110,7 @@ The complete list of fields that trigger a rolling update:
 * `.spec.provider.workers[].providerConfig` (provider extension dependent with feature gate `NewWorkerPoolHash`)
 * `.spec.provider.workers[].cri.name`
 * `.spec.provider.workers[].kubernetes.version` (except for patch version changes)
-* `.spec.systemComponents.nodeLocalDNS.enabled`
+* `.spec.systemComponents.nodeLocalDNS.enabled` (for Kubernetes version < 1.34 or if `kube-proxy` runs in `IPVS` mode)
 * `.status.credentials.rotation.certificateAuthorities.lastInitiationTime` (changed by Gardener when a shoot CA rotation is initiated) when worker pool is not part of `.status.credentials.rotation.certificateAuthorities.pendingWorkersRollouts[]`
 * `.status.credentials.rotation.serviceAccountKey.lastInitiationTime` (changed by Gardener when a shoot service account signing key rotation is initiated) when worker pool is not part of `.status.credentials.rotation.serviceAccountKey.pendingWorkersRollouts[]`
 
@@ -136,7 +136,7 @@ For scenarios where users want to retain the current nodes and avoid deletion du
 
 The existing workload is gracefully drained and evicted from the worker nodes, respecting the configured `PodDisruptionBudget`s (see [Specifying a Disruption Budget for your Application](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)).
 
-> ℹ️ Currently, `in-place` updates are controlled by the `InPlaceNodeUpdates` feature gate in the `gardener-apiserver`.
+> ℹ️ The `in-place` updates feature is controlled by the `InPlaceNodeUpdates` feature gate in the `gardener-apiserver`. This feature is currently in the `Alpha` stage and may introduce breaking changes in future releases. For more information, see [feature-usage](../../deployment/feature_gates.md).
 
 For in-place updates, the first requirement is that the operating system must support them. For a specific machine image version, the configuration for in-place updates must be defined in the `CloudProfile` under `spec.machineImages[].versions[].inPlaceUpdates`:
 - The `inPlaceUpdates.supported` field must be set to `true`.
@@ -154,6 +154,11 @@ machineImages:
 
 The `inPlaceUpdates` field in the Shoot status provides details about in-place updates for the Shoot workers. It includes the `pendingWorkerUpdates` field, which lists the worker pools that are awaiting in-place updates.
 
+⚠️ For worker pools using the `AutoInPlaceUpdate` or `ManualInPlaceUpdate` strategy, the following actions are not allowed (they are allowed with `AutoRollingUpdate`):
+
+* Skipping a minor version when upgrading the worker pool Kubernetes version (`.spec.provider.workers[].kubernetes.version`).
+* Downgrading the machine image version of the worker pool (`.spec.provider.workers[].machine.image.version`).
+
 #### Customize In-Place Update Behaviour of Shoot Worker Nodes
 
 In addition to customisable fields mentioned in [](#customize-rolling-update-behaviour-of-shoot-worker-nodes) section, you can configure the following fields in `.spec.provider.worker[].machineControllerManager`:
@@ -169,9 +174,9 @@ An in-place update of the shoot worker nodes is triggered for rolling update tri
 * `.spec.provider.workers[].volume.type`
 * `.spec.provider.workers[].volume.size`
 * `.spec.provider.workers[].cri.name`
-* `.spec.systemComponents.nodeLocalDNS.enabled`
+* `.spec.systemComponents.nodeLocalDNS.enabled` (for Kubernetes version < 1.34 or if `kube-proxy` runs in `IPVS` mode)
 
-> There are validations which restricts changing the above mentioned exception fields when `in-place` updates strategy is configured.
+> There are validations which restricts changing the above mentioned exception fields when an `in-place` update strategy is configured.
 
 When a worker pool is undergoing an in-place update, applying subsequent updates to the same worker pool is restricted.
 If an in-place update fails and nodes are left in a problematic state, user intervention is required to manually fix the nodes. In cases where a subsequent update is necessary to resolve the issue, users can update the worker pool after adding the force update annotation `gardener.cloud/operation=force-in-place-update` on the Shoot. Refer to [Force-update a worker pool with InPlace update strategy](shoot_operations.md#force-update-a-worker-pool-with-inplace-update-strategy) for more details.
@@ -200,15 +205,13 @@ The `inPlaceUpdates.pendingWorkerUpdates.autoInPlaceUpdate` field in the Shoot s
 #### Manual In-Place Updates
 
 The `ManualInPlaceUpdate` strategy allows users to control and orchestrate the update process manually.
-Set `.spec.provider.workers[].updateStrategy` field in the `Shoot` spec to `ManualInPlaceUpdate`.
+Set `.spec.provider.workers[].updateStrategy` field in the `Shoot` spec to `ManualInPlaceUpdate`. When doing this, do not set the `maxSurge` or `maxUnavailable` fields, as they do not apply to this update strategy.
 
 ```yaml
 spec:
   provider:
     workers:
     - name: cpu-worker
-      maxSurge: 0
-      maxUnavailable: 2
       updateStrategy: ManualInPlaceUpdate
 ```
 

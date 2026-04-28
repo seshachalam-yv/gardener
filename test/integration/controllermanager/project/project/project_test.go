@@ -70,6 +70,10 @@ var _ = Describe("Project controller tests", func() {
 							Maximum: 3,
 							Machine: gardencorev1beta1.Machine{
 								Type: "large",
+								Image: &gardencorev1beta1.ShootMachineImage{
+									Name:    "some-image",
+									Version: ptr.To("1.0.0"),
+								},
 							},
 						},
 					},
@@ -739,12 +743,6 @@ var _ = Describe("Project controller tests", func() {
 				updatedNamespacedCloudProfile.Spec.ProviderConfig = &runtime.RawExtension{Raw: []byte(`{"foo": "bar"}`)}
 				Expect(testUserClient.Update(ctx, updatedNamespacedCloudProfile)).To(BeForbiddenError())
 
-				By("Ensure admin without proper role cannot increase NamespacedCloudProfile.Spec.Limits above value from parent CloudProfile")
-				updatedNamespacedCloudProfile = namespacedCloudProfile.DeepCopy()
-				updatedNamespacedCloudProfile.Spec.Limits = &gardencorev1beta1.Limits{
-					MaxNodesTotal: ptr.To(int32(200)),
-				}
-				Expect(testUserClient.Update(ctx, updatedNamespacedCloudProfile)).To(BeForbiddenError())
 			})
 
 			It("should allow gardener operators to modify a project's NamespacedCloudProfiles including special fields", func() {
@@ -767,7 +765,6 @@ var _ = Describe("Project controller tests", func() {
 								"modify-spec-kubernetes",
 								"modify-spec-machineimages",
 								"modify-spec-providerconfig",
-								"raise-spec-limits",
 							},
 						},
 					},

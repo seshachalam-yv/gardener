@@ -28,11 +28,14 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
+	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
 	"github.com/gardener/gardener/pkg/utils/retry"
 	. "github.com/gardener/gardener/test/e2e/gardener"
+	"github.com/gardener/gardener/test/e2e/gardener/seed"
 	"github.com/gardener/gardener/test/utils/access"
 )
 
@@ -46,11 +49,11 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 
 		ItShouldWaitForShootToBeReconciledAndHealthy(shoot1)
 		ItShouldGetResponsibleSeed(shoot1)
-		ItShouldInitializeSeedClient(shoot1)
+		seed.ItShouldInitializeSeedClient(&shoot1.SeedContext)
 
 		ItShouldWaitForShootToBeReconciledAndHealthy(shoot2)
 		ItShouldGetResponsibleSeed(shoot2)
-		ItShouldInitializeSeedClient(shoot2)
+		seed.ItShouldInitializeSeedClient(&shoot2.SeedContext)
 
 		var shoot1Client, shoot2Client, shoot1TokenClient, shoot2TokenClient kubernetes.Interface
 
@@ -208,9 +211,9 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 				g.Expect(err).ToNot(HaveOccurred())
 			}).Should(Succeed())
 
-			Expect(selfSubjectReview.Status.UserInfo.Username).To(Equal("kubernetes-admin"))
+			// TODO(rfranzke): Remove the regexp once the non-gardener-operator-based local setup has been removed.
+			Expect(selfSubjectReview.Status.UserInfo.Username).To(MatchRegexp("^.*:(kubernetes-admin|admin-user)$"))
 			Expect(selfSubjectReview.Status.UserInfo.Groups).To(Equal([]string{"gardener.cloud:system:viewers", "system:authenticated"}))
-
 		})
 
 		ItShouldDeleteShoot(shoot1)
@@ -273,7 +276,13 @@ func copyRESTConfigAndInjectAuthorization(restConfig *rest.Config, authorization
 }
 
 func getAPIServerProxyClient(restConfig *rest.Config, targetShoot *gardencorev1beta1.Shoot) (client.Client, error) {
-	transport, err := newHTTPConnectTransport(restConfig, apiserverexposure.GetAPIServerProxyTargetClusterName(targetShoot.Status.TechnicalID))
+	proxyPort := vpnseedserver.GatewayPort
+	newHTTPProxyPortConstraint := v1beta1helper.GetCondition(targetShoot.Status.Constraints, gardencorev1beta1.ShootUsesUnifiedHTTPProxyPort)
+	if newHTTPProxyPortConstraint != nil && newHTTPProxyPortConstraint.Status == gardencorev1beta1.ConditionTrue {
+		proxyPort = vpnseedserver.HTTPProxyGatewayPort
+	}
+
+	transport, err := newHTTPConnectTransport(restConfig, apiserverexposure.GetAPIServerProxyTargetClusterName(targetShoot.Status.TechnicalID), proxyPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP connect transport: %w", err)
 	}
@@ -377,7 +386,7 @@ type httpConnectTransport struct {
 	bearerToken       string
 }
 
-func newHTTPConnectTransport(restConfig *rest.Config, targetCluster string) (*httpConnectTransport, error) {
+func newHTTPConnectTransport(restConfig *rest.Config, targetCluster string, proxyPort int) (*httpConnectTransport, error) {
 	proxyAddress := strings.Split(strings.TrimPrefix(restConfig.Host, "https://"), ":")[0]
 	connectAddress := strings.TrimPrefix(restConfig.Host, "https://") + ":443"
 
@@ -398,7 +407,7 @@ func newHTTPConnectTransport(restConfig *rest.Config, targetCluster string) (*ht
 	httpConnectClient := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				connection, err := net.DialTimeout("tcp", fmt.Sprintf("%s:8132", proxyAddress), 5*time.Second)
+				connection, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", proxyAddress, proxyPort), 5*time.Second)
 				if err != nil {
 					return nil, fmt.Errorf("failed to connect to proxy: %w", err)
 				}
@@ -409,7 +418,11 @@ func newHTTPConnectTransport(restConfig *rest.Config, targetCluster string) (*ht
 					Host:   connectAddress,
 					Header: http.Header{},
 				}
-				connectRequest.Header.Set("Reversed-VPN", targetCluster)
+				header := "Reversed-VPN"
+				if proxyPort == vpnseedserver.HTTPProxyGatewayPort {
+					header = "X-Gardener-Destination"
+				}
+				connectRequest.Header.Add(header, targetCluster)
 
 				if err := connectRequest.Write(connection); err != nil {
 					return nil, fmt.Errorf("failed sending HTTP CONNECT request: %w", err)
@@ -443,7 +456,7 @@ func (h *httpConnectTransport) RoundTrip(req *http.Request) (*http.Response, err
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", h.bearerToken))
 	}
 
-	return h.httpConnectClient.Do(req)
+	return h.httpConnectClient.Do(req) // #nosec: G704 -- Test code with controlled URLs.
 }
 
 type injectHeaderTransport struct {

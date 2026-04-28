@@ -16,10 +16,10 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 	"github.com/gardener/gardener/pkg/utils/gardener/shootstate"
 )
@@ -45,9 +45,6 @@ var (
 // cluster.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
 
 	shoot := &gardencorev1beta1.Shoot{}
 	if err := r.GardenClient.Get(ctx, request.NamespacedName, shoot); err != nil {
@@ -90,7 +87,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 	if nextBackupDue := lastBackup.Add(r.Config.SyncPeriod.Duration); nextBackupDue.Before(r.Clock.Now().UTC()) {
 		log.Info("Performing periodic ShootState backup", "lastBackup", lastBackup.Round(time.Minute), "nextBackupDue", nextBackupDue.Round(time.Minute))
-		if err := shootstate.Deploy(ctx, r.Clock, r.GardenClient, r.SeedClient, shoot, true); err != nil {
+		if err := shootstate.Deploy(ctx, r.Clock, r.GardenClient, r.SeedClient, shoot, v1beta1helper.ControlPlaneNamespaceForShoot(shoot), true); err != nil {
 			return reconcile.Result{}, fmt.Errorf("failed performing periodic ShootState backup: %w", err)
 		}
 		lastBackup = r.Clock.Now()

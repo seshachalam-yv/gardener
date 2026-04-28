@@ -20,11 +20,11 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/health/utils"
 	resourcemanagerpredicate "github.com/gardener/gardener/pkg/resourcemanager/predicate"
 )
@@ -46,12 +46,6 @@ type Reconciler struct {
 // Reconcile performs the health checks.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	// timeout for all calls (e.g. status updates), give status updates a bit of headroom if health checks
-	// themselves run into timeouts, so that we will still update the status with that timeout error
-	var cancel context.CancelFunc
-	ctx, cancel = controllerutils.GetMainReconciliationContext(ctx, r.Config.SyncPeriod.Duration)
-	defer cancel()
 
 	mr := &resourcesv1alpha1.ManagedResource{}
 	if err := r.SourceClient.Get(ctx, req.NamespacedName, mr); err != nil {

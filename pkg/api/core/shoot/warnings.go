@@ -9,14 +9,18 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 
+	"github.com/gardener/gardener/pkg/api/core/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	"github.com/gardener/gardener/pkg/apis/core/helper"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
-// GetWarnings returns warnings for the provided shoot.
+// GetWarnings returns warnings for the given Shoot.
 func GetWarnings(_ context.Context, shoot, oldShoot *core.Shoot, credentialsRotationInterval time.Duration) []string {
 	if shoot == nil {
 		return nil
@@ -36,12 +40,88 @@ func GetWarnings(_ context.Context, shoot, oldShoot *core.Shoot, credentialsRota
 		warnings = append(warnings, "you are setting the spec.kubernetes.kubeControllerManager.podEvictionTimeout field. The field does not have effect since Kubernetes 1.13 and is forbidden to be set starting from Kubernetes 1.33. Instead, use the spec.kubernetes.kubeAPIServer.(defaultNotReadyTolerationSeconds/defaultUnreachableTolerationSeconds) fields.")
 	}
 
-	if supportedVersion, _ := versionutils.CompareVersions(shoot.Spec.Kubernetes.Version, "<", "1.33"); supportedVersion && shoot.Spec.Kubernetes.ClusterAutoscaler != nil && shoot.Spec.Kubernetes.ClusterAutoscaler.MaxEmptyBulkDelete != nil {
-		warnings = append(warnings, "you are setting the spec.kubernetes.clusterAutoscaler.maxEmptyBulkDelete field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.33. Instead, use the spec.kubernetes.clusterAutoscaler.maxScaleDownParallelism field.")
+	// TODO(AleksandarSavchev): Remove this after support for Kubernetes v1.33 is dropped.
+	// We do not check for the Kubernetes version here because the shoot validation code is called before this
+	// and forbids setting the etcd encryption key rotation start and complete annotations for kubernetes >= v1.34.
+	if shoot.Annotations[v1beta1constants.GardenerOperation] == v1beta1constants.OperationRotateETCDEncryptionKeyStart || shoot.Annotations[v1beta1constants.GardenerOperation] == v1beta1constants.OperationRotateETCDEncryptionKeyComplete {
+		warnings = append(warnings, fmt.Sprintf("you are setting the operation annotation to %s. This annotation has been deprecated and is forbidden to be set starting from Kubernetes 1.34. Instead, use the %s annotation, which performs a full rotation of the ETCD encryption key.", shoot.Annotations[v1beta1constants.GardenerOperation], v1beta1constants.OperationRotateETCDEncryptionKey))
 	}
 
-	if helper.IsLegacyAnonymousAuthenticationSet(shoot.Spec.Kubernetes.KubeAPIServer) {
-		warnings = append(warnings, "you are setting the spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication field. The field is deprecated. Using Kubernetes v1.32 and above, please use anonymous authentication configuration. See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration")
+	if supportedVersion, _ := versionutils.CompareVersions(shoot.Spec.Kubernetes.Version, "<", "1.33"); supportedVersion && shoot.Spec.Kubernetes.ClusterAutoscaler != nil && shoot.Spec.Kubernetes.ClusterAutoscaler.MaxEmptyBulkDelete != nil {
+		warnings = append(warnings, "you are setting the spec.kubernetes.clusterAutoscaler.maxEmptyBulkDelete field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.33. The value is not used and will be set to nil. Instead, use the spec.kubernetes.clusterAutoscaler.maxScaleDownParallelism field.")
+	}
+
+	kubernetesVersion, err := semver.NewVersion(shoot.Spec.Kubernetes.Version)
+	if err == nil && versionutils.ConstraintK8sGreaterEqual133.Check(kubernetesVersion) && ptr.Deref(shoot.Spec.CloudProfileName, "") != "" {
+		warnings = append(warnings, "you are setting the spec.cloudProfileName field. The field is deprecated and will be forcefully set empty starting with Kubernetes 1.34. Use the new spec.cloudProfile.name field instead.")
+	}
+
+	if shoot.Spec.Addons != nil {
+		warnings = append(warnings, "you are setting the spec.addons field. The field is deprecated and will be forbidden starting with Kubernetes 1.35.")
+	}
+
+	if helper.IsKubeProxyIPVSMode(shoot.Spec.Kubernetes.KubeProxy) {
+		if err == nil && versionutils.ConstraintK8sGreaterEqual135.Check(kubernetesVersion) {
+			warnings = append(warnings, "you are using IPVS mode for kube-proxy. The IPVS mode is deprecated starting with Kubernetes 1.35. Please switch to iptables or nftables mode.")
+		} else if oldShoot != nil && !helper.IsKubeProxyIPVSMode(oldShoot.Spec.Kubernetes.KubeProxy) {
+			warnings = append(warnings, "you have switched to IPVS mode for kube-proxy. The IPVS mode is deprecated starting with Kubernetes 1.35. Please switch to iptables or nftables mode.")
+		}
+	}
+
+	if shoot.Spec.Kubernetes.KubeScheduler != nil && shoot.Spec.Kubernetes.KubeScheduler.KubeMaxPDVols != nil {
+		warnings = append(warnings, "you are setting the spec.kubernetes.kubeScheduler.kubeMaxPDVols field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.35. The kubeMaxPDVols configuration is no longer necessary as values are set by the respective CSI driver.")
+	}
+
+	if shoot.Spec.SecretBindingName != nil {
+		warnings = append(warnings, "spec.secretBindingName is deprecated and will be disallowed starting with Kubernetes 1.34. For migration instructions, see: https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/secretbinding-to-credentialsbinding-migration.md")
+	}
+
+	if kubeAPIServer := shoot.Spec.Kubernetes.KubeAPIServer; kubeAPIServer != nil {
+		path := field.NewPath("spec", "kubernetes", "kubeAPIServer")
+		warnings = append(warnings, GetKubeAPIServerWarnings(kubeAPIServer, path)...)
+	}
+
+	if shoot.Spec.DNS != nil {
+		warnings = append(warnings, GetDNSProviderWarnings(shoot.Spec.DNS, field.NewPath("spec", "dns"))...)
+	}
+
+	return warnings
+}
+
+// GetDNSProviderWarnings returns warnings for the given DNS configuration.
+func GetDNSProviderWarnings(dns *core.DNS, fldPath *field.Path) []string {
+	var warnings []string
+
+	for i, provider := range dns.Providers {
+		if provider.SecretName != nil {
+			providerPath := fldPath.Child("providers").Index(i)
+			warnings = append(warnings, fmt.Sprintf(
+				"you are setting the %s field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use %s instead.",
+				providerPath.Child("secretName").String(),
+				providerPath.Child("credentialsRef").String(),
+			))
+		}
+	}
+
+	return warnings
+}
+
+// GetKubeAPIServerWarnings returns warnings for the given KubeAPIServerConfig.
+func GetKubeAPIServerWarnings(kubeAPIServer *core.KubeAPIServerConfig, fldPath *field.Path) []string {
+	if kubeAPIServer == nil {
+		return nil
+	}
+
+	var warnings []string
+	if kubeAPIServer.EnableAnonymousAuthentication != nil {
+		warnings = append(warnings, fmt.Sprintf("you are setting the %s field. The field is deprecated. Using Kubernetes v1.32 and above, please use anonymous authentication configuration. See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration", fldPath.Child("enableAnonymousAuthentication").String()))
+	}
+	if kubeAPIServer.WatchCacheSizes != nil && kubeAPIServer.WatchCacheSizes.Default != nil {
+		warnings = append(warnings, fmt.Sprintf("you are setting the %s field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.35. The cache size is automatically sized by the kube-apiserver.", fldPath.Child("watchCacheSizes", "default").String()))
+	}
+	// TODO(ialidzhikov): Remove this in Gardener v1.142.0 when invalid event ttl values for existing Shoots are no longer accepted.
+	if kubeAPIServer.EventTTL != nil && kubeAPIServer.EventTTL.Duration > time.Hour*24 {
+		warnings = append(warnings, fmt.Sprintf("you are setting the %s field to an invalid value. Invalid value: '%s', valid values: [0, 24h]. Invalid values for existing resources will be no longer allowed in Gardener v1.142.0. See: https://github.com/gardener/gardener/issues/13825", fldPath.Child("eventTTL").String(), kubeAPIServer.EventTTL.Duration))
 	}
 
 	return warnings

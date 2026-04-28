@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestControllerRegistration(t *testing.T) {
+func TestExposureClass(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "ControllerManager Controller ExposureClass Suite")
 }

@@ -20,13 +20,11 @@ import (
 	"k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
-	"k8s.io/utils/ptr"
 
+	"github.com/gardener/gardener/pkg/api/core/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	"github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
-	gardencorev1beta1listers "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
 	plugin "github.com/gardener/gardener/plugin/pkg"
 )
 
@@ -47,9 +45,10 @@ const (
 	// CustomVerbNamespacedCloudProfileModifyProviderConfig is a constant for the custom verb that allows modifying the
 	// `.spec.providerConfig` field in `NamespacedCloudProfile` resources.
 	CustomVerbNamespacedCloudProfileModifyProviderConfig = "modify-spec-providerconfig"
-	// CustomVerbNamespacedCloudProfileRaiseLimits is a constant for the custom verb that allows raising the
-	// `.spec.limits` limits in `NamespacedCloudProfile` resources above values defined in the parent `CloudProfile`.
-	CustomVerbNamespacedCloudProfileRaiseLimits = "raise-spec-limits"
+
+	// CustomVerbShootMarkSelfHosted is a constant for the custom verb that allows setting the
+	// `.spec.provider.workers[].controlPlane` field in the `Shoot` spec which marks it as 'self-hosted shoot cluster'.
+	CustomVerbShootMarkSelfHosted = "mark-self-hosted"
 )
 
 // Register registers a plugin.
@@ -66,9 +65,8 @@ func NewFactory(_ io.Reader) (admission.Interface, error) {
 type CustomVerbAuthorizer struct {
 	*admission.Handler
 
-	cloudProfileLister gardencorev1beta1listers.CloudProfileLister
-	authorizer         authorizer.Authorizer
-	readyFunc          admission.ReadyFunc
+	authorizer authorizer.Authorizer
+	readyFunc  admission.ReadyFunc
 }
 
 var (
@@ -93,7 +91,6 @@ func (c *CustomVerbAuthorizer) AssignReadyFunc(f admission.ReadyFunc) {
 // SetCoreInformerFactory gets Lister from SharedInformerFactory.
 func (c *CustomVerbAuthorizer) SetCoreInformerFactory(f gardencoreinformers.SharedInformerFactory) {
 	cloudProfileInformer := f.Core().V1beta1().CloudProfiles()
-	c.cloudProfileLister = cloudProfileInformer.Lister()
 
 	readyFuncs = append(readyFuncs, cloudProfileInformer.Informer().HasSynced)
 }
@@ -105,13 +102,10 @@ func (c *CustomVerbAuthorizer) SetAuthorizer(authorizer authorizer.Authorizer) {
 
 // ValidateInitialization checks whether the plugin was correctly initialized.
 func (c *CustomVerbAuthorizer) ValidateInitialization() error {
-	if c.cloudProfileLister == nil {
-		return errors.New("missing cloudProfile lister")
-	}
 	return nil
 }
 
-var _ admission.ValidationInterface = &CustomVerbAuthorizer{}
+var _ admission.ValidationInterface = (*CustomVerbAuthorizer)(nil)
 
 // Validate makes admissions decisions based on custom verbs.
 func (c *CustomVerbAuthorizer) Validate(ctx context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {
@@ -131,10 +125,12 @@ func (c *CustomVerbAuthorizer) Validate(ctx context.Context, a admission.Attribu
 	}
 
 	switch a.GetKind().GroupKind() {
-	case core.Kind("Project"):
-		return c.admitProjects(ctx, a)
 	case core.Kind("NamespacedCloudProfile"):
 		return c.admitNamespacedCloudProfiles(ctx, a)
+	case core.Kind("Project"):
+		return c.admitProjects(ctx, a)
+	case core.Kind("Shoot"):
+		return c.admitShoots(ctx, a)
 	}
 
 	return nil
@@ -186,12 +182,6 @@ func (c *CustomVerbAuthorizer) admitNamespacedCloudProfiles(ctx context.Context,
 		return apierrors.NewBadRequest("could not convert resource into NamespacedCloudProfile object")
 	}
 
-	parentCloudProfileName := obj.Spec.Parent.Name
-	parentCloudProfile, err := c.cloudProfileLister.Get(parentCloudProfileName)
-	if err != nil {
-		return apierrors.NewBadRequest("parent CloudProfile could not be found")
-	}
-
 	if a.GetOperation() == admission.Update {
 		oldObj, ok = a.GetOldObject().(*core.NamespacedCloudProfile)
 		if !ok {
@@ -220,11 +210,30 @@ func (c *CustomVerbAuthorizer) admitNamespacedCloudProfiles(ctx context.Context,
 		}
 	}
 
-	if mustCheckLimits(oldObj.Spec.Limits, obj.Spec.Limits, parentCloudProfile) {
-		err := c.authorize(ctx, a, CustomVerbNamespacedCloudProfileRaiseLimits, "increase .spec.limits above parent CloudProfile limits")
-		if err != nil {
-			return err
+	return nil
+}
+
+func (c *CustomVerbAuthorizer) admitShoots(ctx context.Context, a admission.Attributes) error {
+	var (
+		oldObj = &core.Shoot{}
+		obj    *core.Shoot
+		ok     bool
+	)
+
+	obj, ok = a.GetObject().(*core.Shoot)
+	if !ok {
+		return apierrors.NewBadRequest("could not convert resource into Shoot object")
+	}
+
+	if a.GetOperation() == admission.Update {
+		oldObj, ok = a.GetOldObject().(*core.Shoot)
+		if !ok {
+			return apierrors.NewBadRequest("could not convert old resource into Shoot object")
 		}
+	}
+
+	if mustCheckIfShootIsSelfHosted(oldObj, obj) {
+		return c.authorize(ctx, a, CustomVerbShootMarkSelfHosted, "modify .spec.provider.workers[].controlPlane")
 	}
 
 	return nil
@@ -295,22 +304,36 @@ func mustCheckProjectMembers(oldMembers, members []core.ProjectMember, owner *rb
 		return false
 	}
 
-	var oldHumanUsers, newHumanUsers = findHumanUsers(oldMembers), findHumanUsers(members)
+	var oldHumanUsers, newHumanUsers = findHumanUsersWithRoles(oldMembers), findHumanUsersWithRoles(members)
 	// Remove owner subject from `members` list to always allow it to be added
 	if owner != nil && isHumanUser(*owner) {
-		oldHumanUsers.Delete(humanMemberKey(*owner))
-		newHumanUsers.Delete(humanMemberKey(*owner))
+		ownerKey := humanMemberKey(*owner)
+		removeEntriesWithMember(oldHumanUsers, ownerKey)
+		removeEntriesWithMember(newHumanUsers, ownerKey)
 	}
 
 	return !oldHumanUsers.Equal(newHumanUsers)
 }
 
-func findHumanUsers(members []core.ProjectMember) sets.Set[string] {
-	result := sets.New[string]()
+type humanMembership struct {
+	member string
+	role   string
+}
+
+func findHumanUsersWithRoles(members []core.ProjectMember) sets.Set[humanMembership] {
+	result := sets.New[humanMembership]()
 
 	for _, member := range members {
 		if isHumanUser(member.Subject) {
-			result.Insert(humanMemberKey(member.Subject))
+			memberKey := humanMemberKey(member.Subject)
+			// Create a unique key that includes both subject and roles
+			for _, role := range member.Roles {
+				result.Insert(humanMembership{member: memberKey, role: role})
+			}
+			// If no roles are specified, still create an entry with empty role
+			if len(member.Roles) == 0 {
+				result.Insert(humanMembership{member: memberKey, role: ""})
+			}
 		}
 	}
 
@@ -323,6 +346,14 @@ func isHumanUser(subject rbacv1.Subject) bool {
 
 func humanMemberKey(subject rbacv1.Subject) string {
 	return subject.Kind + subject.Name
+}
+
+func removeEntriesWithMember(set sets.Set[humanMembership], member string) {
+	for membership := range set {
+		if membership.member == member {
+			set.Delete(membership)
+		}
+	}
 }
 
 func userIsOwner(userInfo user.Info, owner *rbacv1.Subject) bool {
@@ -360,8 +391,6 @@ func mustCheckProviderConfig(oldProviderConfig, providerConfig *runtime.RawExten
 	return !apiequality.Semantic.DeepEqual(oldProviderConfig, providerConfig)
 }
 
-func mustCheckLimits(oldLimits, limits *core.Limits, parentCloudProfile *v1beta1.CloudProfile) bool {
-	return !apiequality.Semantic.DeepEqual(oldLimits, limits) &&
-		parentCloudProfile.Spec.Limits != nil &&
-		ptr.Deref(limits.MaxNodesTotal, 0) > ptr.Deref(parentCloudProfile.Spec.Limits.MaxNodesTotal, 0)
+func mustCheckIfShootIsSelfHosted(oldShoot, shoot *core.Shoot) bool {
+	return !apiequality.Semantic.DeepEqual(helper.ControlPlaneWorkerPoolForShoot(oldShoot.Spec.Provider.Workers), helper.ControlPlaneWorkerPoolForShoot(shoot.Spec.Provider.Workers))
 }

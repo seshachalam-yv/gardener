@@ -5,8 +5,6 @@
 package longterm
 
 import (
-	_ "embed"
-
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,14 +19,14 @@ import (
 func CentralScrapeConfigs() []*monitoringv1alpha1.ScrapeConfig {
 	return []*monitoringv1alpha1.ScrapeConfig{
 		{
-			ObjectMeta: metav1.ObjectMeta{Name: "prometheus"},
+			ObjectMeta: metav1.ObjectMeta{Name: "prometheus-" + Label},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
 				StaticConfigs: []monitoringv1alpha1.StaticConfig{{
 					Targets: []monitoringv1alpha1.Target{"localhost:9090"},
 				}},
 				RelabelConfigs: []monitoringv1.RelabelConfig{{
 					Action:      "replace",
-					Replacement: ptr.To("prometheus"),
+					Replacement: ptr.To("prometheus-" + Label),
 					TargetLabel: "job",
 				}},
 			},
@@ -49,7 +47,7 @@ func CentralScrapeConfigs() []*monitoringv1alpha1.ScrapeConfig {
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "prometheus-" + garden.Label},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
-				HonorLabels:     ptr.To(true),
+				HonorLabels:     ptr.To(false),
 				HonorTimestamps: ptr.To(true),
 				MetricsPath:     ptr.To("/federate"),
 				Params: map[string][]string{
@@ -65,6 +63,7 @@ func CentralScrapeConfigs() []*monitoringv1alpha1.ScrapeConfig {
 						`{__name__="garden_seed_capacity"}`,
 						`{__name__="etcdbr_snapshot_duration_seconds_count"}`,
 						`{__name__="apiserver_request_total", job="virtual-garden-kube-apiserver"}`,
+						`{__name__="shoot:node_operating_system:sum"}`,
 					},
 				},
 				KubernetesSDConfigs: []monitoringv1alpha1.KubernetesSDConfig{{
@@ -77,7 +76,7 @@ func CentralScrapeConfigs() []*monitoringv1alpha1.ScrapeConfig {
 							"__meta_kubernetes_service_name",
 							"__meta_kubernetes_service_port_name",
 						},
-						Regex:  "prometheus-garden;" + prometheus.ServicePortName,
+						Regex:  "prometheus-garden;" + prometheus.ServicePorts().Web.Name,
 						Action: "keep",
 					},
 					{

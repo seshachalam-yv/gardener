@@ -14,19 +14,32 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/utils/ptr"
 
-	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
 )
 
 var (
+	//go:embed assets/prometheusrules/healthcheck.yaml
+	healthcheckYAML []byte
+	healthcheck     *monitoringv1.PrometheusRule
+
 	//go:embed assets/prometheusrules/metering.rules.stateful.yaml
 	meteringStatefulYAML []byte
 	meteringStateful     *monitoringv1.PrometheusRule
+
+	//go:embed assets/prometheusrules/pvc.yaml
+	pvcYAML []byte
+	pvc     *monitoringv1.PrometheusRule
 )
 
 func init() {
+	healthcheck = &monitoringv1.PrometheusRule{}
+	utilruntime.Must(runtime.DecodeInto(monitoringutils.Decoder, healthcheckYAML, healthcheck))
+
 	meteringStateful = &monitoringv1.PrometheusRule{}
 	utilruntime.Must(runtime.DecodeInto(monitoringutils.Decoder, meteringStatefulYAML, meteringStateful))
+
+	pvc = &monitoringv1.PrometheusRule{}
+	utilruntime.Must(runtime.DecodeInto(monitoringutils.Decoder, pvcYAML, pvc))
 }
 
 // CentralPrometheusRules returns the central PrometheusRule resources for the aggregate prometheus.
@@ -47,30 +60,42 @@ func CentralPrometheusRules(seedIsGarden bool) []*monitoringv1.PrometheusRule {
 			},
 		},
 		{
-			Alert: "NodeNotHealthy",
-			Expr:  intstr.FromString(`count_over_time((sum by (node) (kube_node_spec_taint{effect="NoSchedule", key!~"node.kubernetes.io/unschedulable|deployment.machine.sapcloud.io/prefer-no-schedule|node-role.kubernetes.io/control-plane|ToBeDeletedByClusterAutoscaler|` + v1beta1constants.TaintNodeCriticalComponentsNotReady + `"}))[30m:]) > 9`),
-			For:   ptr.To(monitoringv1.Duration("0m")),
+			Alert: "EtcdSnapshotCompactionJobsFailingForSeed",
+			Expr:  intstr.FromString(`count(count by (etcd_namespace) (increase(etcddruid_compaction_jobs_total{succeeded="false", failureReason=~"processFailure|unknown"}[3h]) >= 1)) / count(count by (etcd_namespace) (increase(etcddruid_compaction_jobs_total[3h]))) > 0.1`),
 			Labels: map[string]string{
 				"severity":   "warning",
 				"type":       "seed",
 				"visibility": "operator",
 			},
 			Annotations: map[string]string{
-				"description": "Node {{$labels.node}} in seed {{$externalLabels.seed}} was not healthy for ten scrapes in the past 30 mins.",
-				"summary":     "A node is not healthy.",
+				"description": "Seed {{$externalLabels.seed}} has more than 10 percent of shoot namespaces with at least one etcd snapshot compaction job failure in the past 3 hours.",
+				"summary":     "Too many shoot namespaces have failing etcd snapshot compaction jobs.",
 			},
 		},
 		{
-			Alert: "TooManyEtcdSnapshotCompactionJobsFailing",
-			Expr:  intstr.FromString(`count(increase(etcddruid_compaction_jobs_total{succeeded="false", failureReason=~"processFailure|unknown"}[3h]) >= 1) / count(increase(etcddruid_compaction_jobs_total[3h])) > 0.1`),
+			Alert: "EtcdSnapshotCompactionJobsFailingForNamespace",
+			Expr:  intstr.FromString(`sum by (etcd_namespace) (increase(etcddruid_compaction_jobs_total{succeeded="false", failureReason=~"processFailure|unknown"}[3h])) / sum by (etcd_namespace) (increase(etcddruid_compaction_jobs_total[3h])) > 0.1`),
 			Labels: map[string]string{
 				"severity":   "warning",
 				"type":       "seed",
 				"visibility": "operator",
 			},
 			Annotations: map[string]string{
-				"description": "Seed {{$externalLabels.seed}} has too many etcd snapshot compaction jobs failing in the past 3 hours.",
-				"summary":     "Too many etcd snapshot compaction jobs are failing in the seed.",
+				"description": "Namespace {{$labels.etcd_namespace}} on seed {{$externalLabels.seed}} has more than 10 percent of etcd snapshot compaction jobs failing in the past 3 hours.",
+				"summary":     "Too many etcd snapshot compaction jobs are failing for a specific namespace.",
+			},
+		},
+		{
+			Alert: "EtcdFullSnapshotsFailingForNamespace",
+			Expr:  intstr.FromString(`sum by (etcd_namespace) (increase(etcddruid_compaction_full_snapshot_triggered_total{succeeded="false"}[3h])) / sum by (etcd_namespace) (increase(etcddruid_compaction_full_snapshot_triggered_total[3h])) > 0.1`),
+			Labels: map[string]string{
+				"severity":   "warning",
+				"type":       "seed",
+				"visibility": "operator",
+			},
+			Annotations: map[string]string{
+				"description": "Namespace {{$labels.etcd_namespace}} on seed {{$externalLabels.seed}} has more than 10 percent of etcd full snapshots (triggered by compaction controller) failing in the past 3 hours.",
+				"summary":     "Too many etcd full snapshots are failing for a specific namespace.",
 			},
 		},
 	}
@@ -108,7 +133,9 @@ func CentralPrometheusRules(seedIsGarden bool) []*monitoringv1.PrometheusRule {
 	}
 
 	return []*monitoringv1.PrometheusRule{
+		healthcheck.DeepCopy(),
 		meteringStateful.DeepCopy(),
+		pvc.DeepCopy(),
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "seed"},
 			Spec: monitoringv1.PrometheusRuleSpec{

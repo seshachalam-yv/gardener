@@ -6,12 +6,12 @@ package shoot
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	gomegatypes "github.com/onsi/gomega/types"
-	"go.uber.org/mock/gomock"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,20 +19,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/gardener/gardener/pkg/api/indexer"
+	schedulerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/scheduler/v1alpha1"
+	gardencore "github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	schedulerconfigv1alpha1 "github.com/gardener/gardener/pkg/scheduler/apis/config/v1alpha1"
 )
 
 var _ = Describe("Scheduler_Control", func() {
 	var (
 		ctx              = context.Background()
 		log              logr.Logger
-		ctrl             *gomock.Controller
 		fakeGardenClient client.Client
 
 		reconciler   *Reconciler
 		cloudProfile *gardencorev1beta1.CloudProfile
+		project      *gardencorev1beta1.Project
 		seed         *gardencorev1beta1.Seed
 		shoot        *gardencorev1beta1.Shoot
 
@@ -46,6 +48,14 @@ var _ = Describe("Scheduler_Control", func() {
 		cloudProfileBase = gardencorev1beta1.CloudProfile{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: cloudProfileName,
+			},
+		}
+		projectBase = gardencorev1beta1.Project{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "project-1",
+			},
+			Spec: gardencorev1beta1.ProjectSpec{
+				Namespace: ptr.To("my-namespace"),
 			},
 		}
 		seedBase = gardencorev1beta1.Seed{
@@ -71,7 +81,7 @@ var _ = Describe("Scheduler_Control", func() {
 			Status: gardencorev1beta1.SeedStatus{
 				Conditions: []gardencorev1beta1.Condition{
 					{
-						Type:   gardencorev1beta1.SeedGardenletReady,
+						Type:   gardencorev1beta1.GardenletReady,
 						Status: gardencorev1beta1.ConditionTrue,
 					},
 				},
@@ -117,9 +127,12 @@ var _ = Describe("Scheduler_Control", func() {
 	)
 
 	BeforeEach(func() {
-		ctrl = gomock.NewController(GinkgoT())
 		log = logr.Discard()
-		fakeGardenClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+		fakeGardenClient = fakeclient.
+			NewClientBuilder().
+			WithScheme(kubernetes.GardenScheme).
+			WithIndex(&gardencorev1beta1.Project{}, gardencore.ProjectNamespace, indexer.ProjectNamespaceIndexerFunc).
+			Build()
 	})
 
 	JustBeforeEach(func() {
@@ -129,13 +142,10 @@ var _ = Describe("Scheduler_Control", func() {
 		}
 	})
 
-	AfterEach(func() {
-		ctrl.Finish()
-	})
-
 	Context("SEED DETERMINATION - Shoot does not reference a Seed - find an adequate one using 'Same Region' seed determination strategy", func() {
 		BeforeEach(func() {
 			cloudProfile = cloudProfileBase.DeepCopy()
+			project = projectBase.DeepCopy()
 			seed = seedBase.DeepCopy()
 			shoot = shootBase.DeepCopy()
 			schedulerConfiguration = *schedulerConfigurationBase.DeepCopy()
@@ -147,6 +157,7 @@ var _ = Describe("Scheduler_Control", func() {
 
 		It("should find a seed cluster 1) 'Same Region' seed determination strategy 2) referencing the same profile 3) same region 4) indicating availability", func() {
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -164,6 +175,7 @@ var _ = Describe("Scheduler_Control", func() {
 			secondShoot.Spec.SeedName = &seed.Name
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &secondSeed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
@@ -182,6 +194,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.ControlPlane = &gardencorev1beta1.ControlPlane{HighAvailability: &gardencorev1beta1.HighAvailability{FailureTolerance: gardencorev1beta1.FailureTolerance{Type: gardencorev1beta1.FailureToleranceTypeZone}}}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &secondSeed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
@@ -197,6 +210,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Region = "another-region"
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -214,6 +228,7 @@ var _ = Describe("Scheduler_Control", func() {
 			}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
 
@@ -234,6 +249,7 @@ var _ = Describe("Scheduler_Control", func() {
 			}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
 
@@ -250,6 +266,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.ControlPlane = &gardencorev1beta1.ControlPlane{HighAvailability: &gardencorev1beta1.HighAvailability{FailureTolerance: gardencorev1beta1.FailureTolerance{Type: gardencorev1beta1.FailureToleranceTypeNode}}}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &multiZonalSeed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
 
@@ -264,6 +281,7 @@ var _ = Describe("Scheduler_Control", func() {
 			multiZonalSeed.Spec.Provider.Zones = []string{"1", "2"}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &multiZonalSeed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
 
@@ -283,6 +301,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Provider.Type = anotherType
 			cloudProfile = cloudProfileBase.DeepCopy()
 			cloudProfile.Spec.Type = anotherType
+			project = projectBase.DeepCopy()
 			schedulerConfiguration = *schedulerConfigurationBase.DeepCopy()
 			schedulerConfiguration.Schedulers.Shoot.Strategy = schedulerconfigv1alpha1.MinimalDistance
 			// no seed referenced
@@ -294,6 +313,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Region = anotherRegion
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -308,6 +328,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Region = anotherRegion
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -322,6 +343,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Region = anotherRegion
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -342,6 +364,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Region = anotherRegion
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -353,6 +376,7 @@ var _ = Describe("Scheduler_Control", func() {
 
 		It("should fail because it cannot find a seed cluster 1) 'MinimalDistance' seed determination strategy 2) no matching provider", func() {
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -370,6 +394,7 @@ var _ = Describe("Scheduler_Control", func() {
 				ProviderTypes: []string{providerType},
 			}
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -388,6 +413,7 @@ var _ = Describe("Scheduler_Control", func() {
 			seed.Labels = map[string]string{"select": "true"}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -399,6 +425,7 @@ var _ = Describe("Scheduler_Control", func() {
 	Context("SEED DETERMINATION - Shoot does not reference a Seed - find an adequate one using 'Minimal Distance' seed determination strategy", func() {
 		BeforeEach(func() {
 			cloudProfile = cloudProfileBase.DeepCopy()
+			project = projectBase.DeepCopy()
 			seed = seedBase.DeepCopy()
 			shoot = shootBase.DeepCopy()
 			schedulerConfiguration = *schedulerConfigurationBase.DeepCopy()
@@ -409,6 +436,7 @@ var _ = Describe("Scheduler_Control", func() {
 
 		It("should find a seed cluster 1) referencing the same profile 2) same region 3) indicating availability", func() {
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -421,6 +449,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Region = anotherRegion
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -447,6 +476,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Region = anotherRegion
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &secondSeed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &thirdSeed)).To(Succeed())
@@ -468,6 +498,7 @@ var _ = Describe("Scheduler_Control", func() {
 			secondShoot.Spec.SeedName = &seed.Name
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &secondSeed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
@@ -510,6 +541,7 @@ var _ = Describe("Scheduler_Control", func() {
 			testShoot.Spec.Provider.Type = "some-type"
 
 			Expect(fakeGardenClient.Create(ctx, newCloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, oldSeedEnvironment1)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, newSeedEnvironment2)).To(Succeed())
 
@@ -559,6 +591,7 @@ var _ = Describe("Scheduler_Control", func() {
 			}
 
 			Expect(fakeGardenClient.Create(ctx, newCloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, oldSeedEnvironment1)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, newSeedEnvironment2)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, newSeedEnvironment3)).To(Succeed())
@@ -588,6 +621,7 @@ var _ = Describe("Scheduler_Control", func() {
 			thirdShoot.Spec.SeedName = &secondSeed.Name
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &secondSeed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
@@ -603,6 +637,7 @@ var _ = Describe("Scheduler_Control", func() {
 	Context("SEED DETERMINATION - Shoot does not reference a Seed - find an adequate one using default seed determination strategy", func() {
 		BeforeEach(func() {
 			cloudProfile = cloudProfileBase.DeepCopy()
+			project = projectBase.DeepCopy()
 			seed = seedBase.DeepCopy()
 			shoot = shootBase.DeepCopy()
 			schedulerConfiguration = *schedulerConfigurationBase.DeepCopy()
@@ -613,6 +648,7 @@ var _ = Describe("Scheduler_Control", func() {
 
 		It("should find a seed cluster 1) referencing the same profile 2) same region 3) indicating availability", func() {
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -629,6 +665,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Networking.Services = nil
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -645,6 +682,7 @@ var _ = Describe("Scheduler_Control", func() {
 			secondShoot.Spec.SeedName = &seed.Name
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &secondSeed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
@@ -663,11 +701,43 @@ var _ = Describe("Scheduler_Control", func() {
 			}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
 			Expect(err).To(Not(HaveOccurred()))
 			Expect(bestSeed.Name).To(Equal(seed.Name))
+		})
+
+		It("should find the best seed cluster that matches the domain of the shoot", func() {
+			seedWithMatchingDomain := seedBase.DeepCopy()
+			seedWithMatchingDomain.Name = "seed-with-matching-domain"
+			seedWithMatchingDomain.Spec.DNS = gardencorev1beta1.SeedDNS{
+				Defaults: []gardencorev1beta1.SeedDNSProviderConfig{
+					{Domain: "example.com"},
+				},
+			}
+
+			seedWithDifferentDomain := seedBase.DeepCopy()
+			seedWithDifferentDomain.Name = "seed-with-different-domain"
+			seedWithDifferentDomain.Spec.DNS = gardencorev1beta1.SeedDNS{
+				Defaults: []gardencorev1beta1.SeedDNSProviderConfig{
+					{Domain: "other.com"},
+				},
+			}
+
+			shoot.Spec.DNS = &gardencorev1beta1.DNS{
+				Domain: ptr.To(fmt.Sprintf("%s.%s.example.com", shoot.Name, project.Name)),
+			}
+
+			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, seedWithMatchingDomain)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, seedWithDifferentDomain)).To(Succeed())
+
+			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bestSeed.Name).To(Equal(seedWithMatchingDomain.Name))
 		})
 
 		// FAIL
@@ -688,6 +758,7 @@ var _ = Describe("Scheduler_Control", func() {
 			}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -703,6 +774,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Tolerations = nil
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed2)).To(Succeed())
 
@@ -720,6 +792,7 @@ var _ = Describe("Scheduler_Control", func() {
 			secondShoot.Spec.SeedName = &seed.Name
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, shoot)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, &secondShoot)).To(Succeed())
 
@@ -732,6 +805,7 @@ var _ = Describe("Scheduler_Control", func() {
 			shoot.Spec.Region = "another-region"
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -748,6 +822,7 @@ var _ = Describe("Scheduler_Control", func() {
 				},
 			}
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -765,6 +840,7 @@ var _ = Describe("Scheduler_Control", func() {
 			}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -775,6 +851,16 @@ var _ = Describe("Scheduler_Control", func() {
 		It("should fail because it cannot find a seed cluster due to invalid profile", func() {
 			shoot.Spec.CloudProfileName = ptr.To("another-profile")
 
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
+
+			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
+			Expect(err).To(HaveOccurred())
+			Expect(bestSeed).To(BeNil())
+		})
+
+		It("should fail because it cannot find a seed cluster due to missing project", func() {
+			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -785,12 +871,13 @@ var _ = Describe("Scheduler_Control", func() {
 		It("should fail because it cannot find a seed cluster due to gardenlet not ready", func() {
 			seed.Status.Conditions = []gardencorev1beta1.Condition{
 				{
-					Type:   gardencorev1beta1.SeedGardenletReady,
+					Type:   gardencorev1beta1.GardenletReady,
 					Status: gardencorev1beta1.ConditionFalse,
 				},
 			}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -802,6 +889,7 @@ var _ = Describe("Scheduler_Control", func() {
 			seed.Status.LastOperation = nil
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -817,6 +905,7 @@ var _ = Describe("Scheduler_Control", func() {
 			}
 
 			Expect(fakeGardenClient.Create(ctx, cloudProfile)).To(Succeed())
+			Expect(fakeGardenClient.Create(ctx, project)).To(Succeed())
 			Expect(fakeGardenClient.Create(ctx, seed)).To(Succeed())
 
 			bestSeed, err := reconciler.DetermineSeed(ctx, log, shoot)
@@ -892,6 +981,149 @@ var _ = Describe("Scheduler_Control", func() {
 			Expect(candidates[0].Name).To(Equal(oldSeedEnvironment1.Name))
 		})
 	})
+
+	Context("filterSeedsMatchingDomain", func() {
+		var (
+			projectName                    = "test-project"
+			seedWithDefaultDomain          *gardencorev1beta1.Seed
+			seedWithoutDefaultDomain       *gardencorev1beta1.Seed
+			seedWithMultipleDefaultDomains *gardencorev1beta1.Seed
+		)
+
+		BeforeEach(func() {
+			seedWithDefaultDomain = seedBase.DeepCopy()
+			seedWithDefaultDomain.Name = "seed-with-default-domain"
+			seedWithDefaultDomain.Spec.DNS = gardencorev1beta1.SeedDNS{
+				Defaults: []gardencorev1beta1.SeedDNSProviderConfig{
+					{Domain: "example.com"},
+				},
+			}
+
+			seedWithoutDefaultDomain = seedBase.DeepCopy()
+			seedWithoutDefaultDomain.Name = "seed-without-default-domain"
+			seedWithoutDefaultDomain.Spec.DNS = gardencorev1beta1.SeedDNS{}
+
+			seedWithMultipleDefaultDomains = seedBase.DeepCopy()
+			seedWithMultipleDefaultDomains.Name = "seed-with-multiple-default-domains"
+			seedWithMultipleDefaultDomains.Spec.DNS = gardencorev1beta1.SeedDNS{
+				Defaults: []gardencorev1beta1.SeedDNSProviderConfig{
+					{Domain: "example.com"},
+					{Domain: "test.org"},
+				},
+			}
+		})
+
+		It("should return all seeds when shoot has no DNS configuration", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = nil
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithoutDefaultDomain}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(2))
+		})
+
+		It("should return all seeds when shoot has DNS configuration but no domain", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = &gardencorev1beta1.DNS{Domain: nil}
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithoutDefaultDomain}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(2))
+		})
+
+		It("should return all seeds when shoot uses a custom domain (not matching any seed default)", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = &gardencorev1beta1.DNS{Domain: ptr.To("custom.domain.com")}
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithoutDefaultDomain}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(2))
+		})
+
+		It("should return only seeds with matching default domain when shoot uses Gardener-managed domain", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = &gardencorev1beta1.DNS{Domain: ptr.To(fmt.Sprintf("%s.%s.example.com", testShoot.Name, projectName))}
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithoutDefaultDomain}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(1))
+			Expect(result[0].Name).To(Equal(seedWithDefaultDomain.Name))
+		})
+
+		It("should return seeds with multiple default domains when one matches", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = &gardencorev1beta1.DNS{Domain: ptr.To(fmt.Sprintf("%s.%s.test.org", testShoot.Name, projectName))}
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithoutDefaultDomain, *seedWithMultipleDefaultDomains}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(1))
+			Expect(result[0].Name).To(Equal(seedWithMultipleDefaultDomains.Name))
+		})
+
+		It("should fail when shoot uses Gardener-managed domain but wrong format", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = &gardencorev1beta1.DNS{Domain: ptr.To("wrong-format.example.com")}
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithoutDefaultDomain}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).To(MatchError(`none of the 2 seeds support the domain "wrong-format.example.com" configured in the shoot specification`))
+			Expect(result).To(BeNil())
+		})
+
+		It("should fail when shoot uses Gardener-managed domain with correct suffix but wrong shoot name", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = &gardencorev1beta1.DNS{Domain: ptr.To(fmt.Sprintf("wrong-name.%s.example.com", projectName))}
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithoutDefaultDomain}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).To(MatchError(fmt.Sprintf(`none of the 2 seeds support the domain "wrong-name.%s.example.com" configured in the shoot specification`, projectName)))
+			Expect(result).To(BeNil())
+		})
+
+		It("should fail when shoot uses Gardener-managed domain with correct suffix but wrong project name", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = &gardencorev1beta1.DNS{Domain: ptr.To(fmt.Sprintf("%s.wrong-project.example.com", testShoot.Name))}
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithoutDefaultDomain}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).To(MatchError(fmt.Sprintf(`none of the 2 seeds support the domain "%s.wrong-project.example.com" configured in the shoot specification`, testShoot.Name)))
+			Expect(result).To(BeNil())
+		})
+
+		It("should return multiple seeds when multiple seeds support the same domain", func() {
+			testShoot := shootBase.DeepCopy()
+			testShoot.Spec.DNS = &gardencorev1beta1.DNS{Domain: ptr.To(fmt.Sprintf("%s.%s.example.com", testShoot.Name, projectName))}
+
+			seedWithSameDomain := seedBase.DeepCopy()
+			seedWithSameDomain.Name = "seed-with-same-domain"
+			seedWithSameDomain.Spec.DNS = gardencorev1beta1.SeedDNS{
+				Defaults: []gardencorev1beta1.SeedDNSProviderConfig{
+					{Domain: "example.com"},
+				},
+			}
+
+			seedList := []gardencorev1beta1.Seed{*seedWithDefaultDomain, *seedWithSameDomain, *seedWithoutDefaultDomain}
+
+			result, err := filterSeedsMatchingDomain(seedList, testShoot, projectName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(2))
+			Expect(result[0].Name).To(Equal(seedWithDefaultDomain.Name))
+			Expect(result[1].Name).To(Equal(seedWithSameDomain.Name))
+		})
+	})
 })
 
 var _ = DescribeTable("condition is false",
@@ -907,7 +1139,7 @@ var _ = DescribeTable("condition is false",
 			},
 			Status: gardencorev1beta1.SeedStatus{
 				Conditions: []gardencorev1beta1.Condition{
-					{Type: gardencorev1beta1.SeedGardenletReady, Status: gardencorev1beta1.ConditionTrue},
+					{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 					{Type: gardencorev1beta1.SeedBackupBucketsReady, Status: gardencorev1beta1.ConditionTrue},
 					{Type: gardencorev1beta1.SeedExtensionsReady, Status: gardencorev1beta1.ConditionTrue},
 				},
@@ -929,8 +1161,8 @@ var _ = DescribeTable("condition is false",
 		Expect(verifySeedReadiness(seed)).To(expected)
 	},
 
-	Entry("SeedGardenletReady is missing", gardencorev1beta1.SeedGardenletReady, true, true, BeFalse()),
-	Entry("SeedGardenletReady is false", gardencorev1beta1.SeedGardenletReady, false, true, BeFalse()),
+	Entry("GardenletReady is missing", gardencorev1beta1.GardenletReady, true, true, BeFalse()),
+	Entry("GardenletReady is false", gardencorev1beta1.GardenletReady, false, true, BeFalse()),
 	Entry("SeedBackupBucketsReady is missing", gardencorev1beta1.SeedBackupBucketsReady, true, true, BeFalse()),
 	Entry("SeedBackupBucketsReady is missing but no backup specified", gardencorev1beta1.SeedBackupBucketsReady, true, false, BeTrue()),
 	Entry("SeedBackupBucketsReady is false", gardencorev1beta1.SeedBackupBucketsReady, false, true, BeFalse()),
@@ -938,3 +1170,148 @@ var _ = DescribeTable("condition is false",
 	Entry("SeedExtensionsReady is missing", gardencorev1beta1.SeedExtensionsReady, true, true, BeTrue()),
 	Entry("SeedExtensionsReady is false", gardencorev1beta1.SeedExtensionsReady, false, true, BeTrue()),
 )
+
+var _ = Describe("filterSeedsForZoneSelection", func() {
+	makeSeed := func(name string, zones []string, mode gardencorev1beta1.ZoneSelectionMode) gardencorev1beta1.Seed {
+		s := gardencorev1beta1.Seed{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: gardencorev1beta1.SeedSpec{
+				Provider: gardencorev1beta1.SeedProvider{Zones: zones},
+			},
+		}
+		if mode != "" {
+			s.Spec.Settings = &gardencorev1beta1.SeedSettings{
+				ZoneSelection: &gardencorev1beta1.SeedSettingZoneSelection{Mode: mode},
+			}
+		}
+		return s
+	}
+
+	makeShoot := func(workerZones []string) *gardencorev1beta1.Shoot {
+		s := &gardencorev1beta1.Shoot{}
+		if len(workerZones) > 0 {
+			s.Spec.Provider.Workers = []gardencorev1beta1.Worker{
+				{Name: "worker", Minimum: 1, Maximum: 3, Zones: workerZones},
+			}
+		}
+		return s
+	}
+
+	makeZoneHAShoot := func(workerZones []string) *gardencorev1beta1.Shoot {
+		s := makeShoot(workerZones)
+		s.Spec.ControlPlane = &gardencorev1beta1.ControlPlane{
+			HighAvailability: &gardencorev1beta1.HighAvailability{
+				FailureTolerance: gardencorev1beta1.FailureTolerance{Type: gardencorev1beta1.FailureToleranceTypeZone},
+			},
+		}
+		return s
+	}
+
+	DescribeTable("filterSeedsForZoneSelection",
+		func(seeds []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot, expectError bool, expectedSeedNames []string) {
+			result, err := filterSeedsForZoneSelection(seeds, shoot)
+			if expectError {
+				Expect(err).To(HaveOccurred())
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				names := make([]string, len(result))
+				for i, s := range result {
+					names[i] = s.Name
+				}
+				Expect(names).To(ConsistOf(expectedSeedNames))
+			}
+		},
+
+		Entry("no zone selection — all seeds pass",
+			[]gardencorev1beta1.Seed{makeSeed("s1", []string{"a", "b"}, ""), makeSeed("s2", []string{"c"}, "")},
+			makeShoot([]string{"a"}),
+			false,
+			[]string{"s1", "s2"},
+		),
+		Entry("Prefer mode — single seed without zone match passes as fallback",
+			[]gardencorev1beta1.Seed{makeSeed("s1", []string{"x"}, gardencorev1beta1.ZoneSelectionModePrefer)},
+			makeShoot([]string{"a"}),
+			false,
+			[]string{"s1"},
+		),
+		Entry("Prefer mode — seed with matching zones preferred over seed without",
+			[]gardencorev1beta1.Seed{
+				makeSeed("match", []string{"a", "b"}, gardencorev1beta1.ZoneSelectionModePrefer),
+				makeSeed("nomatch", []string{"x", "y"}, gardencorev1beta1.ZoneSelectionModePrefer),
+			},
+			makeShoot([]string{"a"}),
+			false,
+			[]string{"match"},
+		),
+		Entry("Prefer mode — no worker zones → all seeds pass (no preference possible)",
+			[]gardencorev1beta1.Seed{
+				makeSeed("s1", []string{"a"}, gardencorev1beta1.ZoneSelectionModePrefer),
+				makeSeed("s2", []string{"x"}, gardencorev1beta1.ZoneSelectionModePrefer),
+			},
+			makeShoot(nil),
+			false,
+			[]string{"s1", "s2"},
+		),
+		Entry("Prefer mode — non-Prefer seeds always kept alongside preferred seeds",
+			[]gardencorev1beta1.Seed{
+				makeSeed("prefer-match", []string{"a"}, gardencorev1beta1.ZoneSelectionModePrefer),
+				makeSeed("prefer-nomatch", []string{"x"}, gardencorev1beta1.ZoneSelectionModePrefer),
+				makeSeed("nopinning", []string{"y"}, ""),
+			},
+			makeShoot([]string{"a"}),
+			false,
+			[]string{"prefer-match", "nopinning"},
+		),
+		Entry("Enforce mode — seed zones fully contain worker zones → included",
+			[]gardencorev1beta1.Seed{makeSeed("s1", []string{"a", "b"}, gardencorev1beta1.ZoneSelectionModeEnforce)},
+			makeShoot([]string{"a"}),
+			false,
+			[]string{"s1"},
+		),
+		Entry("Enforce mode — partial zone overlap → included",
+			[]gardencorev1beta1.Seed{makeSeed("s1", []string{"a", "b", "c"}, gardencorev1beta1.ZoneSelectionModeEnforce)},
+			makeShoot([]string{"b", "c", "d"}),
+			false,
+			[]string{"s1"},
+		),
+		Entry("Enforce mode — no zone overlap → excluded, error",
+			[]gardencorev1beta1.Seed{makeSeed("s1", []string{"x", "y"}, gardencorev1beta1.ZoneSelectionModeEnforce)},
+			makeShoot([]string{"a"}),
+			true,
+			nil,
+		),
+		Entry("Enforce mode — two seeds, only one matches → picks matching seed",
+			[]gardencorev1beta1.Seed{
+				makeSeed("s1", []string{"a"}, gardencorev1beta1.ZoneSelectionModeEnforce),
+				makeSeed("s2", []string{"b"}, gardencorev1beta1.ZoneSelectionModeEnforce),
+			},
+			makeShoot([]string{"a"}),
+			false,
+			[]string{"s1"},
+		),
+		Entry("Enforce mode — no worker zones → seed included (no constraint)",
+			[]gardencorev1beta1.Seed{makeSeed("s1", []string{"a"}, gardencorev1beta1.ZoneSelectionModeEnforce)},
+			makeShoot(nil),
+			false,
+			[]string{"s1"},
+		),
+		Entry("mixed: Enforce seed excluded + no-pinning seed included",
+			[]gardencorev1beta1.Seed{
+				makeSeed("enforce", []string{"x"}, gardencorev1beta1.ZoneSelectionModeEnforce),
+				makeSeed("nopinning", []string{"a"}, ""),
+			},
+			makeShoot([]string{"a"}),
+			false,
+			[]string{"nopinning"},
+		),
+		Entry("Enforce mode — zone-HA shoot → all seeds pass (zone selection not applicable)",
+			[]gardencorev1beta1.Seed{
+				makeSeed("s1", []string{"x"}, gardencorev1beta1.ZoneSelectionModeEnforce),
+				makeSeed("s2", []string{"a", "b", "c"}, gardencorev1beta1.ZoneSelectionModeEnforce),
+			},
+			makeZoneHAShoot([]string{"a"}),
+			false,
+			[]string{"s1", "s2"},
+		),
+	)
+})

@@ -49,7 +49,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -93,7 +93,7 @@ OpenIDConnectPresetSpec
 <td>
 <code>projectSelector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>
@@ -147,7 +147,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -203,7 +203,7 @@ of Shoot clusters.
 This configuration is not overwriting any existing OpenID Connect
 client authentication already set on the Shoot object.</p>
 <p>Deprecated: The OpenID Connect configuration this field specifies is not used and will be forbidden starting from Kubernetes 1.31.
-It&rsquo;s use was planned for genereting OIDC kubeconfig <a href="https://github.com/gardener/gardener/issues/1433">https://github.com/gardener/gardener/issues/1433</a>
+It&rsquo;s use was planned for generating OIDC kubeconfig <a href="https://github.com/gardener/gardener/issues/1433">https://github.com/gardener/gardener/issues/1433</a>
 TODO(AleksandarSavchev): Drop this field after support for Kubernetes 1.30 is dropped.</p>
 </td>
 </tr>
@@ -211,7 +211,7 @@ TODO(AleksandarSavchev): Drop this field after support for Kubernetes 1.30 is dr
 <td>
 <code>shootSelector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>
@@ -280,7 +280,7 @@ OpenIDConnectPresetSpec
 <td>
 <code>projectSelector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>
@@ -520,7 +520,7 @@ of Shoot clusters.
 This configuration is not overwriting any existing OpenID Connect
 client authentication already set on the Shoot object.</p>
 <p>Deprecated: The OpenID Connect configuration this field specifies is not used and will be forbidden starting from Kubernetes 1.31.
-It&rsquo;s use was planned for genereting OIDC kubeconfig <a href="https://github.com/gardener/gardener/issues/1433">https://github.com/gardener/gardener/issues/1433</a>
+It&rsquo;s use was planned for generating OIDC kubeconfig <a href="https://github.com/gardener/gardener/issues/1433">https://github.com/gardener/gardener/issues/1433</a>
 TODO(AleksandarSavchev): Drop this field after support for Kubernetes 1.30 is dropped.</p>
 </td>
 </tr>
@@ -528,7 +528,7 @@ TODO(AleksandarSavchev): Drop this field after support for Kubernetes 1.30 is dr
 <td>
 <code>shootSelector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>

@@ -21,7 +21,6 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
-	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/extensions/dnsrecord"
@@ -65,7 +64,6 @@ func (r *Reconciler) delete(
 		garden,
 		secretsManager,
 		targetVersion,
-		kubernetes.NewApplier(r.RuntimeClientSet.Client(), r.RuntimeClientSet.Client().RESTMapper()),
 		nil,
 		false,
 		extensionList,
@@ -107,6 +105,10 @@ func (r *Reconciler) delete(
 			Fn: func(ctx context.Context) error {
 				return r.destroyGardenPrometheus(ctx, c.prometheusGarden)
 			},
+		})
+		destroyOpenTelemetryCollector = g.Add(flow.Task{
+			Name: "Destroying OpenTelemetry Collector",
+			Fn:   component.OpDestroyAndWait(c.openTelemetryCollector).Destroy,
 		})
 		destroyBlackboxExporter = g.Add(flow.Task{
 			Name: "Destroying blackbox-exporter",
@@ -323,7 +325,7 @@ func (r *Reconciler) delete(
 		destroyOpenTelemetryOperator = g.Add(flow.Task{
 			Name:         "Destroying OpenTelemetry Operator",
 			Fn:           component.OpDestroyAndWait(c.openTelemetryOperator).Destroy,
-			Dependencies: flow.NewTaskIDs(syncPointVirtualGardenControlPlaneDestroyed),
+			Dependencies: flow.NewTaskIDs(destroyOpenTelemetryCollector, syncPointVirtualGardenControlPlaneDestroyed),
 		})
 		destroyFluentOperatorCustomResources = g.Add(flow.Task{
 			Name:         "Destroying fluent-operator custom resources",
@@ -345,9 +347,19 @@ func (r *Reconciler) delete(
 			Fn:           component.OpDestroyAndWait(c.vali).Destroy,
 			Dependencies: flow.NewTaskIDs(destroyFluentOperatorCustomResources),
 		})
+		destroyVictoriaLogs = g.Add(flow.Task{
+			Name:         "Destroying VictoriaLogs",
+			Fn:           component.OpDestroyAndWait(c.victoriaLogs).Destroy,
+			Dependencies: flow.NewTaskIDs(destroyFluentOperatorCustomResources),
+		})
 		destroyPersesOperator = g.Add(flow.Task{
 			Name: "Destroying perses-operator",
 			Fn:   component.OpDestroyAndWait(c.persesOperator).Destroy,
+		})
+		destroyVictoriaOperator = g.Add(flow.Task{
+			Name:         "Destroying victoria-operator",
+			Fn:           component.OpDestroyAndWait(c.victoriaOperator).Destroy,
+			Dependencies: flow.NewTaskIDs(destroyVictoriaLogs),
 		})
 		syncPointCleanedUp = flow.NewTaskIDs(
 			waitUntilExtensionResourcesDeleted,
@@ -366,6 +378,8 @@ func (r *Reconciler) delete(
 			destroyBlackboxExporter,
 			destroyGardenerOperatorVPA,
 			destroyPersesOperator,
+			destroyVictoriaOperator,
+			destroyVictoriaLogs,
 		)
 
 		destroyRuntimeSystemResources = g.Add(flow.Task{
@@ -422,6 +436,11 @@ func (r *Reconciler) delete(
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for perses-operator",
 			Fn:           component.OpWait(c.persesCRD).Destroy,
+			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Destroying custom resource definition for victoria-operator",
+			Fn:           component.OpWait(c.victoriaCRD).Destroy,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
@@ -536,6 +555,7 @@ func (r *Reconciler) destroyDNSRecords(ctx context.Context, log logr.Logger) err
 				dnsrecord.DefaultInterval,
 				dnsrecord.DefaultSevereThreshold,
 				dnsrecord.DefaultTimeout,
+				nil, // when values.SecretName is not set credentialsDeployer is not needed
 			)).Destroy(ctx)
 		})
 	}

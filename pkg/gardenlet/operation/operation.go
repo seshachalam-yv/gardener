@@ -6,7 +6,9 @@ package operation
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 
 	"github.com/Masterminds/semver/v3"
@@ -18,19 +20,20 @@ import (
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	"github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/garden"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
 	"github.com/gardener/gardener/pkg/utils/flow"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
@@ -42,28 +45,34 @@ func NewBuilder() *Builder {
 			return clock.RealClock{}
 		},
 		configFunc: func() (*gardenletconfigv1alpha1.GardenletConfiguration, error) {
-			return nil, fmt.Errorf("config is required but not set")
+			return nil, errors.New("config is required but not set")
 		},
-		gardenFunc: func(context.Context, map[string]*corev1.Secret) (*garden.Garden, error) {
-			return nil, fmt.Errorf("garden object is required but not set")
+		gardenFunc: func(context.Context, *gardenerutils.Domain, []*gardenerutils.Domain) (*garden.Garden, error) {
+			return nil, errors.New("garden object is required but not set")
 		},
 		gardenerInfoFunc: func() (*gardencorev1beta1.Gardener, error) {
-			return nil, fmt.Errorf("gardener info is required but not set")
+			return nil, errors.New("gardener info is required but not set")
 		},
 		gardenClusterIdentityFunc: func() (string, error) {
-			return "", fmt.Errorf("garden cluster identity is required but not set")
+			return "", errors.New("garden cluster identity is required but not set")
 		},
 		loggerFunc: func() (logr.Logger, error) {
-			return logr.Discard(), fmt.Errorf("logger is required but not set")
+			return logr.Discard(), errors.New("logger is required but not set")
 		},
 		secretsFunc: func() (map[string]*corev1.Secret, error) {
-			return nil, fmt.Errorf("secrets map is required but not set")
+			return nil, errors.New("secrets map is required but not set")
+		},
+		internalDomainFunc: func() (*gardenerutils.Domain, error) {
+			return nil, errors.New("internal domain is required but not set")
+		},
+		defaultDomainsFunc: func() ([]*gardenerutils.Domain, error) {
+			return nil, errors.New("default domains are required but not set")
 		},
 		seedFunc: func(context.Context) (*seed.Seed, error) {
-			return nil, fmt.Errorf("seed object is required but not set")
+			return nil, errors.New("seed object is required but not set")
 		},
 		shootFunc: func(context.Context, client.Reader, *garden.Garden, *seed.Seed, *corev1.Secret) (*shootpkg.Shoot, error) {
-			return nil, fmt.Errorf("shoot object is required but not set")
+			return nil, errors.New("shoot object is required but not set")
 		},
 	}
 }
@@ -76,18 +85,20 @@ func (b *Builder) WithConfig(cfg *gardenletconfigv1alpha1.GardenletConfiguration
 
 // WithGarden sets the gardenFunc attribute at the Builder.
 func (b *Builder) WithGarden(g *garden.Garden) *Builder {
-	b.gardenFunc = func(context.Context, map[string]*corev1.Secret) (*garden.Garden, error) { return g, nil }
+	b.gardenFunc = func(context.Context, *gardenerutils.Domain, []*gardenerutils.Domain) (*garden.Garden, error) {
+		return g, nil
+	}
 	return b
 }
 
 // WithGardenFrom sets the gardenFunc attribute at the Builder which will build a new Garden object.
 func (b *Builder) WithGardenFrom(reader client.Reader, namespace string) *Builder {
-	b.gardenFunc = func(ctx context.Context, secrets map[string]*corev1.Secret) (*garden.Garden, error) {
+	b.gardenFunc = func(ctx context.Context, internalDomain *gardenerutils.Domain, defaultDomains []*gardenerutils.Domain) (*garden.Garden, error) {
 		return garden.
 			NewBuilder().
 			WithProjectFrom(reader, namespace).
-			WithInternalDomainFromSecrets(secrets).
-			WithDefaultDomainsFromSecrets(secrets).
+			WithInternalDomain(internalDomain).
+			WithDefaultDomains(defaultDomains).
 			Build(ctx)
 	}
 	return b
@@ -114,6 +125,18 @@ func (b *Builder) WithLogger(log logr.Logger) *Builder {
 // WithSecrets sets the secretsFunc attribute at the Builder.
 func (b *Builder) WithSecrets(secrets map[string]*corev1.Secret) *Builder {
 	b.secretsFunc = func() (map[string]*corev1.Secret, error) { return secrets, nil }
+	return b
+}
+
+// WithInternalDomain sets the internalDomainFunc attribute at the Builder.
+func (b *Builder) WithInternalDomain(domain *gardenerutils.Domain) *Builder {
+	b.internalDomainFunc = func() (*gardenerutils.Domain, error) { return domain, nil }
+	return b
+}
+
+// WithDefaultDomains sets the defaultDomainsFunc attribute at the Builder.
+func (b *Builder) WithDefaultDomains(domains []*gardenerutils.Domain) *Builder {
+	b.defaultDomainsFunc = func() ([]*gardenerutils.Domain, error) { return domains, nil }
 	return b
 }
 
@@ -153,7 +176,11 @@ func (b *Builder) WithShootFromCluster(seedClientSet kubernetes.Interface, s *ga
 			NewBuilder().
 			WithShootObjectFromCluster(seedClientSet, controlPlaneNamespace).
 			WithCloudProfileObjectFromCluster(seedClientSet, controlPlaneNamespace).
+			// For Shoots with `spec.maintenance.confineSpecUpdateRollout=true` there could be potentially long time window when the Shoot resource in the Cluster significantly differ from the Shoot resource in the Gardener API, i.e. changed credentials references.
+			// When this shoot operation tries to read the referred infrastructure or DNS credentials as per the Shoot spec from the Cluster, the Seed Authorizer might not allow the request as it is using the Gardener API to build the authorization decision graph.
+			// To avoid potential authorization problems, we always set the infrastructure and DNS credentials to `nil`.
 			WithoutShootCredentials().
+			WithoutShootDNS().
 			WithSeedObject(seedObj.GetInfo()).
 			WithProjectName(gardenObj.Project.Name).
 			WithInternalDomain(gardenObj.InternalDomain).
@@ -205,12 +232,20 @@ func (b *Builder) Build(
 		return nil, err
 	}
 	secrets := make(map[string]*corev1.Secret, len(secretsMap))
-	for k, v := range secretsMap {
-		secrets[k] = v
-	}
+	maps.Copy(secrets, secretsMap)
 	operation.secrets = secrets
 
-	garden, err := b.gardenFunc(ctx, secrets)
+	internalDomain, err := b.internalDomainFunc()
+	if err != nil {
+		return nil, err
+	}
+
+	defaultDomains, err := b.defaultDomainsFunc()
+	if err != nil {
+		return nil, err
+	}
+
+	garden, err := b.gardenFunc(ctx, internalDomain, defaultDomains)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +288,6 @@ func (b *Builder) Build(
 	operation.Shoot = shoot
 
 	// Get the ManagedSeed object for this shoot, if it exists.
-	// Also read the managed seed API server settings from the managed-seed-api-server annotation.
 	operation.ManagedSeed, err = kubernetesutils.GetManagedSeedWithReader(ctx, gardenClient, shoot.GetInfo().Namespace, shoot.GetInfo().Name)
 	if err != nil {
 		return nil, fmt.Errorf("could not get managed seed for shoot %s/%s: %w", shoot.GetInfo().Namespace, shoot.GetInfo().Name, err)
@@ -430,6 +464,11 @@ func (o *Operation) ComputePrometheusHost() string {
 // ComputeValiHost computes the host for vali.
 func (o *Operation) ComputeValiHost() string {
 	return o.ComputeIngressHost("v")
+}
+
+// ComputeOpenTelemetryCollectorHost computes the host for the Collector in the control-plane.
+func (o *Operation) ComputeOpenTelemetryCollectorHost() string {
+	return o.ComputeIngressHost("otc")
 }
 
 // technicalIDPattern addresses the ambiguity that one or two dashes could follow the prefix "shoot" in the technical ID of the shoot.

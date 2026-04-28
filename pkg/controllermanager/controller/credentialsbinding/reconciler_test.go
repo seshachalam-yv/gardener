@@ -46,6 +46,10 @@ var _ = Describe("CredentialsBindingControl", func() {
 
 		BeforeEach(func() {
 			secret = &corev1.Secret{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Secret",
+					APIVersion: corev1.SchemeGroupVersion.String(),
+				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "secret",
 					Namespace: "namespace",
@@ -80,10 +84,18 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-			Expect(secret.ObjectMeta.Labels).To(And(
+			Expect(secret.Labels).To(And(
 				HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),
 				HaveKeyWithValue("provider.shoot.gardener.cloud/some-provider", "true"),
 			))
+		})
+
+		It("should add the finalizer", func() {
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
+			Expect(secret.Finalizers).To(Equal([]string{"gardener.cloud/credentialsbinding"}))
 		})
 
 		It("should remove both the labels from the secret when there are no other credentialsbindings referring it", func() {
@@ -96,7 +108,7 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-			Expect(secret.ObjectMeta.Labels).To(BeEmpty())
+			Expect(secret.Labels).To(BeEmpty())
 		})
 
 		It("should not remove any of the label from the secret when there are other credentialsbindings referring it", func() {
@@ -123,13 +135,13 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-			Expect(secret.ObjectMeta.Labels).To(And(
+			Expect(secret.Labels).To(And(
 				HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),
 				HaveKeyWithValue("provider.shoot.gardener.cloud/some-provider", "true"),
 			))
 		})
 
-		It("should only remove the credentialsbinding ref label from the secret when secret is labeled with secretbinding reference", func() {
+		It("should persist the secretbinding reference label", func() {
 			Expect(fakeClient.Delete(ctx, secret)).To(Succeed())
 			secret = &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
@@ -149,11 +161,169 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
-			Expect(secret.ObjectMeta.Labels).To(Equal(map[string]string{
-				"provider.shoot.gardener.cloud/some-provider": "true",
-				"reference.gardener.cloud/secretbinding":      "true",
+			Expect(secret.Labels).To(Equal(map[string]string{
+				"reference.gardener.cloud/secretbinding": "true",
 			}))
-			Expect(secret.ObjectMeta.Finalizers).To(ConsistOf("gardener.cloud/gardener"))
+		})
+
+		It("should remove the finalizer", func() {
+			Expect(fakeClient.Delete(ctx, secret)).To(Succeed())
+			secret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "secret",
+					Namespace: "namespace",
+				},
+			}
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
+			Expect(secret.Finalizers).To(ConsistOf("gardener.cloud/credentialsbinding"))
+
+			Expect(fakeClient.Delete(ctx, credentialsBinding)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
+			Expect(secret.Finalizers).To(BeEmpty())
+		})
+	})
+
+	Describe("CredentialsBinding and Provider label for InternalSecrets", func() {
+		var (
+			reconciler *credentialsbinding.Reconciler
+			request    reconcile.Request
+
+			credentialsBindingNamespace = "foo"
+			credentialsBindingName      = "bar"
+
+			internalSecret     *gardencorev1beta1.InternalSecret
+			credentialsBinding *securityv1alpha1.CredentialsBinding
+		)
+
+		BeforeEach(func() {
+			internalSecret = &gardencorev1beta1.InternalSecret{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "InternalSecret",
+					APIVersion: gardencorev1beta1.SchemeGroupVersion.String(),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "internal-secret",
+					Namespace: "namespace",
+				},
+			}
+
+			credentialsBinding = &securityv1alpha1.CredentialsBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      credentialsBindingName,
+					Namespace: credentialsBindingNamespace,
+				},
+				CredentialsRef: corev1.ObjectReference{
+					Kind:       "InternalSecret",
+					APIVersion: gardencorev1beta1.SchemeGroupVersion.String(),
+					Namespace:  internalSecret.Namespace,
+					Name:       internalSecret.Name,
+				},
+				Provider: securityv1alpha1.CredentialsBindingProvider{
+					Type: "some-provider",
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, internalSecret)).To(Succeed())
+			Expect(fakeClient.Create(ctx, credentialsBinding)).To(Succeed())
+
+			reconciler = &credentialsbinding.Reconciler{Client: fakeClient}
+			request = reconcile.Request{NamespacedName: types.NamespacedName{Namespace: credentialsBindingNamespace, Name: credentialsBindingName}}
+		})
+
+		It("should add the CredentialsBinding referred label to the InternalSecret referred by the CredentialsBinding", func() {
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(internalSecret), internalSecret)).To(Succeed())
+			Expect(internalSecret.Labels).To(And(
+				HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),
+				HaveKeyWithValue("provider.shoot.gardener.cloud/some-provider", "true"),
+			))
+		})
+
+		It("should add the finalizer", func() {
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(internalSecret), internalSecret)).To(Succeed())
+			Expect(internalSecret.Finalizers).To(Equal([]string{"gardener.cloud/credentialsbinding"}))
+		})
+
+		It("should remove both the labels from the secret when there are no other CredentialsBinding referring it", func() {
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Delete(ctx, credentialsBinding)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(internalSecret), internalSecret)).To(Succeed())
+			Expect(internalSecret.Labels).To(BeEmpty())
+		})
+
+		It("should not remove any of the label from the secret when there are other CredentialsBinding referring it", func() {
+			credentialsBinding2 := &securityv1alpha1.CredentialsBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "credentialsbinding-2",
+					Namespace: "some-namespace",
+				},
+				CredentialsRef: corev1.ObjectReference{
+					Kind:       "InternalSecret",
+					APIVersion: gardencorev1beta1.SchemeGroupVersion.String(),
+					Namespace:  internalSecret.Namespace,
+					Name:       internalSecret.Name,
+				},
+			}
+			Expect(fakeClient.Create(ctx, credentialsBinding2)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Delete(ctx, credentialsBinding)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(internalSecret), internalSecret)).To(Succeed())
+			Expect(internalSecret.Labels).To(And(
+				HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),
+				HaveKeyWithValue("provider.shoot.gardener.cloud/some-provider", "true"),
+			))
+		})
+
+		It("should remove the finalizer", func() {
+			Expect(fakeClient.Delete(ctx, internalSecret)).To(Succeed())
+			internalSecret = &gardencorev1beta1.InternalSecret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "internal-secret",
+					Namespace: "namespace",
+				},
+			}
+			Expect(fakeClient.Create(ctx, internalSecret)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(internalSecret), internalSecret)).To(Succeed())
+			Expect(internalSecret.Finalizers).To(ConsistOf("gardener.cloud/credentialsbinding"))
+
+			Expect(fakeClient.Delete(ctx, credentialsBinding)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(internalSecret), internalSecret)).To(Succeed())
+			Expect(internalSecret.Finalizers).To(BeEmpty())
 		})
 	})
 
@@ -171,6 +341,10 @@ var _ = Describe("CredentialsBindingControl", func() {
 
 		BeforeEach(func() {
 			workloadIdentity = &securityv1alpha1.WorkloadIdentity{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "WorkloadIdentity",
+					APIVersion: securityv1alpha1.SchemeGroupVersion.String(),
+				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "wi",
 					Namespace: "namespace",
@@ -205,8 +379,25 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(workloadIdentity), workloadIdentity)).To(Succeed())
-			Expect(workloadIdentity.ObjectMeta.Labels).To(And(
+			Expect(workloadIdentity.Labels).To(
 				HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),
+			)
+		})
+
+		It("should add the finalizer", func() {
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(workloadIdentity), workloadIdentity)).To(Succeed())
+			Expect(workloadIdentity.Finalizers).To(Equal([]string{"gardener.cloud/credentialsbinding"}))
+		})
+
+		It("should not add the provider shoot label to the WorkloadIdentity referred by the CredentialsBinding", func() {
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(workloadIdentity), workloadIdentity)).To(Succeed())
+			Expect(workloadIdentity.Labels).To(Not(
 				HaveKeyWithValue("provider.shoot.gardener.cloud/some-provider", "true"),
 			))
 		})
@@ -221,7 +412,28 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(workloadIdentity), workloadIdentity)).To(Succeed())
-			Expect(workloadIdentity.ObjectMeta.Labels).To(BeEmpty())
+			Expect(workloadIdentity.Labels).To(BeEmpty())
+		})
+
+		It("should remove labels and finalizers from the WorkloadIdentity when there are CredentialsBindings referring it, but those are being deleted", func() {
+			_, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			credentialsBinding2 := credentialsBinding.DeepCopy()
+			credentialsBinding2.ResourceVersion = ""
+			credentialsBinding2.Name = "credentialsbinding-2"
+			credentialsBinding2.Finalizers = []string{"test"} // prevent deletion
+			Expect(fakeClient.Create(ctx, credentialsBinding2)).To(Succeed())
+			Expect(fakeClient.Delete(ctx, credentialsBinding2)).To(Succeed())
+			Expect(fakeClient.Delete(ctx, credentialsBinding)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(workloadIdentity), workloadIdentity)).To(Succeed())
+			Expect(workloadIdentity.Labels).To(BeEmpty())
+			Expect(workloadIdentity.Finalizers).To(BeEmpty())
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(credentialsBinding2), credentialsBinding2)).To(Succeed()) // ensure the CredentialsBinding is still there
 		})
 
 		It("should not remove any of the label from the WorkloadIdentity when there are other CredentialsBindings referring it", func() {
@@ -248,9 +460,8 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(workloadIdentity), workloadIdentity)).To(Succeed())
-			Expect(workloadIdentity.ObjectMeta.Labels).To(And(
+			Expect(workloadIdentity.Labels).To(And(
 				HaveKeyWithValue("reference.gardener.cloud/credentialsbinding", "true"),
-				HaveKeyWithValue("provider.shoot.gardener.cloud/some-provider", "true"),
 			))
 		})
 	})
@@ -276,6 +487,10 @@ var _ = Describe("CredentialsBindingControl", func() {
 
 		BeforeEach(func() {
 			secret = &corev1.Secret{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "Secret",
+					APIVersion: corev1.SchemeGroupVersion.String(),
+				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "secret",
 					Namespace: "namespace",
@@ -353,11 +568,11 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(quota1), quota1)).To(Succeed())
-			Expect(quota1.ObjectMeta.Labels).To(HaveKeyWithValue(
+			Expect(quota1.Labels).To(HaveKeyWithValue(
 				"reference.gardener.cloud/credentialsbinding", "true",
 			))
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(quota2), quota2)).To(Succeed())
-			Expect(quota2.ObjectMeta.Labels).To(HaveKeyWithValue(
+			Expect(quota2.Labels).To(HaveKeyWithValue(
 				"reference.gardener.cloud/credentialsbinding", "true",
 			))
 		})
@@ -373,10 +588,10 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(quota1), quota1)).To(Succeed())
-			Expect(quota1.ObjectMeta.Labels).To(BeEmpty())
+			Expect(quota1.Labels).To(BeEmpty())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(quota2), quota2)).To(Succeed())
-			Expect(quota2.ObjectMeta.Labels).To(HaveKeyWithValue(
+			Expect(quota2.Labels).To(HaveKeyWithValue(
 				"reference.gardener.cloud/credentialsbinding", "true",
 			))
 
@@ -390,7 +605,7 @@ var _ = Describe("CredentialsBindingControl", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(quota2), quota2)).To(Succeed())
-			Expect(quota2.ObjectMeta.Labels).To(BeEmpty())
+			Expect(quota2.Labels).To(BeEmpty())
 		})
 	})
 })

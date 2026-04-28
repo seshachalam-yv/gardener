@@ -21,8 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/controllerutils"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 )
 
 var upscaleOnlyRequirement = []*vpaautoscalingv1.EvictionRequirement{{
@@ -32,16 +31,14 @@ var upscaleOnlyRequirement = []*vpaautoscalingv1.EvictionRequirement{{
 
 // Reconciler implements the reconciliation logic for adding/removing EvictionRequirements to VPA objects.
 type Reconciler struct {
-	ConcurrentSyncs *int
 	SeedClient      client.Client
+	ConcurrentSyncs *int
 	Clock           clock.Clock
 }
 
 // Reconcile implements the reconciliation logic for adding/removing EvictionRequirements to VPA objects.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
 
 	vpa := &vpaautoscalingv1.VerticalPodAutoscaler{}
 	if err := r.SeedClient.Get(ctx, request.NamespacedName, vpa); err != nil {

@@ -21,11 +21,3 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "poddisruptionbudgetversion" -}}
 policy/v1
 {{- end -}}
-
-{{- define "coredns.enabled" -}}
-{{- if .Values.gardener.runtimeCluster.enabled -}}
-false
-{{- else -}}
-{{ .Values.coredns.enabled }}
-{{- end }}
-{{- end -}}

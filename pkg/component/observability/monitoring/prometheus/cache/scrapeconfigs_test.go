@@ -7,11 +7,37 @@ package cache_test
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/cache"
 )
 
-var _ = Describe("PrometheusRules", func() {
+var _ = Describe("ScrapeConfigs", func() {
+	Describe("#CentralScrapeConfigs", func() {
+		It("should return the expected objects", func() {
+			Expect(cache.CentralScrapeConfigs()).To(HaveExactElements(
+				&monitoringv1alpha1.ScrapeConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "prometheus-cache",
+					},
+					Spec: monitoringv1alpha1.ScrapeConfigSpec{
+						RelabelConfigs: []monitoringv1.RelabelConfig{{
+							Action:      "replace",
+							Replacement: ptr.To("prometheus-cache"),
+							TargetLabel: "job",
+						}},
+						StaticConfigs: []monitoringv1alpha1.StaticConfig{{
+							Targets: []monitoringv1alpha1.Target{"localhost:9090"},
+						}},
+					},
+				},
+			))
+		})
+	})
+
 	Describe("#AdditionalScrapeConfigs", func() {
 		When("seedIsShoot", func() {
 			It("should return the expected objects  (with TLS verification skipped)", func() {
@@ -53,7 +79,7 @@ metric_relabel_configs:
   replacement: '${1}'
 - source_labels: [__name__]
   action: keep
-  regex: ^(container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_throttled_seconds_total|container_cpu_usage_seconds_total|container_fs_inodes_total|container_fs_limit_bytes|container_fs_reads_bytes_total|container_fs_usage_bytes|container_fs_writes_bytes_total|container_last_seen|container_memory_cache|container_memory_mapped_file|container_memory_rss|container_memory_usage_bytes|container_memory_working_set_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_oom_events_total)$
+  regex: ^(container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_throttled_seconds_total|container_cpu_usage_seconds_total|container_fs_inodes_total|container_fs_limit_bytes|container_fs_reads_bytes_total|container_fs_usage_bytes|container_fs_writes_bytes_total|container_fs_reads_total|container_fs_writes_total|container_last_seen|container_memory_cache|container_memory_mapped_file|container_memory_rss|container_memory_usage_bytes|container_memory_working_set_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_oom_events_total)$
 - source_labels:
   - container
   - __name__
@@ -103,7 +129,7 @@ relabel_configs:
 metric_relabel_configs:
 - source_labels: [__name__]
   action: keep
-  regex: ^(kubelet_volume_stats_available_bytes|kubelet_volume_stats_capacity_bytes|kubelet_volume_stats_used_bytes)$
+  regex: ^(kubelet_volume_stats_available_bytes|kubelet_volume_stats_capacity_bytes|kubelet_volume_stats_used_bytes|kubelet_volume_stats_inodes|kubelet_volume_stats_inodes_free|kubelet_volume_stats_inodes_used)$
 `,
 				))
 			})
@@ -149,7 +175,7 @@ metric_relabel_configs:
   replacement: '${1}'
 - source_labels: [__name__]
   action: keep
-  regex: ^(container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_throttled_seconds_total|container_cpu_usage_seconds_total|container_fs_inodes_total|container_fs_limit_bytes|container_fs_reads_bytes_total|container_fs_usage_bytes|container_fs_writes_bytes_total|container_last_seen|container_memory_cache|container_memory_mapped_file|container_memory_rss|container_memory_usage_bytes|container_memory_working_set_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_oom_events_total)$
+  regex: ^(container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_throttled_seconds_total|container_cpu_usage_seconds_total|container_fs_inodes_total|container_fs_limit_bytes|container_fs_reads_bytes_total|container_fs_usage_bytes|container_fs_writes_bytes_total|container_fs_reads_total|container_fs_writes_total|container_last_seen|container_memory_cache|container_memory_mapped_file|container_memory_rss|container_memory_usage_bytes|container_memory_working_set_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_oom_events_total)$
 - source_labels:
   - container
   - __name__
@@ -199,7 +225,7 @@ relabel_configs:
 metric_relabel_configs:
 - source_labels: [__name__]
   action: keep
-  regex: ^(kubelet_volume_stats_available_bytes|kubelet_volume_stats_capacity_bytes|kubelet_volume_stats_used_bytes)$
+  regex: ^(kubelet_volume_stats_available_bytes|kubelet_volume_stats_capacity_bytes|kubelet_volume_stats_used_bytes|kubelet_volume_stats_inodes|kubelet_volume_stats_inodes_free|kubelet_volume_stats_inodes_used)$
 `,
 				))
 			})

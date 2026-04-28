@@ -4,11 +4,11 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: gardener.cloud:system:gardenlet
+  name: gardener.cloud:system:gardenlet{{ if .Values.isolateClusterResources }}:{{ .Release.Namespace }}{{ end }}
   labels:
     app: gardener
     role: gardenlet
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -29,14 +29,6 @@ rules:
   - get
   - list
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - persistentvolumes
-  verbs:
-  # This is currently necessary to migrate deprecated topology labels on PVs, ref: https://github.com/gardener/gardener/blob/e542bc4794473fcec1742ed751a2d420169c8326/cmd/gardenlet/app/migration.go#L27-L30.
-  # TODO(plkokanov): Remove this RBAC rule when the requiring code is removed (when Kubernetes 1.27 support gets dropped).
-  - patch
 - apiGroups:
   - ""
   resources:
@@ -102,6 +94,7 @@ rules:
   - delete
 - apiGroups:
   - ""
+  - events.k8s.io
   resources:
   - events
   verbs:
@@ -142,6 +135,7 @@ rules:
   resourceNames:
   - etcds.druid.gardener.cloud
   - etcdcopybackupstasks.druid.gardener.cloud
+  - etcdopstasks.druid.gardener.cloud
   - destinationrules.networking.istio.io
   - envoyfilters.networking.istio.io
   - gateways.networking.istio.io
@@ -196,15 +190,18 @@ rules:
   - clusters.extensions.gardener.cloud
   - controlplanes.extensions.gardener.cloud
   - networks.extensions.gardener.cloud
+  - selfhostedshootexposures.extensions.gardener.cloud
   - verticalpodautoscalers.autoscaling.k8s.io
   - verticalpodautoscalercheckpoints.autoscaling.k8s.io
   - perses.perses.dev
   - persesdashboards.perses.dev
   - persesdatasources.perses.dev
+  - persesglobaldatasources.perses.dev
   - opentelemetrycollectors.opentelemetry.io
   - targetallocators.opentelemetry.io
   - opampbridges.opentelemetry.io
   - instrumentations.opentelemetry.io
+  - vlsingles.operator.victoriametrics.com
   verbs:
   - delete
 - apiGroups:
@@ -253,6 +250,7 @@ rules:
   resources:
   - etcds
   - etcdcopybackupstasks
+  - etcdopstasks
   verbs:
   - create
   - delete
@@ -275,6 +273,7 @@ rules:
   - infrastructures
   - networks
   - operatingsystemconfigs
+  - selfhostedshootexposures
   - workers
   verbs:
   - create
@@ -296,6 +295,7 @@ rules:
   - infrastructures/status
   - networks/status
   - operatingsystemconfigs/status
+  - selfhostedshootexposures/status
   - workers/status
   verbs:
   - patch
@@ -456,7 +456,6 @@ rules:
   - servicemonitors
   - scrapeconfigs
   - prometheusrules
-  # TODO(vicwicker): Remove this after v1.125 has been released.
   - prometheuses
   verbs:
   - list
@@ -466,3 +465,11 @@ rules:
   - patch
   - update
   - delete
+- apiGroups:
+  - operator.victoriametrics.com
+  resources:
+  - vlsingles
+  verbs:
+  - get
+  - list
+  - watch

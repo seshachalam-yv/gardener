@@ -8,13 +8,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,9 +26,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gardener/gardener/imagevector"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/nodeinit"
@@ -37,7 +40,6 @@ import (
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/features"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -145,12 +147,20 @@ type OriginalValues struct {
 	ValitailEnabled bool
 	// ValiIngressHostName is the ingress host name of the shoot's Vali.
 	ValiIngressHostName string
+	// OpenTelemetryLogShipperEnabled states whether the OpenTelemetry Collector that acts as a log shipper shall be enabled.
+	OpenTelemetryCollectorLogShipperEnabled bool
+	// OpenTelemetryIngressHostName is the ingress host name of the shoot's OpenTelemetry Collector.
+	OpenTelemetryIngressHostName string
 	// NodeMonitorGracePeriod defines the grace period before an unresponsive node is marked unhealthy.
 	NodeMonitorGracePeriod metav1.Duration
 	// NodeLocalDNSEnabled indicates whether node local dns is enabled or not.
 	NodeLocalDNSEnabled bool
 	// PrimaryIPFamily represents the preferred IP family (IPv4 or IPv6) to be used.
 	PrimaryIPFamily gardencorev1beta1.IPFamily
+	// KubeProxyConfig is the configuration for kube-proxy.
+	KubeProxyConfig *gardencorev1beta1.KubeProxyConfig
+	// Region is the name of the region specified in the Shoot spec.
+	Region *string
 }
 
 // New creates a new instance of Interface.
@@ -235,16 +245,6 @@ func (o *operatingSystemConfig) Restore(ctx context.Context, shootState *gardenc
 }
 
 func (o *operatingSystemConfig) reconcile(ctx context.Context, reconcileFn func(deployer) error) error {
-	if !features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer) {
-		if err := gardenerutils.
-			NewShootAccessSecret(nodeagentconfigv1alpha1.AccessSecretName, o.values.Namespace).
-			WithTargetSecret(nodeagentconfigv1alpha1.AccessSecretName, metav1.NamespaceSystem).
-			WithTokenExpirationDuration("720h").
-			Reconcile(ctx, o.client); err != nil {
-			return err
-		}
-	}
-
 	if err := o.updateHashVersioningSecret(ctx); err != nil {
 		return err
 	}
@@ -259,7 +259,7 @@ func (o *operatingSystemConfig) reconcile(ctx context.Context, reconcileFn func(
 			return fmt.Errorf("failed reconciling OperatingSystemConfig %s for worker %s: %w", client.ObjectKeyFromObject(osc), worker.Name, err)
 		}
 
-		oscKey, err := o.calculateKey(hashVersion, &worker)
+		oscKey, err := calculateKeyForValues(hashVersion, o.values, &worker)
 		if err != nil {
 			return err
 		}
@@ -361,7 +361,7 @@ func (o *operatingSystemConfig) updateHashVersioningSecret(ctx context.Context) 
 			// check if hashes still match
 			hashHasChanged := false
 			for version, hash := range workerHash.HashVersionToOSCKey {
-				expectedHash, err := o.calculateKey(version, &worker)
+				expectedHash, err := calculateKeyForValues(version, o.values, &worker)
 				if err != nil {
 					return err
 				}
@@ -376,11 +376,11 @@ func (o *operatingSystemConfig) updateHashVersioningSecret(ctx context.Context) 
 			}
 
 			// calculate expected hashes
-			currentHash, err := o.calculateKey(workerHash.CurrentVersion, &worker)
+			currentHash, err := calculateKeyForValues(workerHash.CurrentVersion, o.values, &worker)
 			if err != nil {
 				return err
 			}
-			latestHash, err := o.calculateKey(LatestHashVersion(), &worker)
+			latestHash, err := calculateKeyForValues(LatestHashVersion(), o.values, &worker)
 			if err != nil {
 				return err
 			}
@@ -453,7 +453,7 @@ func (o *operatingSystemConfig) Wait(ctx context.Context) error {
 			o.waitInterval,
 			o.waitSevereThreshold,
 			o.waitTimeout,
-			func() error {
+			func(ctx context.Context) error {
 				if purpose != extensionsv1alpha1.OperatingSystemConfigPurposeProvision {
 					return nil
 				}
@@ -538,7 +538,7 @@ func (o *operatingSystemConfig) WaitCleanup(ctx context.Context) error {
 
 // DeleteStaleResources deletes unused OperatingSystemConfig resources from the shoot namespace in the seed.
 func (o *operatingSystemConfig) DeleteStaleResources(ctx context.Context) error {
-	wantedOSCs, err := o.getWantedOSCNames()
+	wantedOSCs, err := o.getWantedOSCNames(ctx)
 	if err != nil {
 		return err
 	}
@@ -547,7 +547,7 @@ func (o *operatingSystemConfig) DeleteStaleResources(ctx context.Context) error 
 
 // WaitCleanupStaleResources waits until all unused OperatingSystemConfig resources are cleaned up.
 func (o *operatingSystemConfig) WaitCleanupStaleResources(ctx context.Context) error {
-	wantedOSCs, err := o.getWantedOSCNames()
+	wantedOSCs, err := o.getWantedOSCNames(ctx)
 	if err != nil {
 		return err
 	}
@@ -572,7 +572,7 @@ func (o *operatingSystemConfig) waitCleanup(ctx context.Context, wantedOSCNames 
 
 // getWantedOSCNames returns the names of all OSC resources, that are currently needed based
 // on the configured worker pools.
-func (o *operatingSystemConfig) getWantedOSCNames() (sets.Set[string], error) {
+func (o *operatingSystemConfig) getWantedOSCNames(ctx context.Context) (sets.Set[string], error) {
 	wantedOSCNames := sets.New[string]()
 
 	for _, worker := range o.values.Workers {
@@ -585,11 +585,33 @@ func (o *operatingSystemConfig) getWantedOSCNames() (sets.Set[string], error) {
 			extensionsv1alpha1.OperatingSystemConfigPurposeProvision,
 			extensionsv1alpha1.OperatingSystemConfigPurposeReconcile,
 		} {
-			oscKey, err := o.calculateKey(version, &worker)
+			oscKey, err := calculateKeyForValues(version, o.values, &worker)
 			if err != nil {
 				return nil, err
 			}
 			wantedOSCNames.Insert(oscKey + keySuffix(version, worker.Machine.Image, purpose))
+		}
+	}
+
+	machineList := &machinev1alpha1.MachineList{}
+	if err := o.client.List(ctx, machineList, client.InNamespace(o.values.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list Machines: %w", err)
+	}
+
+	for _, machine := range machineList.Items {
+		if val, ok := machine.Spec.NodeTemplateSpec.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName]; ok {
+			originalVal := generateOSCName(
+				val,
+				extensionsv1alpha1.OperatingSystemConfigPurposeReconcile,
+			)
+
+			initVal := generateOSCName(
+				val,
+				extensionsv1alpha1.OperatingSystemConfigPurposeProvision,
+			)
+
+			wantedOSCNames.Insert(originalVal, initVal)
+			continue
 		}
 	}
 
@@ -607,7 +629,7 @@ func (o *operatingSystemConfig) forEachWorkerPoolAndPurpose(fn func(int, *extens
 			extensionsv1alpha1.OperatingSystemConfigPurposeProvision,
 			extensionsv1alpha1.OperatingSystemConfigPurposeReconcile,
 		} {
-			oscKey, err := o.calculateKey(version, &worker)
+			oscKey, err := calculateKeyForValues(version, o.values, &worker)
 			if err != nil {
 				return err
 			}
@@ -715,16 +737,14 @@ func (o *operatingSystemConfig) newDeployer(version int, osc *extensionsv1alpha1
 	kubeletConfig := v1beta1helper.CalculateEffectiveKubeletConfiguration(o.values.KubeletConfig, worker.Kubernetes)
 
 	images := make(map[string]*imagevectorutils.Image, len(o.values.Images))
-	for imageName, image := range o.values.Images {
-		images[imageName] = image
-	}
+	maps.Copy(images, o.values.Images)
 
 	images[imagevector.ContainerImageNameHyperkube], err = imagevector.Containers().FindImage(imagevector.ContainerImageNameHyperkube, imagevectorutils.RuntimeVersion(kubernetesVersion.String()), imagevectorutils.TargetVersion(kubernetesVersion.String()))
 	if err != nil {
 		return deployer{}, fmt.Errorf("failed finding hyperkube image for version %s: %w", kubernetesVersion.String(), err)
 	}
 
-	oscKey, err := o.calculateKey(version, &worker)
+	oscKey, err := calculateKeyForValues(version, o.values, &worker)
 	if err != nil {
 		return deployer{}, err
 	}
@@ -749,36 +769,39 @@ func (o *operatingSystemConfig) newDeployer(version int, osc *extensionsv1alpha1
 	}
 
 	return deployer{
-		client:                       o.client,
-		osc:                          osc,
-		worker:                       worker,
-		purpose:                      purpose,
-		key:                          oscKey,
-		apiServerURL:                 o.values.APIServerURL,
-		caBundle:                     caBundle,
-		clusterCASecretName:          clusterCASecret.Name,
-		clusterCABundle:              clusterCASecret.Data[secretsutils.DataKeyCertificateBundle],
-		clusterDNSAddresses:          o.values.ClusterDNSAddresses,
-		clusterDomain:                o.values.ClusterDomain,
-		criName:                      criName,
-		images:                       images,
-		kubeletCABundle:              kubeletCASecret.Data[secretsutils.DataKeyCertificateBundle],
-		kubeletConfig:                kubeletConfig,
-		kubeletConfigParameters:      kubeletConfigParameters,
-		kubeletCLIFlags:              kubeletCLIFlags,
-		kubeletDataVolumeName:        worker.KubeletDataVolumeName,
-		kubeProxyEnabled:             o.values.KubeProxyEnabled,
-		kubernetesVersion:            kubernetesVersion,
-		sshPublicKeys:                o.values.SSHPublicKeys,
-		sshAccessEnabled:             o.values.SSHAccessEnabled,
-		valiIngressHostName:          o.values.ValiIngressHostName,
-		valitailEnabled:              o.values.ValitailEnabled,
-		nodeMonitorGracePeriod:       o.values.NodeMonitorGracePeriod,
-		nodeLocalDNSEnabled:          o.values.NodeLocalDNSEnabled,
-		primaryIPFamily:              o.values.PrimaryIPFamily,
-		taints:                       taints,
-		caRotationLastInitiationTime: caRotationLastInitiationTime,
+		client:                                  o.client,
+		osc:                                     osc,
+		worker:                                  worker,
+		purpose:                                 purpose,
+		key:                                     oscKey,
+		apiServerURL:                            o.values.APIServerURL,
+		caBundle:                                caBundle,
+		clusterCASecretName:                     clusterCASecret.Name,
+		clusterCABundle:                         clusterCASecret.Data[secretsutils.DataKeyCertificateBundle],
+		clusterDNSAddresses:                     o.values.ClusterDNSAddresses,
+		clusterDomain:                           o.values.ClusterDomain,
+		criName:                                 criName,
+		images:                                  images,
+		kubeletCABundle:                         kubeletCASecret.Data[secretsutils.DataKeyCertificateBundle],
+		kubeletConfig:                           kubeletConfig,
+		kubeletConfigParameters:                 kubeletConfigParameters,
+		kubeletCLIFlags:                         kubeletCLIFlags,
+		kubeletDataVolumeName:                   worker.KubeletDataVolumeName,
+		kubeProxyEnabled:                        o.values.KubeProxyEnabled,
+		kubernetesVersion:                       kubernetesVersion,
+		sshPublicKeys:                           o.values.SSHPublicKeys,
+		sshAccessEnabled:                        o.values.SSHAccessEnabled,
+		valiIngressHostName:                     o.values.ValiIngressHostName,
+		valitailEnabled:                         o.values.ValitailEnabled,
+		openTelemetryCollectorIngressHostName:   o.values.OpenTelemetryIngressHostName,
+		openTelemetryCollectorLogShipperEnabled: o.values.OpenTelemetryCollectorLogShipperEnabled,
+		nodeMonitorGracePeriod:                  o.values.NodeMonitorGracePeriod,
+		nodeLocalDNSEnabled:                     o.values.NodeLocalDNSEnabled,
+		primaryIPFamily:                         o.values.PrimaryIPFamily,
+		taints:                                  taints,
+		caRotationLastInitiationTime:            caRotationLastInitiationTime,
 		serviceAccountKeyRotationLastInitiationTime: serviceAccountKeyRotationLastInitiationTime,
+		region: o.values.Region,
 	}, nil
 }
 
@@ -842,12 +865,15 @@ type deployer struct {
 	sshAccessEnabled                            bool
 	valiIngressHostName                         string
 	valitailEnabled                             bool
+	openTelemetryCollectorIngressHostName       string
+	openTelemetryCollectorLogShipperEnabled     bool
 	nodeLocalDNSEnabled                         bool
 	nodeMonitorGracePeriod                      metav1.Duration
 	primaryIPFamily                             gardencorev1beta1.IPFamily
 	taints                                      []corev1.Taint
 	caRotationLastInitiationTime                *metav1.Time
 	serviceAccountKeyRotationLastInitiationTime *metav1.Time
+	region                                      *string
 }
 
 // exposed for testing
@@ -866,28 +892,30 @@ func (d *deployer) deploy(ctx context.Context, operation string) (extensionsv1al
 	)
 
 	componentsContext := components.Context{
-		Key:                     d.key,
-		CABundle:                d.caBundle,
-		ClusterDNSAddresses:     d.clusterDNSAddresses,
-		ClusterDomain:           d.clusterDomain,
-		CRIName:                 d.criName,
-		Images:                  d.images,
-		NodeLabels:              gardenerutils.NodeLabelsForWorkerPool(d.worker, d.nodeLocalDNSEnabled, d.key),
-		NodeMonitorGracePeriod:  d.nodeMonitorGracePeriod,
-		KubeletCABundle:         d.kubeletCABundle,
-		KubeletConfigParameters: d.kubeletConfigParameters,
-		KubeletCLIFlags:         d.kubeletCLIFlags,
-		KubeletDataVolumeName:   d.kubeletDataVolumeName,
-		KubeProxyEnabled:        d.kubeProxyEnabled,
-		KubernetesVersion:       d.kubernetesVersion,
-		SSHPublicKeys:           d.sshPublicKeys,
-		SSHAccessEnabled:        d.sshAccessEnabled,
-		ValitailEnabled:         d.valitailEnabled,
-		ValiIngress:             d.valiIngressHostName,
-		APIServerURL:            d.apiServerURL,
-		Sysctls:                 d.worker.Sysctls,
-		PreferIPv6:              d.primaryIPFamily == gardencorev1beta1.IPFamilyIPv6,
-		Taints:                  d.taints,
+		Key:                                     d.key,
+		CABundle:                                d.caBundle,
+		ClusterDNSAddresses:                     d.clusterDNSAddresses,
+		ClusterDomain:                           d.clusterDomain,
+		CRIName:                                 d.criName,
+		Images:                                  d.images,
+		NodeLabels:                              gardenerutils.NodeLabelsForWorkerPool(d.worker, d.nodeLocalDNSEnabled, d.key, ptr.Deref(d.region, "")),
+		NodeMonitorGracePeriod:                  d.nodeMonitorGracePeriod,
+		KubeletCABundle:                         d.kubeletCABundle,
+		KubeletConfigParameters:                 d.kubeletConfigParameters,
+		KubeletCLIFlags:                         d.kubeletCLIFlags,
+		KubeletDataVolumeName:                   d.kubeletDataVolumeName,
+		KubeProxyEnabled:                        d.kubeProxyEnabled,
+		KubernetesVersion:                       d.kubernetesVersion,
+		SSHPublicKeys:                           d.sshPublicKeys,
+		SSHAccessEnabled:                        d.sshAccessEnabled,
+		ValitailEnabled:                         d.valitailEnabled,
+		ValiIngress:                             d.valiIngressHostName,
+		OpenTelemetryCollectorLogShipperEnabled: d.openTelemetryCollectorLogShipperEnabled,
+		OpenTelemetryCollectorIngressHostName:   d.openTelemetryCollectorIngressHostName,
+		APIServerURL:                            d.apiServerURL,
+		Sysctls:                                 d.worker.Sysctls,
+		PreferIPv6:                              d.primaryIPFamily == gardencorev1beta1.IPFamilyIPv6,
+		Taints:                                  d.taints,
 	}
 
 	switch d.purpose {
@@ -987,22 +1015,22 @@ func (d *deployer) deploy(ctx context.Context, operation string) (extensionsv1al
 	return d.osc, err
 }
 
-func (o *operatingSystemConfig) calculateKey(version int, worker *gardencorev1beta1.Worker) (string, error) {
+func calculateKeyForValues(version int, values *Values, worker *gardencorev1beta1.Worker) (string, error) {
 	if v1beta1helper.IsUpdateStrategyInPlace(worker.UpdateStrategy) {
 		return fmt.Sprintf("gardener-node-agent-%s", worker.Name), nil
 	}
 
-	return o.calculateKeyForVersion(version, worker)
-}
-
-func (o *operatingSystemConfig) calculateKeyForVersion(version int, worker *gardencorev1beta1.Worker) (string, error) {
-	kubernetesVersion, err := v1beta1helper.CalculateEffectiveKubernetesVersion(o.values.KubernetesVersion, worker.Kubernetes)
+	kubernetesVersion, err := v1beta1helper.CalculateEffectiveKubernetesVersion(values.KubernetesVersion, worker.Kubernetes)
 	if err != nil {
 		return "", err
 	}
-	kubeletConfiguration := v1beta1helper.CalculateEffectiveKubeletConfiguration(o.values.KubeletConfig, worker.Kubernetes)
+	kubeletConfiguration := v1beta1helper.CalculateEffectiveKubeletConfiguration(values.KubeletConfig, worker.Kubernetes)
+	kubeProxyConfig := &gardencorev1beta1.KubeProxyConfig{}
+	if values.KubeProxyConfig != nil {
+		kubeProxyConfig = values.KubeProxyConfig
+	}
 
-	return CalculateKeyForVersion(version, kubernetesVersion, o.values, worker, kubeletConfiguration)
+	return CalculateKeyForVersion(version, kubernetesVersion, values, worker, kubeletConfiguration, kubeProxyConfig)
 }
 
 // CalculateKeyForVersion is exposed for testing purposes only
@@ -1014,6 +1042,7 @@ func calculateKeyForVersion(
 	values *Values,
 	worker *gardencorev1beta1.Worker,
 	kubeletConfiguration *gardencorev1beta1.KubeletConfig,
+	kubeProxyConfig *gardencorev1beta1.KubeProxyConfig,
 ) (
 	string,
 	error,
@@ -1023,7 +1052,7 @@ func calculateKeyForVersion(
 		// TODO(MichaelEischer): Remove KeyV1 after support for Kubernetes 1.30 is dropped
 		return KeyV1(worker.Name, kubernetesVersion, worker.CRI), nil
 	case 2:
-		return KeyV2(kubernetesVersion, values.CredentialsRotationStatus, worker, values.NodeLocalDNSEnabled, kubeletConfiguration), nil
+		return KeyV2(kubernetesVersion, values.CredentialsRotationStatus, worker, values.NodeLocalDNSEnabled, kubeletConfiguration, kubeProxyConfig), nil
 	default:
 		return "", fmt.Errorf("unsupported osc key hash version %v", version)
 	}
@@ -1057,6 +1086,7 @@ func KeyV2(
 	worker *gardencorev1beta1.Worker,
 	nodeLocalDNSEnabled bool,
 	kubeletConfiguration *gardencorev1beta1.KubeletConfig,
+	kubeProxyConfig *gardencorev1beta1.KubeProxyConfig,
 ) string {
 	if kubernetesVersion == nil {
 		return ""
@@ -1068,7 +1098,8 @@ func KeyV2(
 	)
 
 	if worker.Machine.Image != nil {
-		data = append(data, worker.Machine.Image.Name+*worker.Machine.Image.Version)
+		// worker.Machine.Image.Version is unset for self-hosted shoots with unmanaged infrastructure
+		data = append(data, worker.Machine.Image.Name+ptr.Deref(worker.Machine.Image.Version, ""))
 	}
 
 	if worker.Volume != nil {
@@ -1095,31 +1126,57 @@ func KeyV2(
 		}
 	}
 
-	if nodeLocalDNSEnabled {
+	if (version.ConstraintK8sLess134.Check(kubernetesVersion) && nodeLocalDNSEnabled) ||
+		(v1beta1helper.IsKubeProxyIPVSMode(kubeProxyConfig) && nodeLocalDNSEnabled) {
 		data = append(data, "node-local-dns")
 	}
 
 	data = append(data, gardenerutils.CalculateDataStringForKubeletConfiguration(kubeletConfiguration)...)
 
-	var result string
+	var result strings.Builder
 	for _, v := range data {
-		result += utils.ComputeSHA256Hex([]byte(v))
+		result.WriteString(utils.ComputeSHA256Hex([]byte(v)))
 	}
 
-	return fmt.Sprintf("gardener-node-agent-%s-%s", worker.Name, utils.ComputeSHA256Hex([]byte(result))[:16])
+	return fmt.Sprintf("gardener-node-agent-%s-%s", worker.Name, utils.ComputeSHA256Hex([]byte(result.String()))[:16])
 }
 
-func keySuffix(version int, machineImage *gardencorev1beta1.ShootMachineImage, purpose extensionsv1alpha1.OperatingSystemConfigPurpose) string {
+func oscPurposeSuffix(purpose extensionsv1alpha1.OperatingSystemConfigPurpose) string {
+	switch purpose {
+	case extensionsv1alpha1.OperatingSystemConfigPurposeProvision:
+		return "-init"
+	case extensionsv1alpha1.OperatingSystemConfigPurposeReconcile:
+		return "-original"
+	default:
+		return ""
+	}
+}
+
+func keySuffix(
+	version int,
+	machineImage *gardencorev1beta1.ShootMachineImage,
+	purpose extensionsv1alpha1.OperatingSystemConfigPurpose,
+) string {
 	var imagePrefix string
 	if version == 1 && machineImage != nil {
 		imagePrefix = "-" + machineImage.Name
 	}
 
-	switch purpose {
-	case extensionsv1alpha1.OperatingSystemConfigPurposeProvision:
-		return imagePrefix + "-init"
-	case extensionsv1alpha1.OperatingSystemConfigPurposeReconcile:
-		return imagePrefix + "-original"
+	suffix := oscPurposeSuffix(purpose)
+	if suffix == "" {
+		return ""
 	}
-	return ""
+
+	return imagePrefix + suffix
+}
+
+func generateOSCName(
+	val string,
+	purpose extensionsv1alpha1.OperatingSystemConfigPurpose,
+) string {
+	suffix := oscPurposeSuffix(purpose)
+	if suffix == "" {
+		return val
+	}
+	return val + suffix
 }

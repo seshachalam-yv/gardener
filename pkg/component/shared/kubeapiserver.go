@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apiserver/pkg/features"
 	admissionapiv1 "k8s.io/pod-security-admission/admission/api/v1"
 	admissionapiv1alpha1 "k8s.io/pod-security-admission/admission/api/v1alpha1"
 	admissionapiv1beta1 "k8s.io/pod-security-admission/admission/api/v1beta1"
@@ -82,6 +83,7 @@ func NewKubeAPIServer(
 	priorityClassName string,
 	isWorkerless bool,
 	runsAsStaticPod bool,
+	istioTLSTerminationEnabled bool,
 	auditWebhookConfig *apiserver.AuditWebhook,
 	authenticationWebhookConfig *kubeapiserver.AuthenticationWebhook,
 	authorizationWebhookConfigs []kubeapiserver.AuthorizationWebhook,
@@ -160,6 +162,19 @@ func NewKubeAPIServer(
 		enableAnonymousAuthentication = apiServerConfig.EnableAnonymousAuthentication
 	}
 
+	// UnauthenticatedHTTP2DOSMitigation feature gate must be disabled when IstioTLSTermination is enabled.
+	// The mitigation which is implemented in kube-apiserver does not affect the connection from client but only between
+	// istio ingress gateway and kube-apiserver. Therefore, it does not provide any protection but can cause quite some
+	// issues like dropped connections. It is not recommended to have this when using L7 load-balancing.
+	// More details: https://github.com/kubernetes/kubernetes/pull/121120
+	// With IstioTLSTermination enabled, HTTP/2 "Rapid Reset" DoS Vulnerability is mitigated by Envoy measurements.
+	if istioTLSTerminationEnabled {
+		if featureGates == nil {
+			featureGates = make(map[string]bool)
+		}
+		featureGates[string(features.UnauthenticatedHTTP2DOSMitigation)] = false
+	}
+
 	enabledAdmissionPluginConfigs, err := convertToAdmissionPluginConfigs(ctx, resourceConfigClient, objectMeta.Namespace, enabledAdmissionPlugins)
 	if err != nil {
 		return nil, err
@@ -216,8 +231,10 @@ func DeployKubeAPIServer(
 	nodeNetworkCIDRs []net.IPNet,
 	serviceNetworkCIDRs []net.IPNet,
 	podNetworkCIDRs []net.IPNet,
+	seedPodNetwork *net.IPNet,
 	resourcesToEncrypt []string,
 	encryptedResources []string,
+	encryptionProviderType gardencorev1beta1.EncryptionProviderType,
 	etcdEncryptionKeyRotationPhase gardencorev1beta1.CredentialsRotationPhase,
 	wantScaleDown bool,
 ) error {
@@ -258,6 +275,7 @@ func DeployKubeAPIServer(
 	kubeAPIServer.SetNodeNetworkCIDRs(nodeNetworkCIDRs)
 	kubeAPIServer.SetServiceNetworkCIDRs(serviceNetworkCIDRs)
 	kubeAPIServer.SetPodNetworkCIDRs(podNetworkCIDRs)
+	kubeAPIServer.SetSeedPodNetwork(seedPodNetwork)
 
 	etcdEncryptionConfig, err := computeAPIServerETCDEncryptionConfig(
 		ctx,
@@ -267,6 +285,7 @@ func DeployKubeAPIServer(
 		etcdEncryptionKeyRotationPhase,
 		append(resourcesToEncrypt, sets.List(gardenerutils.DefaultResourcesForEncryption())...),
 		append(encryptedResources, sets.List(gardenerutils.DefaultResourcesForEncryption())...),
+		encryptionProviderType,
 	)
 	if err != nil {
 		return err
@@ -303,6 +322,13 @@ func computeKubeAPIServerImages(
 			return kubeapiserver.Images{}, err
 		}
 		result.VPNClient = imageVPNClient.String()
+
+		imageNameEnvoyProxy := imagevector.ContainerImageNameEnvoyProxy
+		imageEnvoyProxy, err := imagevector.Containers().FindImage(imageNameEnvoyProxy, imagevectorutils.RuntimeVersion(runtimeVersion.String()), imagevectorutils.TargetVersion(targetVersion.String()))
+		if err != nil {
+			return kubeapiserver.Images{}, err
+		}
+		result.EnvoyProxy = imageEnvoyProxy.String()
 	}
 
 	return result, nil

@@ -1,0 +1,39 @@
+spec:
+  resources:
+    - metricNamePrefix: garden
+      groupVersionKind:
+        group: operator.gardener.cloud
+        version: v1alpha1
+        kind: Extension
+      commonLabels: {}
+      labelsFromPath:
+        name:
+          - metadata
+          - name
+      metrics:
+        - name: extension_condition
+          help: represents a condition of an Operator Extension object
+          each:
+            type: stateset
+            gauge: null
+            stateSet:
+              labelsFromPath:
+                condition:
+                  - type
+              path:
+                - status
+                - conditions
+              list:
+                - Progressing
+                - "True"
+                - "False"
+                - Unknown
+              labelName: status
+              valueFrom:
+                - status
+            info: null
+          commonLabels: {}
+          labelsFromPath: {}
+          errorLogV: 0
+      errorLogV: 0
+      resourcePlural: ""

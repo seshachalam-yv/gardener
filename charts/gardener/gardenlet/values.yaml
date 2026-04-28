@@ -1,5 +1,6 @@
 replicaCount: 2
 revisionHistoryLimit: 2
+isolateClusterResources: false
 serviceAccountName: gardenlet
 invalidateServiceAccountToken: true
 image:
@@ -101,7 +102,7 @@ config:
       syncPeriod: 30s
       staleExtensionHealthChecks:
         enabled: true
-      # threshold: 5m
+        threshold: 5m
       managedResourceProgressingThreshold: 1h
       conditionThresholds:
       - type: APIServerAvailable
@@ -135,6 +136,7 @@ config:
       concurrentSyncs: 5
     tokenRequestorWorkloadIdentity:
       concurrentSyncs: 5
+    # tokenExpirationDuration: 6h  
     vpaEvictionRequirements:
       concurrentSyncs: 5
   resources:
@@ -146,8 +148,8 @@ config:
     renewDeadline: 10s
     retryPeriod: 2s
     resourceLock: leases
-  # resourceName: gardenlet-leader-election
-  # resourceNamespace: garden
+    resourceName: gardenlet-leader-election
+    resourceNamespace: garden
   logLevel: info
   logFormat: json
   server:
@@ -199,6 +201,14 @@ config:
 #     etcdConnectionTimeout: 5s
 # logging:
 #   enabled: false
+#   vali:
+#     enabled: true
+#     garden:
+#       storage: "100Gi"
+#   victoriaLogs:
+#     enabled: true
+#     garden:
+#       storage: "100Gi"
 # monitoring:
 #   shoot:
 #     remoteWrite:
@@ -215,9 +225,12 @@ config:
 nodeToleration:
   defaultNotReadyTolerationSeconds: 60
   defaultUnreachableTolerationSeconds: 60
+tolerations: []
 
 #selfUpgrade:
 #  deployment:
 #    helm:
 #      ociRepository:
 #        ref: <url-to-oci-repository-containing-gardenlet-helm-chart>
+#  name: name-of-self-hosted-shoot
+#  namespace: namespace-of-self-hosted-shoot

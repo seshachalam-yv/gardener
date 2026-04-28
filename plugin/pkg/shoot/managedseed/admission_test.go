@@ -17,12 +17,12 @@ import (
 	"k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	corefake "github.com/gardener/gardener/pkg/client/core/clientset/versioned/fake"
 	fakeseedmanagement "github.com/gardener/gardener/pkg/client/seedmanagement/clientset/versioned/fake"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	. "github.com/gardener/gardener/plugin/pkg/shoot/managedseed"
 )
@@ -205,7 +205,7 @@ var _ = Describe("ManagedSeed", func() {
 				err := admissionHandler.Validate(context.TODO(), attrs, nil)
 				Expect(err).To(HaveOccurred())
 				Expect(err).To(BeInternalServerError())
-				Expect(err).To(MatchError(ContainSubstring("cannot extract the seed template")))
+				Expect(err).To(MatchError(ContainSubstring("seed template is unset in gardenlet config")))
 			})
 
 			It("should forbid Shoot update when zones have changed but still configured in ManagedSeed", func() {

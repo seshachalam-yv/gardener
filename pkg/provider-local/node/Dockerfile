@@ -1,4 +1,5 @@
-FROM kindest/node:v1.33.1@sha256:050072256b9a903bd914c0b2866828150cb229cea0efe5892e2b644d5dd3b34f
+# TODO(rfranzke): Update to v1.35 once https://github.com/gardener/gardener/pull/13651 is resolved.
+FROM kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a
 
 RUN apt-get update -yq && \
     apt-get install -yq --no-install-recommends wget apparmor apparmor-utils jq openssh-server sudo logrotate
@@ -10,7 +11,7 @@ RUN rm -f /etc/systemd/system/kubelet.service && \
 # copy containerd hosts configurations for local registry mirrors
 COPY containerd /etc/containerd/certs.d/
 # names with colon are not allowed in the directory name checked into Git as it breaks go mod if gardener/gardener is used as a module
-RUN mv /etc/containerd/certs.d/garden.local.gardener.cloud_5001 /etc/containerd/certs.d/garden.local.gardener.cloud:5001
+RUN mv /etc/containerd/certs.d/registry.local.gardener.cloud_5001 /etc/containerd/certs.d/registry.local.gardener.cloud:5001
 
 # add our userdata executor unit
 COPY run-userdata.sh /run-userdata.sh

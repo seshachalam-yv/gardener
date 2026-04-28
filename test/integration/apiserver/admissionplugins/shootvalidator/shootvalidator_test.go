@@ -38,7 +38,7 @@ var _ = Describe("ShootValidator tests", func() {
 				SecretBindingName: ptr.To(testSecretBinding.Name),
 				Region:            "region",
 				Provider: gardencorev1beta1.Provider{
-					Type: "providerType",
+					Type: "provider-type",
 					Workers: []gardencorev1beta1.Worker{
 						{
 							Name:    "cpu-worker",
@@ -49,7 +49,11 @@ var _ = Describe("ShootValidator tests", func() {
 					},
 				},
 				Kubernetes: gardencorev1beta1.Kubernetes{Version: "1.31.1"},
-				Networking: &gardencorev1beta1.Networking{Type: ptr.To("foo-networking")},
+				Networking: &gardencorev1beta1.Networking{
+					Type:     ptr.To("foo-networking"),
+					Pods:     ptr.To("100.128.0.0/11"),
+					Services: ptr.To("100.72.0.0/13"),
+				},
 			},
 		}
 	})

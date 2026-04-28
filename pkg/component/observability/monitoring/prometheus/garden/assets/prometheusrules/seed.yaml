@@ -253,6 +253,32 @@ spec:
           Port-forward to `prometheus-garden-0` in the `garden` namespace and open:
           http://localhost:9090/targets?search={{$labels.instance}}
 
+    - alert: SeedKubeEtcd3MainDbSizeLimitApproaching
+      expr: |
+        ALERTS{alertname="KubeEtcd3MainDbSizeLimitApproaching",alertstate="firing",namespace=~"shoot--garden--.+"}
+      labels:
+        severity: warning
+        topology: garden
+      annotations:
+        summary: >-
+          A seed etcd-main in landscape {{$externalLabels.landscape}} is approaching its current DB size limit.
+        description: >-
+          Seed {{$labels.name}} etcd-main DB size is approaching its current limit in landscape {{$externalLabels.landscape}}. 
+          Etcd quota might need to be increased.
+
+    - alert: SeedKubeEtcd3MainDbSizeLimitCrossed
+      expr: |
+        ALERTS{alertname="KubeEtcd3MainDbSizeLimitCrossed",alertstate="firing",namespace=~"shoot--garden--.+"}
+      labels:
+        severity: warning
+        topology: garden
+      annotations:
+        summary: >-
+          A seed etcd-main in landscape {{$externalLabels.landscape}} has crossed its current DB size limit.
+        description: >-
+          Seed {{$labels.name}} etcd-main DB size has crossed its current practical limit in landscape {{$externalLabels.landscape}}. 
+          Etcd quota must be increased to allow updates. 
+    
     - alert: SeedPodStuckInPending
       expr: |
         ALERTS{alertname="PodStuckInPending",alertstate="firing"}
@@ -266,19 +292,6 @@ spec:
           The pod {{$labels.pod}} in namespace {{$labels.namespace}} in seed
           {{$labels.seed}} in landscape {{$externalLabels.landscape}} is
           stuck in Pending state for more than 10 minutes.
-
-    - alert: SeedNodeNotHealthy
-      expr: |
-        ALERTS{alertname="NodeNotHealthy",alertstate="firing"}
-      for: 0m
-      labels:
-        severity: warning
-        topology: garden
-      annotations:
-        summary:  A node was reported not healthy for several scrapes in the past 30 minutes.
-        description: >-
-          Node {{$labels.node}} in seed {{$labels.seed}} in landscape
-          {{$externalLabels.landscape}} was not healthy for several scrapes in the past 30 minutes.
 
     - alert: SeedConditionFailing
       expr: |

@@ -33,9 +33,10 @@ import (
 )
 
 const (
-	admissionController                  = "vpa-admission-controller"
-	admissionControllerServicePort int32 = 443
-	admissionControllerMetricsPort int32 = 8944
+	admissionControllerContainerName       = "admission-controller"
+	admissionController                    = "vpa-admission-controller"
+	admissionControllerServicePort   int32 = 443
+	admissionControllerMetricsPort   int32 = 8944
 
 	volumeMountPathCertificates = "/etc/tls-certs"
 	volumeNameCertificates      = "vpa-tls-certs"
@@ -202,11 +203,22 @@ func (v *vpa) reconcileAdmissionControllerDeployment(deployment *appsv1.Deployme
 			Spec: corev1.PodSpec{
 				PriorityClassName: v.values.AdmissionController.PriorityClassName,
 				Containers: []corev1.Container{{
-					Name:            "admission-controller",
+					Name:            admissionControllerContainerName,
 					Image:           v.values.AdmissionController.Image,
 					ImagePullPolicy: corev1.PullIfNotPresent,
 					Args:            v.computeAdmissionControllerArgs(),
 					LivenessProbe:   newDefaultLivenessProbe(),
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path:   "/health-check",
+								Port:   intstr.FromString(metricsPortName),
+								Scheme: corev1.URISchemeHTTP,
+							},
+						},
+						PeriodSeconds:    10,
+						FailureThreshold: 3,
+					},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("10m"),
@@ -296,12 +308,16 @@ func (v *vpa) reconcileAdmissionControllerVPA(vpa *vpaautoscalingv1.VerticalPodA
 			Kind:       "Deployment",
 			Name:       deployment.Name,
 		},
-		UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto)},
+		UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate)},
 		ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 				{
-					ContainerName:    "*",
+					ContainerName:    admissionControllerContainerName,
 					ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+				},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 				},
 			},
 		},
@@ -324,6 +340,10 @@ func (v *vpa) computeAdmissionControllerArgs() []string {
 
 	if v.values.ClusterType == component.ClusterTypeShoot {
 		out = append(out, "--kubeconfig="+gardenerutils.PathGenericKubeconfig)
+	}
+
+	if v.values.FeatureGates != nil {
+		out = append(out, v.computeFeatureGates())
 	}
 
 	return out

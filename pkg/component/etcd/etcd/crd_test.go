@@ -11,9 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -35,15 +33,12 @@ var _ = Describe("CRD", func() {
 		BeforeEach(func() {
 			c = fake.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
 			var err error
-			mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{apiextensionsv1.SchemeGroupVersion})
-			mapper.Add(apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"), meta.RESTScopeRoot)
-			applier := kubernetes.NewApplier(c, mapper)
-			crdDeployer, err = NewCRD(c, applier, k8sVersion)
+			crdDeployer, err = NewCRD(c, k8sVersion)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		JustBeforeEach(func() {
-			Expect(crdDeployer.Deploy(ctx)).To(Succeed(), "Etcd/EtcdCopyBackupsTask CRD deployment succeeds")
+			Expect(crdDeployer.Deploy(ctx)).To(Succeed(), "Etcd/EtcdCopyBackupsTask/EtcdOpsTask CRD deployment succeeds")
 		})
 
 		DescribeTable("CRD is deployed",
@@ -53,6 +48,7 @@ var _ = Describe("CRD", func() {
 
 			Entry("Etcd", "etcds.druid.gardener.cloud"),
 			Entry("EtcdCopyBackupsTask", "etcdcopybackupstasks.druid.gardener.cloud"),
+			Entry("EtcdOpsTask", "etcdopstasks.druid.gardener.cloud"),
 		)
 
 		DescribeTable("should re-create CRD if it is deleted",
@@ -65,6 +61,7 @@ var _ = Describe("CRD", func() {
 
 			Entry("Etcd", "etcds.druid.gardener.cloud"),
 			Entry("EtcdCopyBackupsTask", "etcdcopybackupstasks.druid.gardener.cloud"),
+			Entry("EtcdOpsTask", "etcdopstasks.druid.gardener.cloud"),
 		)
 
 		Describe("CRD is destroyed", func() {
@@ -80,34 +77,8 @@ var _ = Describe("CRD", func() {
 
 				Entry("Etcd", "etcds.druid.gardener.cloud"),
 				Entry("EtcdCopyBackupsTask", "etcdcopybackupstasks.druid.gardener.cloud"),
+				Entry("EtcdOpsTask", "etcdopstasks.druid.gardener.cloud"),
 			)
-		})
-	})
-
-	Describe("Getter", func() {
-		var (
-			crdGetter CRDGetter
-			err       error
-		)
-		crdGetter, err = NewCRDGetter(k8sVersion)
-		Expect(err).NotTo(HaveOccurred())
-
-		DescribeTable("Get CRD",
-			func(crdName string) {
-				crd, err := crdGetter.GetCRD(crdName)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(crd).NotTo(BeNil())
-			},
-
-			Entry("Etcd", "etcds.druid.gardener.cloud"),
-			Entry("EtcdCopyBackupsTask", "etcdcopybackupstasks.druid.gardener.cloud"),
-		)
-
-		Describe("Get all CRDs", func() {
-			allCRDs := crdGetter.GetAllCRDs()
-			Expect(allCRDs).To(HaveLen(2))
-			Expect(allCRDs).To(HaveKey("etcds.druid.gardener.cloud"))
-			Expect(allCRDs).To(HaveKey("etcdcopybackupstasks.druid.gardener.cloud"))
 		})
 	})
 })

@@ -10,9 +10,9 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/component"
 	kubeapiserverexposure "github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
 	"github.com/gardener/gardener/pkg/features"
@@ -25,7 +25,7 @@ func (b *Botanist) DefaultKubeAPIServerService() component.DeployWaiter {
 	}
 	mutualTLSService := b.defaultKubeAPIServerServiceWithSuffix(kubeapiserverexposure.MutualTLSServiceNameSuffix, false)
 	upgradeService := b.defaultKubeAPIServerServiceWithSuffix(kubeapiserverexposure.ConnectionUpgradeServiceNameSuffix, false)
-	if features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) && v1beta1helper.IsShootIstioTLSTerminationEnabled(b.Shoot.GetInfo()) {
+	if b.ShootUsesIstioTLSTermination() {
 		deployer = append(deployer, mutualTLSService)
 		deployer = append(deployer, upgradeService)
 	} else {
@@ -50,7 +50,7 @@ func (b *Botanist) defaultKubeAPIServerServiceWithSuffix(suffix string, register
 		b.SeedClientSet.Client(),
 		b.Shoot.ControlPlaneNamespace,
 		&kubeapiserverexposure.ServiceValues{
-			TopologyAwareRoutingEnabled: b.Shoot.TopologyAwareRoutingEnabled,
+			TopologyAwareRoutingEnabled: b.Shoot.TopologyAwareRoutingEnabled && !b.ShootUsesIstioTLSTermination(),
 			RuntimeKubernetesVersion:    b.Seed.KubernetesVersion,
 			NameSuffix:                  suffix,
 		},
@@ -66,6 +66,11 @@ func (b *Botanist) defaultKubeAPIServerServiceWithSuffix(suffix string, register
 // ShootUsesDNS returns true if the shoot uses internal and external DNS.
 func (b *Botanist) ShootUsesDNS() bool {
 	return b.NeedsInternalDNS() && b.NeedsExternalDNS()
+}
+
+// ShootUsesIstioTLSTermination returns true if the shoot uses Istio TLS termination aka L7 load-balancing.
+func (b *Botanist) ShootUsesIstioTLSTermination() bool {
+	return features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) && v1beta1helper.IsShootIstioTLSTerminationEnabled(b.Shoot.GetInfo())
 }
 
 // DefaultKubeAPIServerSNI returns a deployer for the kube-apiserver SNI.
@@ -84,12 +89,11 @@ func (b *Botanist) DefaultKubeAPIServerSNI() component.DeployWaiter {
 					TLSSecret: *b.ControlPlaneWildcardCert,
 				}
 
-				// Wildcard endpoint must use the default istio ingress gateway if the shoot uses zonal istio ingress gateway.
-				// Otherwise, the wildcard endpoint can share the same istio ingress gateway as the kube-apiserver endpoint.
-				if b.DefaultIstioNamespace() != b.IstioNamespace() {
+				// Wildcard endpoint must always use the non-zonal and not the exposureclass istio ingress gateway.
+				if b.WildcardIstioNamespace() != b.IstioNamespace() {
 					wildcardConfiguration.IstioIngressGateway = &kubeapiserverexposure.IstioIngressGateway{
-						Namespace: b.DefaultIstioNamespace(),
-						Labels:    b.DefaultIstioLabels(),
+						Namespace: b.WildcardIstioNamespace(),
+						Labels:    b.WildcardIstioLabels(),
 					}
 				}
 			}
@@ -99,7 +103,7 @@ func (b *Botanist) DefaultKubeAPIServerSNI() component.DeployWaiter {
 					Namespace: b.IstioNamespace(),
 					Labels:    b.IstioLabels(),
 				},
-				IstioTLSTermination:   features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) && v1beta1helper.IsShootIstioTLSTerminationEnabled(b.Shoot.GetInfo()),
+				IstioTLSTermination:   b.ShootUsesIstioTLSTermination(),
 				WildcardConfiguration: wildcardConfiguration,
 			}
 		},
@@ -145,12 +149,11 @@ func (b *Botanist) setAPIServerServiceClusterIPs(clusterIPs []string) {
 					TLSSecret: *b.ControlPlaneWildcardCert,
 				}
 
-				// Wildcard endpoint must use the default istio ingress gateway if the shoot uses zonal istio ingress gateway.
-				// Otherwise, the wildcard endpoint can share the same istio ingress gateway as the kube-apiserver endpoint.
-				if b.DefaultIstioNamespace() != b.IstioNamespace() {
+				// Wildcard endpoint must always use the non-zonal and not the exposureclass istio ingress gateway.
+				if b.WildcardIstioNamespace() != b.IstioNamespace() {
 					wildcardConfiguration.IstioIngressGateway = &kubeapiserverexposure.IstioIngressGateway{
-						Namespace: b.DefaultIstioNamespace(),
-						Labels:    b.DefaultIstioLabels(),
+						Namespace: b.WildcardIstioNamespace(),
+						Labels:    b.WildcardIstioLabels(),
 					}
 				}
 			}
@@ -158,7 +161,7 @@ func (b *Botanist) setAPIServerServiceClusterIPs(clusterIPs []string) {
 			values := &kubeapiserverexposure.SNIValues{
 				Hosts: []string{
 					v1beta1helper.GetAPIServerDomain(*b.Shoot.ExternalClusterDomain),
-					v1beta1helper.GetAPIServerDomain(b.Shoot.InternalClusterDomain),
+					v1beta1helper.GetAPIServerDomain(*b.Shoot.InternalClusterDomain),
 				},
 				APIServerProxy: &kubeapiserverexposure.APIServerProxy{
 					APIServerClusterIP: b.APIServerClusterIP,
@@ -167,7 +170,7 @@ func (b *Botanist) setAPIServerServiceClusterIPs(clusterIPs []string) {
 					Namespace: b.IstioNamespace(),
 					Labels:    b.IstioLabels(),
 				},
-				IstioTLSTermination:   features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) && v1beta1helper.IsShootIstioTLSTerminationEnabled(b.Shoot.GetInfo()),
+				IstioTLSTermination:   b.ShootUsesIstioTLSTermination(),
 				WildcardConfiguration: wildcardConfiguration,
 			}
 
@@ -192,8 +195,8 @@ func (b *Botanist) ReconcileIstioInternalLoadBalancingConfigMap(ctx context.Cont
 		b.Shoot.ControlPlaneNamespace,
 		b.IstioNamespace(),
 		[]string{
-			v1beta1helper.GetAPIServerDomain(b.Shoot.InternalClusterDomain),
+			v1beta1helper.GetAPIServerDomain(*b.Shoot.InternalClusterDomain),
 		},
-		features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) && v1beta1helper.IsShootIstioTLSTerminationEnabled(b.Shoot.GetInfo()),
+		b.ShootUsesIstioTLSTermination(),
 	)
 }

@@ -5,7 +5,7 @@
 package shoot
 
 import (
-	_ "embed"
+	"fmt"
 	"strconv"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
@@ -16,8 +16,10 @@ import (
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	otelcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/opentelemetrycollector"
 	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
+	"github.com/gardener/gardener/pkg/features"
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
 )
 
@@ -38,10 +40,10 @@ func CentralScrapeConfigs(namespace, clusterCASecretName string, isWorkerless bo
 				}},
 				Params: map[string][]string{
 					"match[]": {
-						`{job="cadvisor",namespace="` + namespace + `"}`,
-						`{job="kube-state-metrics",namespace="` + namespace + `"}`,
 						`{__name__=~"metering:.+",namespace="` + namespace + `"}`,
-						`{job="etcd-druid",etcd_namespace="` + namespace + `"}`,
+						`{__name__=~"container_.+",job="cadvisor",namespace="` + namespace + `"}`,
+						`{__name__=~"kube_.+",job="kube-state-metrics",namespace="` + namespace + `"}`,
+						`{__name__=~"etcddruid_.+",job="etcd-druid",etcd_namespace="` + namespace + `"}`,
 					},
 				},
 				RelabelConfigs: []monitoringv1.RelabelConfig{
@@ -136,7 +138,7 @@ func CentralScrapeConfigs(namespace, clusterCASecretName string, isWorkerless bo
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "prometheus",
+				Name: "prometheus-" + Label,
 			},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
 				HonorLabels: ptr.To(false),
@@ -146,7 +148,7 @@ func CentralScrapeConfigs(namespace, clusterCASecretName string, isWorkerless bo
 				RelabelConfigs: []monitoringv1.RelabelConfig{
 					{
 						Action:      "replace",
-						Replacement: ptr.To("prometheus-shoot"),
+						Replacement: ptr.To("prometheus-" + Label),
 						TargetLabel: "job",
 					},
 					{
@@ -158,32 +160,6 @@ func CentralScrapeConfigs(namespace, clusterCASecretName string, isWorkerless bo
 						TargetLabel:  "pod",
 					},
 				},
-				MetricRelabelConfigs: monitoringutils.StandardMetricRelabelConfig(
-					"process_max_fds",
-					"process_open_fds",
-					"process_resident_memory_bytes",
-					"process_virtual_memory_bytes",
-					"prometheus_config_last_reload_successful",
-					"prometheus_engine_query_duration_seconds",
-					"prometheus_rule_group_duration_seconds",
-					"prometheus_rule_group_iterations_missed_total",
-					"prometheus_rule_group_iterations_total",
-					"prometheus_tsdb_blocks_loaded",
-					"prometheus_tsdb_compactions_failed_total",
-					"prometheus_tsdb_compactions_total",
-					"prometheus_tsdb_compactions_triggered_total",
-					"prometheus_tsdb_head_active_appenders",
-					"prometheus_tsdb_head_chunks",
-					"prometheus_tsdb_head_gc_duration_seconds",
-					"prometheus_tsdb_head_gc_duration_seconds_count",
-					"prometheus_tsdb_head_samples_appended_total",
-					"prometheus_tsdb_head_series",
-					"prometheus_tsdb_lowest_timestamp",
-					"prometheus_tsdb_reloads_failures_total",
-					"prometheus_tsdb_reloads_total",
-					"prometheus_tsdb_storage_blocks_bytes",
-					"prometheus_tsdb_wal_corruptions_total",
-				),
 			},
 		},
 	}
@@ -197,7 +173,7 @@ func CentralScrapeConfigs(namespace, clusterCASecretName string, isWorkerless bo
 				Spec: monitoringv1alpha1.ScrapeConfigSpec{
 					HonorLabels:     ptr.To(false),
 					HonorTimestamps: ptr.To(false),
-					Scheme:          ptr.To("HTTPS"),
+					Scheme:          ptr.To(monitoringv1.SchemeHTTPS),
 					Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: AccessSecretName},
 						Key:                  resourcesv1alpha1.DataKeyToken,
@@ -268,6 +244,8 @@ func CentralScrapeConfigs(namespace, clusterCASecretName string, isWorkerless bo
 							"container_fs_inodes_total",
 							"container_fs_limit_bytes",
 							"container_fs_usage_bytes",
+							"container_fs_reads_total",
+							"container_fs_writes_total",
 							"container_last_seen",
 							"container_memory_working_set_bytes",
 							"container_network_receive_bytes_total",
@@ -315,7 +293,7 @@ func CentralScrapeConfigs(namespace, clusterCASecretName string, isWorkerless bo
 				},
 				Spec: monitoringv1alpha1.ScrapeConfigSpec{
 					HonorLabels: ptr.To(false),
-					Scheme:      ptr.To("HTTPS"),
+					Scheme:      ptr.To(monitoringv1.SchemeHTTPS),
 					Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: AccessSecretName},
 						Key:                  resourcesv1alpha1.DataKeyToken,
@@ -386,6 +364,81 @@ func CentralScrapeConfigs(namespace, clusterCASecretName string, isWorkerless bo
 				},
 			},
 		)
+
+		if features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) {
+			nodeMetricsURL := fmt.Sprintf("/api/v1/nodes/${1}:%d/proxy/metrics", otelcomponent.MetricsPort)
+			out = append(out,
+				&monitoringv1alpha1.ScrapeConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "opentelemetry-collector-nodes",
+					},
+					Spec: monitoringv1alpha1.ScrapeConfigSpec{
+						HonorLabels: ptr.To(false),
+						Scheme:      ptr.To(monitoringv1.SchemeHTTPS),
+						Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: AccessSecretName},
+							Key:                  resourcesv1alpha1.DataKeyToken,
+						}},
+						TLSConfig: &monitoringv1.SafeTLSConfig{CA: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: clusterCASecretName},
+							Key:                  secretsutils.DataKeyCertificateBundle,
+						}}},
+						KubernetesSDConfigs: []monitoringv1alpha1.KubernetesSDConfig{{
+							Role:            monitoringv1alpha1.KubernetesRoleNode,
+							APIServer:       ptr.To("https://" + v1beta1constants.DeploymentNameKubeAPIServer),
+							FollowRedirects: ptr.To(true),
+							Namespaces:      &monitoringv1alpha1.NamespaceDiscovery{Names: []string{metav1.NamespaceSystem}},
+							Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: AccessSecretName},
+								Key:                  resourcesv1alpha1.DataKeyToken,
+							}},
+							TLSConfig: &monitoringv1.SafeTLSConfig{CA: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: clusterCASecretName},
+								Key:                  secretsutils.DataKeyCertificateBundle,
+							}}},
+						}},
+						RelabelConfigs: []monitoringv1.RelabelConfig{
+							{
+								Action:      "replace",
+								Replacement: ptr.To("opentelemetry-collector-nodes"),
+								TargetLabel: "job",
+							},
+							{
+								SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_node_name"},
+								TargetLabel:  "instance",
+							},
+							{
+								Action: "labelmap",
+								Regex:  `__meta_kubernetes_node_label_(.+)`,
+							},
+							{
+								TargetLabel: "__address__",
+								Replacement: ptr.To(v1beta1constants.DeploymentNameKubeAPIServer + ":" + strconv.Itoa(kubeapiserverconstants.Port)),
+							},
+							{
+								SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_node_name"},
+								Regex:        `(.+)`,
+								Replacement:  ptr.To(nodeMetricsURL),
+								TargetLabel:  "__metrics_path__",
+							},
+							{
+								TargetLabel: "type",
+								Replacement: ptr.To("shoot"),
+							},
+						},
+						MetricRelabelConfigs: append(monitoringutils.StandardMetricRelabelConfig(
+							"otelcol_exporter_.*",
+							"otelcol_process_.*",
+							"otelcol_receiver_.*",
+							"otelcol_scraper_.*",
+							"otelcol_processor_*",
+						), monitoringv1.RelabelConfig{
+							Action: "keep",
+						}),
+					},
+				},
+			)
+		}
 	}
 
 	return out

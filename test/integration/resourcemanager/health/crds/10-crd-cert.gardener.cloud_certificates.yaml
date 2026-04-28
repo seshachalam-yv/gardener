@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.18.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: certificates.cert.gardener.cloud
 spec:
   group: cert.gardener.cloud
@@ -97,6 +97,12 @@ spec:
                   Must be at least twice the renewal window.
                   Value must be in units accepted by Go time.ParseDuration https://golang.org/pkg/time/#ParseDuration.
                 type: string
+              emailAddresses:
+                description: EmailAddresses are the optional requested email subject
+                  alternative names.
+                items:
+                  type: string
+                type: array
               ensureRenewedAfter:
                 description: EnsureRenewedAfter specifies a time stamp in the past.
                   Renewing is only triggered if certificate notBefore date is before
@@ -105,9 +111,15 @@ spec:
                 type: string
               followCNAME:
                 description: FollowCNAME if true delegated domain for DNS01 challenge
-                  is used if CNAME record for DNS01 challange domain `_acme-challenge.<domain>`
+                  is used if CNAME record for DNS01 challenge domain `_acme-challenge.<domain>`
                   is set.
                 type: boolean
+              ipAddresses:
+                description: IPAddresses are the optional requested IP address subject
+                  alternative names.
+                items:
+                  type: string
+                type: array
               isCA:
                 description: |-
                   IsCA value is used to set the `isCA` field on the certificate request.
@@ -239,6 +251,14 @@ spec:
               renew:
                 description: Renew triggers a renewal if set to true
                 type: boolean
+              renewBefore:
+                description: |-
+                  RenewBefore specifies the time before the certificate's expiration date when the certificate should be renewed.
+                  Note that the actual expiration of the issued certificate is used for the calculation.
+                  If not set, the default renewal window is used.
+                  Must be at least 5 minutes and not greater than issued certificate's duration minus 5 minutes.
+                  Value must be in units accepted by Go time.ParseDuration https://golang.org/pkg/time/#ParseDuration.
+                type: string
               secretLabels:
                 additionalProperties:
                   type: string
@@ -262,6 +282,12 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              uris:
+                description: URIs are the optional requested URI subject alternative
+                  names.
+                items:
+                  type: string
+                type: array
             type: object
           status:
             description: CertificateStatus is the status of the certificate request.
@@ -391,6 +417,10 @@ spec:
                   spec.
                 format: int64
                 type: integer
+              renewalDate:
+                description: RenewalDate shows the planned renewal date. If not set,
+                  no renewal has been planned yet.
+                type: string
               state:
                 description: State is the certificate state.
                 type: string

@@ -10,6 +10,7 @@ import (
 
 	"k8s.io/kube-state-metrics/v2/pkg/customresourcestate"
 	"k8s.io/kube-state-metrics/v2/pkg/metric"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -165,15 +166,55 @@ func newGardenCustomResourceStateMetrics() customresourcestate.Resource {
 
 	resource.Metrics = append(resource.Metrics, customresourcestate.Generator{
 		Name: "garden_last_operation",
-		Help: "denotes the last operation performed on a Garden object",
+		Help: "state of the last operation performed on a Garden object",
 		Each: customresourcestate.Metric{
 			Type: metric.StateSet,
 			StateSet: &customresourcestate.MetricStateSet{
-				LabelName: "last_operation",
-				List:      []string{"Create", "Reconcile", "Delete", "Migrate", "Restore"},
-				ValueFrom: []string{"type"},
+				LabelName: "state",
+				List:      []string{"Processing", "Succeeded", "Error", "Failed", "Pending", "Aborted"},
+				ValueFrom: []string{"state"},
 				MetricMeta: customresourcestate.MetricMeta{
 					Path: []string{"status", "lastOperation"},
+					LabelsFromPath: map[string][]string{
+						"type": {"type"},
+					},
+				},
+			},
+		},
+	})
+
+	return resource
+}
+
+func newOperatorExtensionCustomResourceStateMetrics() customresourcestate.Resource {
+	resource := customresourcestate.Resource{
+		GroupVersionKind: customresourcestate.GroupVersionKind{
+			Group:   "operator.gardener.cloud",
+			Kind:    "Extension",
+			Version: "v1alpha1",
+		},
+		MetricNamePrefix: ptr.To("garden"),
+		Labels: customresourcestate.Labels{
+			LabelsFromPath: map[string][]string{
+				"name": {"metadata", "name"},
+			},
+		},
+	}
+
+	resource.Metrics = append(resource.Metrics, customresourcestate.Generator{
+		Name: "extension_condition",
+		Help: "represents a condition of an Operator Extension object",
+		Each: customresourcestate.Metric{
+			Type: metric.StateSet,
+			StateSet: &customresourcestate.MetricStateSet{
+				LabelName: "status",
+				List:      []string{"Progressing", "True", "False", "Unknown"},
+				ValueFrom: []string{"status"},
+				MetricMeta: customresourcestate.MetricMeta{
+					LabelsFromPath: map[string][]string{
+						"condition": {"type"},
+					},
+					Path: []string{"status", "conditions"},
 				},
 			},
 		},
@@ -188,6 +229,11 @@ type Option func(*customresourcestate.Metrics)
 // WithGardenResourceMetrics adds the custom resource state configuration for the Garden resource
 func WithGardenResourceMetrics(c *customresourcestate.Metrics) {
 	c.Spec.Resources = append(c.Spec.Resources, newGardenCustomResourceStateMetrics())
+}
+
+// WithOperatorExtensionMetrics adds the custom resource state configuration for the Garden resource
+func WithOperatorExtensionMetrics(c *customresourcestate.Metrics) {
+	c.Spec.Resources = append(c.Spec.Resources, newOperatorExtensionCustomResourceStateMetrics())
 }
 
 // WithVPAMetrics adds the custom resource state configuration for the VerticalPodAutoscaler resource

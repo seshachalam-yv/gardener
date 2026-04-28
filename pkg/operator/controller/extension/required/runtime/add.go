@@ -80,6 +80,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager) error {
 		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
+			ReconciliationTimeout:   controllerutils.DefaultReconciliationTimeout,
 		}).
 		Build(r)
 	if err != nil {
@@ -103,7 +104,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager) error {
 			return err
 		}
 
-		if err := c.Watch(source.Kind[client.Object](mgr.GetCache(), extension.object, eventHandler, extensions.ObjectPredicate(), predicateutils.HasClass(extensionsv1alpha1.ExtensionClassGarden))); err != nil {
+		if err := c.Watch(source.Kind(mgr.GetCache(), extension.object, eventHandler, extensions.ObjectPredicate(), predicateutils.HasClass(extensionsv1alpha1.ExtensionClassGarden))); err != nil {
 			return err
 		}
 	}

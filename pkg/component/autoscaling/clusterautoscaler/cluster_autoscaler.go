@@ -11,7 +11,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
-	yaml2 "gopkg.in/yaml.v2"
+	yaml2 "go.yaml.in/yaml/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -268,13 +268,19 @@ func (c *clusterAutoscaler) Deploy(ctx context.Context) error {
 			Name:       v1beta1constants.DeploymentNameClusterAutoscaler,
 		}
 		vpa.Spec.UpdatePolicy = &vpaautoscalingv1.PodUpdatePolicy{
-			UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+			UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 		}
 		vpa.Spec.ResourcePolicy = &vpaautoscalingv1.PodResourcePolicy{
-			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-				ContainerName:    vpaautoscalingv1.DefaultContainerResourcePolicy,
-				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-			}},
+			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+				{
+					ContainerName:    containerName,
+					ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+				},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+				},
+			},
 		}
 		return nil
 	}); err != nil {
@@ -479,6 +485,9 @@ func (c *clusterAutoscaler) computeCommand(workersHavePriorityConfigured bool) [
 		fmt.Sprintf("--expander=%s", expanderMode),
 		fmt.Sprintf("--max-graceful-termination-sec=%d", *c.config.MaxGracefulTerminationSeconds),
 		fmt.Sprintf("--max-node-provision-time=%s", c.config.MaxNodeProvisionTime.Duration),
+		fmt.Sprintf("--initial-node-group-backoff-duration=%s", c.config.InitialNodeGroupBackoffDuration.Duration),
+		fmt.Sprintf("--max-node-group-backoff-duration=%s", c.config.MaxNodeGroupBackoffDuration.Duration),
+		fmt.Sprintf("--node-group-backoff-reset-timeout=%s", c.config.NodeGroupBackoffResetTimeout.Duration),
 		fmt.Sprintf("--scale-down-utilization-threshold=%f", *c.config.ScaleDownUtilizationThreshold),
 		fmt.Sprintf("--scale-down-unneeded-time=%s", c.config.ScaleDownUnneededTime.Duration),
 		fmt.Sprintf("--scale-down-delay-after-add=%s", c.config.ScaleDownDelayAfterAdd.Duration),
@@ -692,8 +701,6 @@ func (c *clusterAutoscaler) generatePriorityExpanderConfigMap() (*corev1.ConfigM
 		priority := ptr.Deref(machineDeployment.Priority, priorityDefaults.forDeployment(machineDeployment.Name))
 		priorities[priority] = append(priorities[priority], machineDeployment.Name)
 	}
-	// `gopkg.in/yaml.v2` is needed here for marshaling, as the cluster-autoscaler uses it for unmarshalling.
-	// yaml Marshalers from `sigs.k8s.io/yaml` e.g. produce yaml that is not unmarshallable for `gopkg.in/yaml.v2`.
 	priorityConfig, err := yaml2.Marshal(priorities)
 	if err != nil {
 		return nil, err

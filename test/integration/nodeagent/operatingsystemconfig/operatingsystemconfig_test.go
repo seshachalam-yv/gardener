@@ -21,6 +21,7 @@ import (
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
 	. "github.com/onsi/gomega/gstruct"
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	"k8s.io/component-base/version"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,9 +40,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/gardener/gardener/pkg/api/indexer"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
+	fakecontainerdclient "github.com/gardener/gardener/pkg/nodeagent/containerd/fake"
 	healthcheckcontroller "github.com/gardener/gardener/pkg/nodeagent/controller/healthcheck"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/operatingsystemconfig"
 	fakedbus "github.com/gardener/gardener/pkg/nodeagent/dbus/fake"
@@ -64,7 +67,7 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 
 		containerdConfigFileContent string
 
-		file1, file2, file3, file4, file5, file6, file7, file8                                                                         extensionsv1alpha1.File
+		file1, file2, file3, file4, file5, file6, file7, file8, file9                                                                  extensionsv1alpha1.File
 		gnaUnit, unit1, unit2, unit3, unit4, unit5, unit5DropInsOnly, unit6, unit7, unit8, unit9, existingUnitDropIn, containerdDropIn extensionsv1alpha1.Unit
 		cgroupDriver                                                                                                                   extensionsv1alpha1.CgroupDriverName
 		registryConfig1, registryConfig2                                                                                               extensionsv1alpha1.RegistryConfig
@@ -91,6 +94,7 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 		DeferCleanup(func() { Expect(fakeFS.RemoveAll(imageMountDirectory)).To(Succeed()) })
 
 		cancelFunc = cancelFuncEnsurer{}
+		DeferCleanup(test.WithVar(&operatingsystemconfig.RequeueAfterRestart, time.Second))
 
 		By("Setup manager")
 		mgr, err := manager.New(restConfig, manager.Options{
@@ -167,6 +171,7 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 				SecretName:        oscSecretName,
 				KubernetesVersion: kubernetesVersion,
 			},
+			ConfigDir: "/var/lib/gardener-node-agent",
 			DBus:      fakeDBus,
 			FS:        fakeFS,
 			HostName:  hostName,
@@ -177,7 +182,8 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 				{SecretName: secretName1},
 				{SecretName: secretName2},
 			},
-			CancelContext: cancelFunc.cancel,
+			CancelContext:    cancelFunc.cancel,
+			ContainerdClient: fakecontainerdclient.NewClient(),
 		}).AddToManager(ctx, mgr)).To(Succeed())
 
 		By("Start manager")
@@ -238,6 +244,25 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 			Content:     extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Encoding: "", Data: "file8"}},
 			Permissions: ptr.To[uint32](0644),
 		}
+		file9 = extensionsv1alpha1.File{
+			Path:        "/secretref/file",
+			Content:     extensionsv1alpha1.FileContent{SecretRef: &extensionsv1alpha1.FileContentSecretRef{Name: "file9-secret", DataKey: "content"}},
+			Permissions: ptr.To[uint32](0750),
+		}
+
+		By("Create Secret referenced by file9")
+		file9Secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      file9.Content.SecretRef.Name,
+				Namespace: metav1.NamespaceSystem,
+				Labels:    map[string]string{testID: testRunID},
+			},
+			Data: map[string][]byte{"content": []byte("file9")},
+		}
+		Expect(testClient.Create(ctx, file9Secret)).To(Succeed())
+		DeferCleanup(func() {
+			Expect(testClient.Delete(ctx, file9Secret)).To(Succeed())
+		})
 
 		gnaUnit = extensionsv1alpha1.Unit{
 			Name:    "gardener-node-agent.service",
@@ -358,7 +383,12 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 			Upstream: "registry.k8s.io",
 			Server:   ptr.To("https://registry.k8s.io"),
 			Hosts: []extensionsv1alpha1.RegistryHost{
-				{URL: "https://10.10.10.101:8080", Capabilities: []extensionsv1alpha1.RegistryCapability{"pull"}, CACerts: []string{"/var/certs/ca.crt"}},
+				{
+					URL:          "https://10.10.10.101:8080",
+					Capabilities: []extensionsv1alpha1.RegistryCapability{"pull"},
+					CACerts:      []string{"/var/certs/ca.crt"},
+					OverridePath: ptr.To(true),
+				},
 			},
 		}
 
@@ -376,7 +406,7 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 
 		operatingSystemConfig = &extensionsv1alpha1.OperatingSystemConfig{
 			Spec: extensionsv1alpha1.OperatingSystemConfigSpec{
-				Files: []extensionsv1alpha1.File{file1, file3, file5, file8},
+				Files: []extensionsv1alpha1.File{file1, file3, file5, file8, file9},
 				Units: []extensionsv1alpha1.Unit{unit1, unit2, unit5, unit5DropInsOnly, unit6, unit7},
 				CRIConfig: &extensionsv1alpha1.CRIConfig{
 					Name:         "containerd",
@@ -393,7 +423,6 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 				ExtensionUnits: []extensionsv1alpha1.Unit{unit3, unit4, unit8, unit9, existingUnitDropIn},
 			},
 		}
-
 	})
 
 	JustBeforeEach(func() {
@@ -451,6 +480,7 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 		test.AssertFileOnDisk(fakeFS, file5.Path, "file5", 0750)
 		test.AssertFileOnDisk(fakeFS, file6.Path, "file6", 0750)
 		test.AssertFileOnDisk(fakeFS, file7.Path, "file7", 0750)
+		test.AssertFileOnDisk(fakeFS, file9.Path, "file9", 0750)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/"+unit1.Name, "#unit1", 0600)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/"+unit1.Name+".d/"+unit1.DropIns[0].Name, "#unit1drop", 0600)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/"+unit2.Name, "#unit2", 0600)
@@ -473,7 +503,7 @@ var _ = Describe("OperatingSystemConfig controller tests", func() {
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/containerd.service.d/30-env_config.conf", "[Service]\nEnvironment=\"PATH=/var/bin/containerruntimes:"+os.Getenv("PATH")+"\"\n", 0600)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/containerd.service.d/"+containerdDropIn.DropIns[0].Name, containerdDropIn.DropIns[0].Content, 0600)
 		test.AssertFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig1.Upstream+"/hosts.toml", "# managed by gardener-node-agent\nserver = \"https://registry.hub.docker.com\"\n\n[host.\"https://10.10.10.100:8080\"]\n  capabilities = [\"pull\",\"resolve\"]\n\n[host.\"https://10.10.10.200:8080\"]\n  capabilities = [\"pull\",\"resolve\"]\n\n", 0644)
-		test.AssertFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig2.Upstream+"/hosts.toml", "# managed by gardener-node-agent\nserver = \"https://registry.k8s.io\"\n\n[host.\"https://10.10.10.101:8080\"]\n  capabilities = [\"pull\"]\n  ca = [\"/var/certs/ca.crt\"]\n\n", 0644)
+		test.AssertFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig2.Upstream+"/hosts.toml", "# managed by gardener-node-agent\nserver = \"https://registry.k8s.io\"\n\n[host.\"https://10.10.10.101:8080\"]\n  capabilities = [\"pull\"]\n  ca = [\"/var/certs/ca.crt\"]\n  override_path = true\n\n", 0644)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/existing-unit.service", "#existingunit", 0600)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/existing-unit.service.d/existing-dropin.conf", "#existingdropin", 0600)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/"+existingUnitDropIn.Name+".d/"+existingUnitDropIn.DropIns[0].Name, "#unit11drop", 0600)
@@ -492,7 +522,7 @@ inPlaceUpdates:
   operatingSystem: false
   serviceAccountKeyRotation: false
 mustRestartNodeAgent: false
-operatingSystemConfigChecksum: 4330078242f98407daaaa8e755dbc054dc301233a6bab2bc7706801365711527
+operatingSystemConfigChecksum: `+utils.ComputeSHA256Hex(oscRaw)+`
 units: {}
 `, 0600)
 
@@ -630,6 +660,7 @@ units: {}
 		test.AssertFileOnDisk(fakeFS, file5.Path, "changeme", 0750)
 		test.AssertFileOnDisk(fakeFS, file6.Path, "changed", 0750)
 		test.AssertFileOnDisk(fakeFS, file7.Path, "changed-as-well", 0750)
+		test.AssertFileOnDisk(fakeFS, file9.Path, "file9", 0750)
 		test.AssertNoFileOnDisk(fakeFS, "/etc/systemd/system/"+unit1.Name)
 		test.AssertNoDirectoryOnDisk(fakeFS, "/etc/systemd/system/"+unit1.Name+".d")
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/"+unit2.Name, "#unit2", 0600)
@@ -650,7 +681,7 @@ units: {}
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/containerd.service.d/30-env_config.conf", "[Service]\nEnvironment=\"PATH=/var/bin/containerruntimes:"+os.Getenv("PATH")+"\"\n", 0600)
 		test.AssertNoFileOnDisk(fakeFS, "/etc/systemd/system/containerd.service.d/"+containerdDropIn.DropIns[0].Name)
 		test.AssertFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig1.Upstream+"/hosts.toml", "# managed by gardener-node-agent\nserver = \"https://registry.hub.docker.com\"\n\n[host.\"https://10.10.10.100:8080\"]\n  capabilities = [\"pull\",\"resolve\"]\n\n[host.\"https://10.10.10.200:8080\"]\n  capabilities = [\"pull\",\"resolve\"]\n\n", 0644)
-		test.AssertFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig2.Upstream+"/hosts.toml", "# managed by gardener-node-agent\nserver = \"https://registry.k8s.io\"\n\n[host.\"https://10.10.10.101:8080\"]\n  capabilities = [\"pull\"]\n  ca = [\"/var/certs/ca.crt\"]\n\n", 0644)
+		test.AssertFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig2.Upstream+"/hosts.toml", "# managed by gardener-node-agent\nserver = \"https://registry.k8s.io\"\n\n[host.\"https://10.10.10.101:8080\"]\n  capabilities = [\"pull\"]\n  ca = [\"/var/certs/ca.crt\"]\n  override_path = true\n\n", 0644)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/existing-unit.service", "#existingunit", 0600)
 		test.AssertFileOnDisk(fakeFS, "/etc/systemd/system/existing-unit.service.d/existing-dropin.conf", "#existingdropin", 0600)
 		test.AssertNoFileOnDisk(fakeFS, "/etc/systemd/system/"+existingUnitDropIn.Name+".d/"+existingUnitDropIn.DropIns[0].Name)
@@ -712,7 +743,7 @@ units: {}
 		test.AssertDirectoryOnDisk(fakeFS, "/etc/containerd/conf.d")
 		test.AssertDirectoryOnDisk(fakeFS, "/etc/systemd/system/containerd.service.d")
 		test.AssertNoFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig1.Upstream+"/hosts.toml")
-		test.AssertFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig2.Upstream+"/hosts.toml", "# managed by gardener-node-agent\nserver = \"https://registry.k8s.io\"\n\n[host.\"https://10.10.10.101:8080\"]\n  capabilities = [\"pull\"]\n  ca = [\"/var/certs/ca.crt\"]\n\n", 0644)
+		test.AssertFileOnDisk(fakeFS, "/etc/containerd/certs.d/"+registryConfig2.Upstream+"/hosts.toml", "# managed by gardener-node-agent\nserver = \"https://registry.k8s.io\"\n\n[host.\"https://10.10.10.101:8080\"]\n  capabilities = [\"pull\"]\n  ca = [\"/var/certs/ca.crt\"]\n  override_path = true\n\n", 0644)
 
 		By("Assert that unit actions have been applied")
 		Expect(fakeDBus.Actions).To(ConsistOf(
@@ -849,6 +880,7 @@ units: {}
 		Expect(fakeDBus.Actions).To(ConsistOf(
 			fakedbus.SystemdAction{Action: fakedbus.ActionEnable, UnitNames: []string{gnaUnit.Name}},
 			fakedbus.SystemdAction{Action: fakedbus.ActionDaemonReload},
+			fakedbus.SystemdAction{Action: fakedbus.ActionDaemonReload},
 		))
 
 		By("Expect that cancel func has been called")
@@ -870,6 +902,210 @@ units: {}
 			test.AssertNoDirectoryOnDisk(fakeFS, "/etc/containerd/conf.d")
 			test.AssertNoDirectoryOnDisk(fakeFS, "/etc/systemd/system/containerd.service.d")
 			test.AssertNoFileOnDisk(fakeFS, "/etc/containerd/config.toml")
+		})
+	})
+
+	Context("node-role label", func() {
+		When("no static Kubernetes control-plane manifests are part of the OSC files", func() {
+			It("should add the 'worker' role label", func() {
+				Eventually(func(g Gomega) map[string]string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(node), node)).To(Succeed())
+					return node.Labels
+				}).Should(HaveKeyWithValue("node-role.kubernetes.io/worker", ""))
+			})
+		})
+
+		When("static Kubernetes control-plane manifests are part of the OSC files", func() {
+			BeforeEach(func() {
+				operatingSystemConfig.Spec.Files = append(operatingSystemConfig.Spec.Files, extensionsv1alpha1.File{Path: "/etc/kubernetes/manifests/kube-apiserver.yaml"})
+			})
+
+			It("should add the 'control-plane' role label", func() {
+				Eventually(func(g Gomega) map[string]string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(node), node)).To(Succeed())
+					return node.Labels
+				}).Should(HaveKeyWithValue("node-role.kubernetes.io/control-plane", ""))
+			})
+		})
+	})
+
+	Context("zone label", func() {
+		When("zone file does not exist", func() {
+			It("should not add the zone label to the node", func() {
+				Eventually(func(g Gomega) map[string]string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(node), node)).To(Succeed())
+					return node.Labels
+				}).ShouldNot(HaveKey(corev1.LabelTopologyZone))
+			})
+		})
+
+		When("zone file exists", func() {
+			BeforeEach(func() {
+				Expect(fakeFS.WriteFile(nodeagentconfigv1alpha1.ZoneFilePath, []byte("zone-a"), 0600)).To(Succeed())
+			})
+
+			It("should add the zone label to the node", func() {
+				Eventually(func(g Gomega) map[string]string {
+					g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(node), node)).To(Succeed())
+					return node.Labels
+				}).Should(HaveKeyWithValue(corev1.LabelTopologyZone, "zone-a"))
+			})
+		})
+	})
+
+	Context("static pods", func() {
+		var (
+			filePath            = "/etc/kubernetes/manifests/kube-apiserver.yaml"
+			desiredStaticPodRaw = `apiVersion: v1
+kind: Pod
+metadata:
+  name: foo
+  namespace: default
+  annotations:
+    gardener.cloud/config.mirror: abc
+`
+		)
+
+		BeforeEach(func() {
+			DeferCleanup(test.WithVar(&operatingsystemconfig.RequeueAfterWaitForStaticPods, 500*time.Millisecond))
+		})
+
+		When("desired pod manifest cannot be decoded", func() {
+			BeforeEach(func() {
+				operatingSystemConfig.Spec.Files = append(operatingSystemConfig.Spec.Files, extensionsv1alpha1.File{
+					Path:    filePath,
+					Content: extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Encoding: "", Data: "{"}},
+				})
+			})
+
+			It("should fail and not update the node's checksum annotation", func() {
+				Eventually(logBuffer).Should(gbytes.Say("unable to decode static pod from file data"))
+				ensureNodeAnnotationCloudConfigIsNotUpdated(node)
+			})
+		})
+
+		When("desired pod manifest is not a Pod", func() {
+			BeforeEach(func() {
+				operatingSystemConfig.Spec.Files = append(operatingSystemConfig.Spec.Files, extensionsv1alpha1.File{
+					Path: filePath,
+					Content: extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Data: `apiVersion: v1
+kind: Node
+metadata:
+  name: foo
+`}},
+				})
+			})
+
+			It("should fail and not update the node's checksum annotation", func() {
+				Eventually(logBuffer).Should(gbytes.Say("unable to decode static pod from file data"))
+				ensureNodeAnnotationCloudConfigIsNotUpdated(node)
+			})
+		})
+
+		When("desired static pods are not yet rolled out in the system", func() {
+			BeforeEach(func() {
+				operatingSystemConfig.Spec.Files = append(operatingSystemConfig.Spec.Files, extensionsv1alpha1.File{
+					Path:    filePath,
+					Content: extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Data: desiredStaticPodRaw}},
+				})
+			})
+
+			It("should requeue and not update the node's checksum annotation", func() {
+				Eventually(logBuffer).Should(gbytes.Say("Not all static pods have been rolled out to the desired state yet, requeuing"))
+				ensureNodeAnnotationCloudConfigIsNotUpdated(node)
+			})
+		})
+
+		When("static pods are rolled out in the system", func() {
+			var staticPod *corev1.Pod
+
+			BeforeEach(func() {
+				operatingSystemConfig.Spec.Files = append(operatingSystemConfig.Spec.Files, extensionsv1alpha1.File{
+					Path:    filePath,
+					Content: extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Data: desiredStaticPodRaw}},
+				})
+
+				staticPod = &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:        "foo-" + node.Name,
+						Namespace:   "default",
+						Annotations: map[string]string{"gardener.cloud/config.mirror": "abc"},
+						Labels:      map[string]string{"static-pod": "true", testID: testRunID},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "foo-container", Image: "foo"}},
+						NodeName:   node.Name,
+					},
+				}
+			})
+
+			JustBeforeEach(func() {
+				Expect(testClient.Create(ctx, staticPod)).To(Succeed())
+				DeferCleanup(func() {
+					Expect(testClient.Delete(ctx, staticPod, client.GracePeriodSeconds(0))).To(Succeed())
+				})
+			})
+
+			When("static pod is not healthy yet", func() {
+				It("should requeue and not update the node's checksum annotation", func() {
+					Eventually(logBuffer).Should(gbytes.Say("Static pod is not healthy yet, requeuing"))
+					ensureNodeAnnotationCloudConfigIsNotUpdated(node)
+				})
+			})
+
+			When("static pod is not ready yet", func() {
+				JustBeforeEach(func() {
+					staticPod.Status.Phase = corev1.PodRunning
+					Expect(testClient.Status().Update(ctx, staticPod)).To(Succeed())
+				})
+
+				It("should requeue and not update the node's checksum annotation", func() {
+					Eventually(logBuffer).Should(gbytes.Say("Static pod is not ready yet, requeuing"))
+					ensureNodeAnnotationCloudConfigIsNotUpdated(node)
+				})
+			})
+
+			When("static pod is healthy and ready", func() {
+				JustBeforeEach(func() {
+					staticPod.Status.Phase = corev1.PodRunning
+					staticPod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+					Expect(testClient.Status().Update(ctx, staticPod)).To(Succeed())
+				})
+
+				It("should successfully update the node's checksum annotation", func() {
+					waitForUpdatedNodeAnnotationCloudConfig(node, oscSecret, utils.ComputeSHA256Hex(oscRaw))
+					waitForUpdatedNodeLabelKubernetesVersion(node, kubernetesVersion.String())
+				})
+			})
+
+			When("static pods for other hosts should be ignored", func() {
+				BeforeEach(func() {
+					operatingSystemConfig.Spec.Files[len(operatingSystemConfig.Spec.Files)-1].HostName = &hostName
+					operatingSystemConfig.Spec.Files = append(operatingSystemConfig.Spec.Files, extensionsv1alpha1.File{
+						Path: filePath,
+						Content: extensionsv1alpha1.FileContent{Inline: &extensionsv1alpha1.FileContentInline{Data: `apiVersion: v1
+kind: Pod
+metadata:
+  name: bar
+  namespace: default
+  annotations:
+    gardener.cloud/config.mirror: abc
+`}},
+						HostName: ptr.To("some-other-hostname"),
+					})
+				})
+
+				JustBeforeEach(func() {
+					staticPod.Status.Phase = corev1.PodRunning
+					staticPod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+					Expect(testClient.Status().Update(ctx, staticPod)).To(Succeed())
+				})
+
+				It("should successfully update the node's checksum annotation", func() {
+					waitForUpdatedNodeAnnotationCloudConfig(node, oscSecret, utils.ComputeSHA256Hex(oscRaw))
+					waitForUpdatedNodeLabelKubernetesVersion(node, kubernetesVersion.String())
+				})
+			})
 		})
 	})
 
@@ -945,7 +1181,7 @@ kubeReserved:
 			Expect(fakeFS.WriteFile(nodeagentconfigv1alpha1.KubeconfigFilePath, []byte(nodeAgentKubeconfig), 0600)).To(Succeed())
 
 			nodeAgentConfigFile := extensionsv1alpha1.File{
-				Path: nodeagentconfigv1alpha1.ConfigFilePath,
+				Path: fmt.Sprintf("/var/lib/gardener-node-agent/config-%s.yaml", version.Get().GitVersion),
 				Content: extensionsv1alpha1.FileContent{
 					Inline: &extensionsv1alpha1.FileContentInline{
 						Encoding: "b64",
@@ -1033,6 +1269,10 @@ kind: NodeAgentConfiguration
 			}
 
 			DeferCleanup(test.WithVar(&operatingsystemconfig.ExecCommandCombinedOutput, func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				// Simulate a successful OS update by returning the new OS version in GetOSVersion.
+				DeferCleanup(test.WithVars(
+					&operatingsystemconfig.GetOSVersion, func(*extensionsv1alpha1.InPlaceUpdates, afero.Afero) (*string, error) { return ptr.To("1.2.4"), nil },
+				))
 				return []byte("OS update successful"), nil
 			}))
 
@@ -1225,7 +1465,6 @@ contexts:
   name: test-context
 current-context: test-context
 kind: Config
-preferences: {}
 users:
 - name: default-auth
   user:
@@ -1283,6 +1522,14 @@ func waitForUpdatedNodeAnnotationCloudConfig(node *corev1.Node, oscSecret *corev
 		g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(node), updatedNode)).To(Succeed())
 		return updatedNode.Annotations
 	}).Should(HaveKeyWithValue("checksum/cloud-config-data", value))
+}
+
+func ensureNodeAnnotationCloudConfigIsNotUpdated(node *corev1.Node) {
+	ConsistentlyWithOffset(1, func(g Gomega) map[string]string {
+		updatedNode := &corev1.Node{}
+		g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(node), updatedNode)).To(Succeed())
+		return updatedNode.Annotations
+	}).ShouldNot(HaveKey("checksum/cloud-config-data"))
 }
 
 func waitForUpdatedNodeLabelKubernetesVersion(node *corev1.Node, value string) {

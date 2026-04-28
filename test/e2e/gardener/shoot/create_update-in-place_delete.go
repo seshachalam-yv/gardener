@@ -10,12 +10,14 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	. "github.com/gardener/gardener/test/e2e/gardener"
+	"github.com/gardener/gardener/test/e2e/gardener/seed"
 	"github.com/gardener/gardener/test/e2e/gardener/shoot/internal/inclusterclient"
 	shootupdatesuite "github.com/gardener/gardener/test/utils/shoots/update"
 	"github.com/gardener/gardener/test/utils/shoots/update/inplace"
@@ -50,13 +52,18 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 				},
 			}
 
-			s.Shoot.Spec.Provider.Workers = []gardencorev1beta1.Worker{pool1, pool2}
+			pool3 := pool1.DeepCopy()
+			pool3.Name = "auto-surge"
+			pool3.MaxSurge = ptr.To(intstr.FromInt(1))
+			pool3.MaxUnavailable = ptr.To(intstr.FromInt(0))
+
+			s.Shoot.Spec.Provider.Workers = []gardencorev1beta1.Worker{pool1, pool2, *pool3}
 
 			ItShouldCreateShoot(s)
 			ItShouldWaitForShootToBeReconciledAndHealthy(s)
 			ItShouldInitializeShootClient(s)
 			ItShouldGetResponsibleSeed(s)
-			ItShouldInitializeSeedClient(s)
+			seed.ItShouldInitializeSeedClient(&s.SeedContext)
 
 			inplace.ItShouldLabelManualInPlaceNodesWithSelectedForUpdate(s)
 			verifyWorkerNodeLabels(s)
@@ -64,11 +71,15 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 			verifyNodeKubernetesVersions(s)
 
 			var (
-				nodesOfInPlaceWorkersBeforeTest = inplace.ItShouldFindNodesOfInPlaceWorkers(s)
+				nodesOfInPlaceWorkersBeforeTest sets.Set[string]
 				cloudProfile                    *gardencorev1beta1.CloudProfile
 				controlPlaneKubernetesVersion   string
 				poolNameToKubernetesVersion     map[string]string
 			)
+
+			It("should get the nodes of worker with in-place update strategy", func(ctx SpecContext) {
+				nodesOfInPlaceWorkersBeforeTest = inplace.FindNodesOfInPlaceWorkers(ctx, s.Log, s.ShootClient, s.Shoot)
+			}, SpecTimeout(2*time.Minute))
 
 			It("Get CloudProfile", func(ctx SpecContext) {
 				Eventually(ctx, func() error {
@@ -116,16 +127,24 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 				}).Should(Succeed())
 			}, SpecTimeout(time.Minute))
 
-			inplace.ItShouldVerifyInPlaceUpdateStart(s.GardenClient, s.Shoot, true, true)
+			inplace.ItShouldVerifyInPlaceUpdateStart(s, true, true)
 
 			ItShouldWaitForShootToBeReconciledAndHealthy(s)
 			ItShouldInitializeShootClient(s)
 			verifyNodeKubernetesVersions(s)
 			inclusterclient.VerifyInClusterAccessToAPIServer(s)
 
-			nodesOfInPlaceWorkersAfterTest := inplace.ItShouldFindNodesOfInPlaceWorkers(s)
-			Expect(nodesOfInPlaceWorkersBeforeTest.UnsortedList()).To(ConsistOf(nodesOfInPlaceWorkersAfterTest.UnsortedList()))
-			inplace.ItShouldVerifyInPlaceUpdateCompletion(s.GardenClient, s.Shoot)
+			It("should compare the node names after the test", func(ctx SpecContext) {
+				totalInPlaceWorkersMaxSurge := inplace.GetTotalInPlaceWorkersMaxSurge(s.Shoot)
+				s.Log.Info("Total in-place workers max surge", "maxSurge", totalInPlaceWorkersMaxSurge)
+
+				nodesOfInPlaceWorkersAfterTest := inplace.FindNodesOfInPlaceWorkers(ctx, s.Log, s.ShootClient, s.Shoot)
+				s.Log.Info("Nodes of in-place workers before test and after test", "beforeNodes", nodesOfInPlaceWorkersBeforeTest.UnsortedList(), "afterNodes", nodesOfInPlaceWorkersAfterTest.UnsortedList())
+
+				Expect(nodesOfInPlaceWorkersAfterTest.Intersection(nodesOfInPlaceWorkersBeforeTest)).To(HaveLen(nodesOfInPlaceWorkersBeforeTest.Len() - totalInPlaceWorkersMaxSurge))
+			}, SpecTimeout(2*time.Minute))
+
+			inplace.ItShouldVerifyInPlaceUpdateCompletion(s)
 
 			ItShouldDeleteShoot(s)
 			ItShouldWaitForShootToBeDeleted(s)

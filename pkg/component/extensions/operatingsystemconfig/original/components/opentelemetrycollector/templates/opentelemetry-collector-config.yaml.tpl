@@ -1,0 +1,144 @@
+# OpenTelemetry Collector configuration.
+#
+# https://opentelemetry.io/docs/collector/
+# https://opentelemetry.io/docs/collector/configuration/
+# https://opentelemetry.io/docs/collector/internal-telemetry/
+extensions:
+  file_storage:
+    directory: /var/log/otelcol
+    create_directory: true
+  bearertokenauth:
+    filename: {{ .pathAuthToken }}
+
+receivers:
+  journald/journal:
+    start_at: beginning
+    storage: file_storage
+    matches:
+      - SYSLOG_IDENTIFIER: kernel
+      - _SYSTEMD_UNIT: kubelet.service
+      - _SYSTEMD_UNIT: containerd.service
+      - _SYSTEMD_UNIT: gardener-node-agent.service
+    # A cleaner approach would be to use the 'identifier' field instead of the
+    # 'matches' field. However, the 'identifier' field uses the 'SYSLOG_IDENTIFIER'
+    # journal field, which does not include the '-service' suffix of systemd units.
+    # Due to backwards compatibility, we want to continue representing the 'unit'
+    # field with the full systemd unit name (including the '-service' suffix).
+    # Due to this, it is required we filter based on the '_SYSTEMD_UNIT' field.
+    # We can then rely on it to set the 'resource.unit' field correctly.
+    # TODO(rrhubenov): Reimplement this using the 'identifier' field once
+    # we move from 'Vali' to 'VictoriaLogs'. Revisit whether 
+    # - we still want to call the field 'unit'
+    # - we can remove the '-service' suffix
+    operators:
+      - type: move
+        if: 'body.SYSLOG_IDENTIFIER == "kernel"'
+        from: body.SYSLOG_IDENTIFIER
+        to:  body._SYSTEMD_UNIT
+      - type: move
+        from: body._SYSTEMD_UNIT
+        to: resource.unit
+      - type: move
+        from: body._HOSTNAME
+        to: resource.nodename
+      - type: move
+        from: body.MESSAGE
+        to: body
+
+  filelog/pods:
+    include: /var/log/pods/kube-system_*/*/*.log
+    storage: file_storage
+    include_file_path: true
+    operators:
+      - type: container
+        format: containerd
+        add_metadata_from_filepath: true
+
+processors:
+  batch:
+    send_batch_size: 2000
+    send_batch_max_size: 4000
+    timeout: 10s
+
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: {{ .memoryLimitMiB }}
+
+  # Include resource attributes from the Kubernetes environment.
+  # The Shoot KAPI server is queried for pods in the kube-system namespace
+  # which are labeled with "resources.gardener.cloud/managed-by=gardener".
+  k8sattributes:
+    auth_type: "kubeConfig"
+    context: "shoot"
+    wait_for_metadata: true
+    wait_for_metadata_timeout: 30s
+    filter:
+        namespace: kube-system
+        labels:
+          - key: resources.gardener.cloud/managed-by
+            op: equals
+            value: gardener
+    pod_association:
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.name
+
+  # If the log came from a pod that is managed by Gardener, the 'k8sattributes' processor
+  # will successfully associate the datapoint (log) with the a pod. Since we only
+  # watch the kube-system namespace for pods that are managed by Gardener, we can
+  # simply drop all logs that do not have a specific label that we know should have been
+  # added by the 'k8sattributes' processor. In this case, we check for the
+  # existence of the 'k8s.node.name' attribute.
+  filter/drop_non_gardener:
+    error_mode: ignore
+    logs:
+      log_record:
+        - resource.attributes["k8s.node.name"] == nil
+
+  resource/journal:
+    attributes:
+      - action: insert
+        key: origin
+        value: systemd_journal
+
+  resource/pod_labels:
+    attributes:
+      - key: origin
+        value: "shoot_system"
+        action: insert
+      - key: namespace_name
+        value: "kube-system"
+        action: insert
+
+exporters:
+  otlp:
+    endpoint: {{ .clientURL }}
+    auth:
+      authenticator: bearertokenauth
+    tls:
+      ca_file: {{ .pathCACert }}
+
+service:
+  telemetry:
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: {{ .metricsPort }}
+    logs:
+      level: INFO
+      encoding: json
+
+  extensions: [file_storage, bearertokenauth]
+  pipelines:
+    logs/journal:
+      receivers: [journald/journal]
+      processors: [memory_limiter, resource/journal, batch]
+      exporters: [otlp]
+    logs/pods:
+      receivers: [filelog/pods]
+      processors: [memory_limiter, k8sattributes, filter/drop_non_gardener, resource/pod_labels, batch]
+      exporters: [otlp]

@@ -20,17 +20,17 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenlethelper "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
 	gardenerextensions "github.com/gardener/gardener/pkg/extensions"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	gardenlethelper "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 )
@@ -106,6 +106,12 @@ func (b *Builder) WithSeedObject(seed *gardencorev1beta1.Seed) *Builder {
 	return b
 }
 
+// WithoutShootDNS unsets the `spec.DNS` configuration of a shoot resource.
+func (b *Builder) WithoutShootDNS() *Builder {
+	b.shootDNSFunc = func() *gardencorev1beta1.DNS { return nil }
+	return b
+}
+
 // WithExposureClassObject sets the exposureClass attribute at the Builder.
 func (b *Builder) WithExposureClassObject(exposureClass *gardencorev1beta1.ExposureClass) *Builder {
 	b.exposureClass = exposureClass
@@ -135,6 +141,12 @@ func (b *Builder) WithShootCredentialsFrom(c client.Reader) *Builder {
 					return nil, err
 				}
 				return workloadIdentity, nil
+			} else if binding.CredentialsRef.GroupVersionKind() == gardencorev1beta1.SchemeGroupVersion.WithKind("InternalSecret") {
+				internalSecret := &gardencorev1beta1.InternalSecret{}
+				if err := c.Get(ctx, key, internalSecret); err != nil {
+					return nil, err
+				}
+				return internalSecret, nil
 			}
 		}
 
@@ -200,6 +212,11 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if b.shootDNSFunc != nil {
+		shootObject.Spec.DNS = b.shootDNSFunc()
+	}
+
 	shoot.SetInfo(shootObject)
 
 	cloudProfile, err := b.cloudProfileFunc(ctx, shootObject)
@@ -266,11 +283,7 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 		shoot.VPNVPAUpdateDisabled = vpnVPAUpdateDisabled
 	}
 
-	needsClusterAutoscaler, err := v1beta1helper.ShootWantsClusterAutoscaler(shootObject)
-	if err != nil {
-		return nil, err
-	}
-	shoot.WantsClusterAutoscaler = needsClusterAutoscaler
+	shoot.WantsClusterAutoscaler = v1beta1helper.ShootWantsClusterAutoscaler(shootObject)
 
 	if shoot.IsWorkerless && shootObject.Spec.Networking != nil {
 		networks, err := ToNetworks(shootObject, shoot.IsWorkerless)
@@ -286,8 +299,13 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 	if shoot.GetInfo().Spec.Kubernetes.KubeAPIServer != nil {
 		shoot.ResourcesToEncrypt = sharedcomponent.StringifyGroupResources(sharedcomponent.GetResourcesForEncryptionFromConfig(shoot.GetInfo().Spec.Kubernetes.KubeAPIServer.EncryptionConfig))
 	}
-	if len(shoot.GetInfo().Status.EncryptedResources) > 0 {
-		shoot.EncryptedResources = sharedcomponent.NormalizeResources(shoot.GetInfo().Status.EncryptedResources)
+
+	shootStatus := shoot.GetInfo().Status
+	shoot.EncryptedResources = v1beta1helper.GetShootEncryptedResourcesInStatus(shootStatus)
+
+	shoot.EncryptionProviderToUse = v1beta1helper.GetEncryptionProviderType(shoot.GetInfo().Spec.Kubernetes.KubeAPIServer)
+	if shootStatus.Credentials != nil && shootStatus.Credentials.EncryptionAtRest != nil {
+		shoot.UsedEncryptionProvider = shootStatus.Credentials.EncryptionAtRest.Provider.Type
 	}
 
 	if b.seed != nil {
@@ -500,24 +518,21 @@ func (s *Shoot) ComputeInClusterAPIServerAddress(runsInShootNamespace bool) stri
 
 // ComputeOutOfClusterAPIServerAddress returns the external address for the shoot API server depending on whether
 // the caller wants to use the internal cluster domain and whether DNS is disabled on this seed.
-func (s *Shoot) ComputeOutOfClusterAPIServerAddress(useInternalClusterDomain bool) string {
-	if v1beta1helper.ShootUsesUnmanagedDNS(s.GetInfo()) {
-		return v1beta1helper.GetAPIServerDomain(s.InternalClusterDomain)
-	}
-
-	if useInternalClusterDomain || s.ExternalClusterDomain == nil {
-		return v1beta1helper.GetAPIServerDomain(s.InternalClusterDomain)
+func (s *Shoot) ComputeOutOfClusterAPIServerAddress(preferInternalClusterDomain bool) string {
+	if s.InternalClusterDomain != nil && (preferInternalClusterDomain || s.ExternalClusterDomain == nil || v1beta1helper.ShootUsesUnmanagedDNS(s.GetInfo())) {
+		return v1beta1helper.GetAPIServerDomain(*s.InternalClusterDomain)
 	}
 
 	return v1beta1helper.GetAPIServerDomain(*s.ExternalClusterDomain)
 }
 
-// IPVSEnabled returns true if IPVS is enabled for the shoot.
-func (s *Shoot) IPVSEnabled() bool {
+// ProxyMode returns the kube-proxy mode config for the shoot.
+func (s *Shoot) ProxyMode() gardencorev1beta1.ProxyMode {
 	shoot := s.GetInfo()
-	return shoot.Spec.Kubernetes.KubeProxy != nil &&
-		shoot.Spec.Kubernetes.KubeProxy.Mode != nil &&
-		*shoot.Spec.Kubernetes.KubeProxy.Mode == gardencorev1beta1.ProxyModeIPVS
+	if shoot.Spec.Kubernetes.KubeProxy != nil && shoot.Spec.Kubernetes.KubeProxy.Mode != nil {
+		return *shoot.Spec.Kubernetes.KubeProxy.Mode
+	}
+	return gardencorev1beta1.ProxyModeIPTables
 }
 
 // IsShootControlPlaneLoggingEnabled return true if the Shoot controlplane logging is enabled
@@ -525,21 +540,35 @@ func (s *Shoot) IsShootControlPlaneLoggingEnabled(c *gardenletconfigv1alpha1.Gar
 	return s.Purpose != gardencorev1beta1.ShootPurposeTesting && gardenlethelper.IsLoggingEnabled(c)
 }
 
-func sortByIPFamilies(ipfamilies []gardencorev1beta1.IPFamily, cidrs []net.IPNet) []net.IPNet {
+// SortByIPFamilies sorts a slice of CIDRs according to the specified IP family order.
+// For dual-stack configurations, CIDRs are ordered by the IP family preference.
+// For single-stack configurations, matching CIDRs are placed first, followed by non-matching CIDRs.
+func SortByIPFamilies(ipfamilies []gardencorev1beta1.IPFamily, cidrs []net.IPNet) []net.IPNet {
+	if len(ipfamilies) == 0 || len(cidrs) == 0 {
+		return cidrs
+	}
+
 	var result []net.IPNet
-	for _, ipfamily := range ipfamilies {
-		switch ipfamily {
-		case gardencorev1beta1.IPFamilyIPv4:
-			for _, cidr := range cidrs {
-				if cidr.IP.To4() != nil {
-					result = append(result, cidr)
-				}
+
+	// Process each IP family in order
+	for _, family := range ipfamilies {
+		for _, cidr := range cidrs {
+			isIPv4 := cidr.IP.To4() != nil
+			if (family == gardencorev1beta1.IPFamilyIPv4 && isIPv4) ||
+				(family == gardencorev1beta1.IPFamilyIPv6 && !isIPv4) {
+				result = append(result, cidr)
 			}
-		case gardencorev1beta1.IPFamilyIPv6:
-			for _, cidr := range cidrs {
-				if cidr.IP.To4() == nil {
-					result = append(result, cidr)
-				}
+		}
+	}
+
+	// For single-stack, append non-matching CIDRs at the end
+	if len(ipfamilies) == 1 {
+		primary := ipfamilies[0]
+		for _, cidr := range cidrs {
+			isIPv4 := cidr.IP.To4() != nil
+			if (primary == gardencorev1beta1.IPFamilyIPv4 && !isIPv4) ||
+				(primary == gardencorev1beta1.IPFamilyIPv6 && isIPv4) {
+				result = append(result, cidr)
 			}
 		}
 	}
@@ -599,28 +628,30 @@ func ToNetworks(shoot *gardencorev1beta1.Shoot, workerless bool) (*Networks, err
 		if result, err := copyUniqueCIDRs(shoot.Status.Networking.Pods, pods, "pod"); err != nil {
 			return nil, err
 		} else {
-			pods = sortByIPFamilies(shoot.Spec.Networking.IPFamilies, result)
+			pods = SortByIPFamilies(shoot.Spec.Networking.IPFamilies, result)
 		}
 		if result, err := copyUniqueCIDRs(shoot.Status.Networking.Services, services, "service"); err != nil {
 			return nil, err
 		} else {
-			services = sortByIPFamilies(shoot.Spec.Networking.IPFamilies, result)
+			services = SortByIPFamilies(shoot.Spec.Networking.IPFamilies, result)
 		}
 		if result, err := copyUniqueCIDRs(shoot.Status.Networking.Nodes, nodes, "node"); err != nil {
 			return nil, err
 		} else {
-			nodes = sortByIPFamilies(shoot.Spec.Networking.IPFamilies, result)
+			nodes = SortByIPFamilies(shoot.Spec.Networking.IPFamilies, result)
 		}
 		if result, err := copyUniqueCIDRs(shoot.Status.Networking.EgressCIDRs, egressCIDRs, "egressCIDRs"); err != nil {
 			return nil, err
 		} else {
-			egressCIDRs = sortByIPFamilies(shoot.Spec.Networking.IPFamilies, result)
+			egressCIDRs = SortByIPFamilies(shoot.Spec.Networking.IPFamilies, result)
 		}
 	}
 
 	// During dual-stack migration, until nodes are migrated to  dual-stack, we only use the primary addresses.
 	condition := v1beta1helper.GetCondition(shoot.Status.Constraints, gardencorev1beta1.ShootDualStackNodesMigrationReady)
-	if condition != nil && condition.Status != gardencorev1beta1.ConditionTrue {
+	if condition != nil &&
+		((condition.Status != gardencorev1beta1.ConditionTrue && len(shoot.Spec.Networking.IPFamilies) == 2) ||
+			(condition.Status == gardencorev1beta1.ConditionTrue && len(shoot.Spec.Networking.IPFamilies) == 1)) {
 		nodes = getPrimaryCIDRs(nodes, shoot.Spec.Networking.IPFamilies)
 		services = getPrimaryCIDRs(services, shoot.Spec.Networking.IPFamilies)
 		pods = getPrimaryCIDRs(pods, shoot.Spec.Networking.IPFamilies)
@@ -667,14 +698,19 @@ func copyUniqueCIDRs(src []string, dst []net.IPNet, networkType string) ([]net.I
 	return dst, nil
 }
 
-// IsAutonomous returns true in case of an autonomous shoot cluster.
-func (s *Shoot) IsAutonomous() bool {
-	return v1beta1helper.IsShootAutonomous(s.GetInfo())
+// IsSelfHosted returns true in case of a self-hosted shoot cluster.
+func (s *Shoot) IsSelfHosted() bool {
+	return v1beta1helper.IsShootSelfHosted(s.GetInfo().Spec.Provider.Workers)
 }
 
 // RunsControlPlane returns true in case the Kubernetes control plane runs inside the cluster.
-// In contrast to IsAutonomous, this function returns false when bootstrapping autonomous shoot clusters using
-// `gardenadm bootstrap` (medium-touch scenario).
+// In contrast to IsSelfHosted, this function returns false when bootstrapping self-hosted shoot clusters using
+// `gardenadm bootstrap` ("managed infrastructure" scenario).
 func (s *Shoot) RunsControlPlane() bool {
 	return s.ControlPlaneNamespace == metav1.NamespaceSystem
+}
+
+// HasManagedInfrastructure returns true if the shoot's infrastructure (network, machines, etc.) is managed by Gardener.
+func (s *Shoot) HasManagedInfrastructure() bool {
+	return v1beta1helper.HasManagedInfrastructure(s.GetInfo())
 }

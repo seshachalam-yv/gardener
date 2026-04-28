@@ -21,11 +21,10 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
-	"github.com/gardener/gardener/pkg/controllerutils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
@@ -40,9 +39,6 @@ type Reconciler struct {
 // Reconcile reconciles Projects, marks them as stale and auto-deletes them after a certain time if not in-use.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, r.Config.StaleSyncPeriod.Duration)
-	defer cancel()
 
 	project := &gardencorev1beta1.Project{}
 	if err := r.Client.Get(ctx, request.NamespacedName, project); err != nil {
@@ -103,6 +99,7 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, project *ga
 		{"Shoots", r.projectInUseDueToShoots},
 		{"BackupEntries", r.projectInUseDueToBackupEntries},
 		{"Secrets", r.projectInUseDueToSecrets},
+		{"InternalSecrets", r.projectInUseDueToInternalSecrets},
 		{"WorkloadIdentities", r.projectInUseDueToWorkloadIdentities},
 		{"Quotas", r.projectInUseDueToQuotas},
 	} {
@@ -153,13 +150,12 @@ func (r *Reconciler) projectInUseDueToBackupEntries(ctx context.Context, namespa
 func (r *Reconciler) projectInUseDueToWorkloadIdentities(ctx context.Context, namespace string) (bool, error) {
 	workloadIdentityList := &metav1.PartialObjectMetadataList{}
 	workloadIdentityList.SetGroupVersionKind(securityv1alpha1.SchemeGroupVersion.WithKind("WorkloadIdentityList"))
-	err := r.Client.List(
+	if err := r.Client.List(
 		ctx,
 		workloadIdentityList,
 		client.InNamespace(namespace),
 		client.MatchingLabels{v1beta1constants.LabelCredentialsBindingReference: "true"},
-	)
-	if err != nil {
+	); err != nil {
 		return false, err
 	}
 
@@ -177,6 +173,35 @@ func (r *Reconciler) projectInUseDueToWorkloadIdentities(ctx context.Context, na
 			credentialsBinding.CredentialsRef.Kind == "WorkloadIdentity" &&
 			credentialsBinding.CredentialsRef.Namespace == namespace &&
 			workloadIdentityNames.Has(credentialsBinding.CredentialsRef.Name)
+	})
+}
+
+func (r *Reconciler) projectInUseDueToInternalSecrets(ctx context.Context, namespace string) (bool, error) {
+	internalSecretList := &metav1.PartialObjectMetadataList{}
+	internalSecretList.SetGroupVersionKind(gardencorev1beta1.SchemeGroupVersion.WithKind("InternalSecretList"))
+	if err := r.Client.List(
+		ctx,
+		internalSecretList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{v1beta1constants.LabelCredentialsBindingReference: "true"},
+	); err != nil {
+		return false, err
+	}
+
+	if len(internalSecretList.Items) == 0 {
+		return false, nil
+	}
+
+	internalSecretNames := make(sets.Set[string], len(internalSecretList.Items))
+	for _, internalSecret := range internalSecretList.Items {
+		internalSecretNames.Insert(internalSecret.Name)
+	}
+
+	return r.relevantCredentialsBindingsInUse(ctx, func(credentialsBinding securityv1alpha1.CredentialsBinding) bool {
+		return credentialsBinding.CredentialsRef.APIVersion == gardencorev1beta1.SchemeGroupVersion.String() &&
+			credentialsBinding.CredentialsRef.Kind == "InternalSecret" &&
+			credentialsBinding.CredentialsRef.Namespace == namespace &&
+			internalSecretNames.Has(credentialsBinding.CredentialsRef.Name)
 	})
 }
 

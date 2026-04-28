@@ -13,6 +13,11 @@ It is also used to serve http(s) handlers for authorization webhooks.
 
 This section describes the admission webhook handlers that are currently served.
 
+### Audit Policy Validator
+
+In `Shoot`s, it is possible to reference audit policy ConfigMaps that define the audit logging behavior for the kube-apiserver.
+This validation handler validates that such audit policy configurations are valid and conform to the expected schema.
+
 ### Authentication Configuration Validator
 
 In `Shoot`s, it is possible to reference [structured authentication configurations](https://kubernetes.io/blog/2024/04/25/structured-authentication-moves-to-beta).
@@ -38,6 +43,18 @@ Namespaces are the backing entities of Gardener projects in which shoot cluster 
 This validation handler protects active namespaces against premature deletion requests.
 Therefore, it denies deletion requests if a namespace still contains shoot clusters or if it belongs to a non-deleting Gardener project (without `.metadata.deletionTimestamp`).
 
+### Internal Domain Secret Validator
+
+Gardener uses internal domain secrets to configure DNS for shoot clusters.
+This validation handler ensures that only one internal domain secret can exist per namespace and validates the immutability of critical domain configuration.
+It prevents modifications that could break DNS resolution for existing shoots.
+
+### Provider Secret Labels
+
+`Secret`s and `InternalSecret`s referenced in `SecretBinding`s or `CredentialsBinding`s are automatically labeled with the corresponding provider types.
+This mutating handler syncs provider labels (with prefix `provider.shoot.gardener.cloud/<type>=true`) on these resources to ensure they are properly tagged with the provider type(s) that reference them.
+This helps with filtering (e.g., via label selectors in webhooks) and organizing credentials by their associated cloud providers.
+
 ### Resource Size Validator
 
 Since users directly apply Kubernetes native objects to the Garden cluster, it also involves the risk of being vulnerable to DoS attacks because these resources are continuously watched and read by controllers.
@@ -59,6 +76,10 @@ server:
       apiVersions: ["*"]
       resources: ["shoots"]
       size: 100k
+    - apiGroups: ["core.gardener.cloud"]
+      apiVersions: ["*"]
+      resources: ["projects"]
+      count: 200
     - apiGroups: [""]
       apiVersions: ["v1"]
       resources: ["secrets"]
@@ -89,9 +110,19 @@ Size limitations depend on the individual Gardener setup and choosing the wrong 
 `resourceAdmissionConfiguration.operationMode` allows to control if a violating request is actually denied (default) or only logged.
 It's recommended to start with `log`, check the logs for exceeding requests, adjust the limits if necessary and finally switch to `block`.
 
+In addition to that, it is also possible to restrict the number of **cluster-scoped** resources, using the `count` field, like in the example above.
+This ensures that only a certain number of resources of the given type can exist in the cluster. 
+Similar to restrictions, subjects configured under `unrestrictedSubjects` are exempt from this restriction.
+The count restriction can also be used in combination with size restrictions.
+
 ### SeedRestriction
 
 Please refer to [Scoped API Access for Gardenlets](../deployment/gardenlet_api_access.md) for more information.
+
+### ShootRestriction
+
+This handler restricts requests made by gardenlets running in self-hosted shoots.
+It ensures that shoot gardenlets can only access resources that belong to their own shoot, preventing unauthorized access to other shoots' resources.
 
 ### UpdateRestriction
 
@@ -111,3 +142,8 @@ This section describes the authorization webhook handlers that are currently ser
 ### SeedAuthorization
 
 Please refer to [Scoped API Access for Gardenlets](../deployment/gardenlet_api_access.md) for more information.
+
+### ShootAuthorization
+
+This handler authorizes requests from gardenlets running in self-hosted shoots.
+It implements scoped API access for shoot gardenlets, ensuring they can only access resources related to their own shoot.

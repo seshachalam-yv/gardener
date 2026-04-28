@@ -5,7 +5,7 @@ description: Migrate IPv4 shoots to dual-stack IPv4,IPv6 network
 
 # Dual-Stack Network Migration
 
-This document provides a guide for migrating IPv4-only or IPv6-only Gardener shoot clusters to dual-stack networking (IPv4 and IPv6).
+This document provides a guide for migrating IPv4-only Gardener shoot clusters to dual-stack networking (IPv4 and IPv6).
 
 ## Overview
 
@@ -17,7 +17,9 @@ Dual-stack networking allows clusters to operate with both IPv4 and IPv6 protoco
 
 ### Key Considerations
 
-- Adding a new protocol is only allowed as the second element in the array, ensuring the primary protocol remains unchanged.
+- Single stack IPv4 clusters can be migrated to  dual-stack by adding IPv6 as second element.
+- The migration of single stack IPv6 clusters to dual-stack is not supported.
+- A dual-stack cluster cannot be migrated to single-stack. Migration from single-stack to dual-stack is a one-way process and cannot be undone.
 - Migration involves multiple reconciliation runs to ensure a smooth transition without disruptions.
 
 ## Preconditions
@@ -46,6 +48,12 @@ spec:
 
 The migration process should usually take place during the corresponding shoot maintenance time window. If you wish to run the migration process earlier, then you need to roll the nodes yourself and then trigger a reconcile so that the status of the `DualStackNodesMigrationReady` constraint is set to `true`. Once this is the case a new reconcile needs to be triggered to update the final components as described in step 5.  
 
+To help with manual rollout, Gardener provides a way to trigger the rollout per worker pool rollout by annotating the `Shoot` with the `rollout-workers` operation annotation and specifying which pool names you'd like to be rolled out:
+```
+kubectl -n <shoot-namespace> annotate shoot <shoot-name> gardener.cloud/operation=rollout-workers=<pool1-name>[,<pool2-name>,...]
+```
+For more information, please refer to the [manual worker pool rollout](../shoot-operations/worker_pool_manual_rollout.md) documentation.
+
 ### Step 1: Update Networking Configuration
 
 Modify the `spec.networking.ipFamilies` field to include the desired dual-stack configuration. For example, change `[IPv4]` to `[IPv4, IPv6]`.
@@ -64,14 +72,75 @@ Nodes must support the new network protocol. However, node rollout is a manual s
 
 Cluster owners can monitor the progress of this step by checking the `DualStackNodesMigrationReady` constraint in the shoot status. During shoot reconciliation, the system verifies if all nodes support dual-stack networking and updates the migration state accordingly.
 
-### Step 5: Final Reconciliation
+### Step 5: Control Plane and CNI Configuration
 
-Once all nodes are migrated, the remaining control plane components and the Container Network Interface (CNI) are configured for dual-stack networking. The migration constraint is removed at the end of this step.
+Once all nodes are migrated, the remaining control plane components and the Container Network Interface (CNI) are configured for dual-stack networking. The nodes migration constraint is removed at the end of this step and the constraint `DNSServiceMigrationReady` is added with status `progressing`.
+
+### Step 6: Restart of CoreDNS Pods
+
+With the next reconciliation, CoreDNS pods are restarted to obtain IPv6 addresses. The constraint `DNSServiceMigrationReady` is set to status `true` once all pods have both IPv4 and IPv6 addresses. As pods are restarted asynchronously, this will take an other reconiliation.
+
+### Step 7: Switch Service `kube-dns` to Dual-Stack
+
+When all CoreDNS pods have IPv6 addresses, the `kube-dns` service will be configured as a dual-stack service with both IPv4 and IPv6 cluster IPs and the constraint `DNSServiceMigrationReady` will be removed.
 
 ## Post-Migration Behavior
 
 After completing the migration:
 - The shoot cluster supports dual-stack networking.
+- The `kube-dns` service operates with both IPv4 and IPv6 cluster IPs.
+- CoreDNS pods handle DNS queries for both address families.
 - New pods will receive IP addresses from both address families.
 - Existing pods will only receive a second IP address upon recreation.
-- If full dual-stack networking is required all pods need to be rolled.
+- If full dual-stack networking is required, all pods need to be rolled.
+- Existing services remain IPv4-only until recreated with dual-stack configuration.
+
+
+# Migrate from Dual-Stack to Single-Stack IPv4
+
+In general, it should not be necessary to migrate from dual-stack to single-stack IPv4. However, if unforeseen problems arise, clusters can be migrated back to single-stack networking. This migration is possible even if the original dual-stack migration is not fully completed.
+
+## Important Considerations
+
+**⚠️ Partial Reversibility**: The migration back to single-stack is not a complete reversal of the dual-stack migration:
+
+- **Infrastructure remnants**: Not all infrastructure changes can be reverted. IPv6 addresses will still be present in the shoot status, representing IPv6 addresses of infrastructure resources that were created during the dual-stack migration.
+- **Pod range assignment**: Depending on the infrastructure provider, the method for pod range assignment may differ compared to IPv4 shoots that were never migrated to dual-stack.
+
+## Migration Process
+
+The migration back to single-stack follows a similar pattern to the dual-stack migration but in reverse:
+
+### Step 1: Update Networking Configuration
+
+Remove IPv6 from the `spec.networking.ipFamilies` field. Change the configuration from `[IPv4, IPv6]` back to `[IPv4]`.
+
+```yaml
+spec:
+  ...
+  networking:
+    ipFamilies:
+    - IPv4  # Remove IPv6 entry
+  ...
+```
+
+The shoot will reconcile automatically after the configuration change. Control plane components will be reconfigured to IPv4 single-stack mode. During this step, the `DualStackNodesMigrationReady` constraint is set to `true`, indicating that nodes and pods still have IPv6 addresses but the control plane is ready for the migration.
+
+### Step 2: Node Rollout
+
+After the control plane reconfiguration, all nodes must be rolled to remove IPv6 configuration and addresses.
+
+**Note**: Nodes and pods will continue to have IPv6 addresses until they are rolled/recreated.
+
+After rolling all nodes, the `DualStackNodesMigrationReady` constraint will be removed automatically during the next reconciliation. At this point:
+- All nodes will have only IPv4 addresses
+- All pods will have only IPv4 addresses
+- The cluster operates in single-stack IPv4 mode
+
+## Post-Migration State
+
+After completing the migration back to single-stack:
+- The cluster operates with IPv4-only networking
+- New pods receive only IPv4 addresses
+- Services operate with IPv4 cluster IPs only
+- Some infrastructure resources may retain IPv6 addresses in their metadata (as noted in the considerations above)

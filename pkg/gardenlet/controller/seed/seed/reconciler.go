@@ -14,17 +14,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -39,7 +39,7 @@ type Reconciler struct {
 	SeedVersion                          *semver.Version
 	Config                               gardenletconfigv1alpha1.GardenletConfiguration
 	Clock                                clock.Clock
-	Recorder                             record.EventRecorder
+	Recorder                             events.EventRecorder
 	Identity                             *gardencorev1beta1.Gardener
 	ComponentImageVectors                imagevector.ComponentImageVectors
 	ClientCertificateExpirationTimestamp *metav1.Time
@@ -109,15 +109,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, r.updateStatusOperationError(ctx, seed, err, operationType)
 	}
 
+	seedIsSelfHostedShoot, err := gardenletutils.SeedIsSelfHostedShoot(ctx, r.SeedClientSet.Client())
+	if err != nil {
+		return reconcile.Result{}, r.updateStatusOperationError(ctx, seed, err, operationType)
+	}
+
 	if seed.DeletionTimestamp != nil {
-		result, err := r.delete(ctx, log, seedObj, seedIsGarden, seedIsShoot)
+		result, err := r.delete(ctx, log, seedObj, seedIsGarden, seedIsShoot, seedIsSelfHostedShoot)
 		if err != nil {
 			return result, r.updateStatusOperationError(ctx, seed, err, operationType)
 		}
 		return result, nil
 	}
 
-	if err := r.reconcile(ctx, log, seedObj, seedIsGarden, seedIsShoot); err != nil {
+	if err := r.reconcile(ctx, log, seedObj, seedIsGarden, seedIsShoot, seedIsSelfHostedShoot); err != nil {
 		return reconcile.Result{}, r.updateStatusOperationError(ctx, seed, err, operationType)
 	}
 
@@ -221,7 +226,7 @@ func (r *Reconciler) updateStatusOperationSuccess(ctx context.Context, seed *gar
 			switch cond.Type {
 			case gardencorev1beta1.SeedBackupBucketsReady,
 				gardencorev1beta1.SeedExtensionsReady,
-				gardencorev1beta1.SeedGardenletReady,
+				gardencorev1beta1.GardenletReady,
 				gardencorev1beta1.SeedSystemComponentsHealthy:
 				if cond.Status != gardencorev1beta1.ConditionFalse {
 					seed.Status.Conditions[i].Status = gardencorev1beta1.ConditionProgressing

@@ -13,10 +13,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
-	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	botanistpkg "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
@@ -158,7 +157,7 @@ func (r *Reconciler) runMigrateShootFlow(ctx context.Context, o *operation.Opera
 		wakeUpKubeAPIServer = g.Add(flow.Task{
 			Name: "Scaling Kubernetes API Server up and waiting until ready",
 			Fn: flow.TaskFn(func(ctx context.Context) error {
-				return botanist.WakeUpKubeAPIServer(ctx, canEnableNodeAgentAuthorizerWebhook && features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer))
+				return botanist.WakeUpKubeAPIServer(ctx, canEnableNodeAgentAuthorizerWebhook)
 			}),
 			SkipIf:       !wakeupRequired,
 			Dependencies: flow.NewTaskIDs(deployETCD, scaleUpETCD, initializeSecretsManagement),
@@ -186,7 +185,7 @@ func (r *Reconciler) runMigrateShootFlow(ctx context.Context, o *operation.Opera
 			Fn: flow.TaskFn(func(ctx context.Context) error {
 				return botanist.WakeUpKubeAPIServer(ctx, true)
 			}),
-			SkipIf:       !wakeupRequired || canEnableNodeAgentAuthorizerWebhook || !features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer),
+			SkipIf:       !wakeupRequired || canEnableNodeAgentAuthorizerWebhook,
 			Dependencies: flow.NewTaskIDs(ensureResourceManagerScaledUp),
 		})
 		keepManagedResourcesObjectsInShoot = g.Add(flow.Task{
@@ -244,7 +243,7 @@ func (r *Reconciler) runMigrateShootFlow(ctx context.Context, o *operation.Opera
 		persistShootState = g.Add(flow.Task{
 			Name: "Persisting ShootState in garden cluster",
 			Fn: func(ctx context.Context) error {
-				return shootstate.Deploy(ctx, r.Clock, botanist.GardenClient, botanist.SeedClientSet.Client(), botanist.Shoot.GetInfo(), false)
+				return shootstate.Deploy(ctx, r.Clock, botanist.GardenClient, botanist.SeedClientSet.Client(), botanist.Shoot.GetInfo(), botanist.Shoot.ControlPlaneNamespace, false)
 			},
 			Dependencies: flow.NewTaskIDs(waitUntilExtensionResourcesMigrated),
 		})

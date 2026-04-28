@@ -9,11 +9,12 @@ metadata:
 spec:
   cloudProfile:
     name: local
-  secretBindingName: local # dummy, doesn't contain any credentials
+  credentialsBindingName: local # dummy, doesn't contain any credentials
   region: local
   networking:
     type: calico
-    nodes: 10.10.0.0/16
+    # Must be within 10.0.0.0/16 (subnet of kind pod CIDR 10.0.0.0/15, but disjoint with seed pod CIDR 10.1.0.0/16).
+    nodes: 10.0.0.0/16
   provider:
     type: local
     workers:

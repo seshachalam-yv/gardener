@@ -20,13 +20,14 @@ import (
 	managedseedshoot "github.com/gardener/gardener/plugin/pkg/managedseed/shoot"
 	managedseedvalidator "github.com/gardener/gardener/plugin/pkg/managedseed/validator"
 	namespacedcloudprofilevalidator "github.com/gardener/gardener/plugin/pkg/namespacedcloudprofile/validator"
-	projectvalidator "github.com/gardener/gardener/plugin/pkg/project/validator"
+	projectmutator "github.com/gardener/gardener/plugin/pkg/project/mutator"
 	seedmutator "github.com/gardener/gardener/plugin/pkg/seed/mutator"
 	seedvalidator "github.com/gardener/gardener/plugin/pkg/seed/validator"
 	shootdns "github.com/gardener/gardener/plugin/pkg/shoot/dns"
 	shootdnsrewriting "github.com/gardener/gardener/plugin/pkg/shoot/dnsrewriting"
 	shootexposureclass "github.com/gardener/gardener/plugin/pkg/shoot/exposureclass"
 	shootmanagedseed "github.com/gardener/gardener/plugin/pkg/shoot/managedseed"
+	shootmutator "github.com/gardener/gardener/plugin/pkg/shoot/mutator"
 	shootnodelocaldns "github.com/gardener/gardener/plugin/pkg/shoot/nodelocaldns"
 	"github.com/gardener/gardener/plugin/pkg/shoot/oidc/clusteropenidconnectpreset"
 	"github.com/gardener/gardener/plugin/pkg/shoot/oidc/openidconnectpreset"
@@ -38,6 +39,7 @@ import (
 )
 
 // RegisterAllAdmissionPlugins registers all admission plugins.
+// The order of registration is irrelevant, see github.com/gardener/gardener/plugin/pkg.AllOrderedPluginNames for execution order.
 func RegisterAllAdmissionPlugins(plugins *admission.Plugins) {
 	resourcereferencemanager.Register(plugins)
 	deletionconfirmation.Register(plugins)
@@ -51,12 +53,13 @@ func RegisterAllAdmissionPlugins(plugins *admission.Plugins) {
 	shootmanagedseed.Register(plugins)
 	shootnodelocaldns.Register(plugins)
 	shootdnsrewriting.Register(plugins)
+	shootmutator.Register(plugins)
 	shootvalidator.Register(plugins)
 	seedvalidator.Register(plugins)
 	seedmutator.Register(plugins)
 	controllerregistrationresources.Register(plugins)
 	namespacedcloudprofilevalidator.Register(plugins)
-	projectvalidator.Register(plugins)
+	projectmutator.Register(plugins)
 	openidconnectpreset.Register(plugins)
 	clusteropenidconnectpreset.Register(plugins)
 	customverbauthorizer.Register(plugins)

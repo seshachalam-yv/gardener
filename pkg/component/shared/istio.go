@@ -11,7 +11,9 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,6 +32,16 @@ import (
 // ImageVector is an alias for imagevector.Containers(). Exposed for testing.
 var ImageVector = imagevector.Containers()
 
+const (
+	// Each availability zone should have at least 2 replicas as on some infrastructures each
+	// zonal load balancer is exposed individually via its own IP address. Therefore, having
+	// just one replica may negatively affect availability.
+	minReplicasPerZone = 2
+	// The maximum is chosen high enough to allow for sufficient scaling headroom during peak
+	// load while still providing a reasonable upper bound to prevent runaway scaling.
+	maxReplicasPerZone = 16
+)
+
 // NewIstio returns a deployer for Istio.
 func NewIstio(
 	ctx context.Context,
@@ -42,6 +54,7 @@ func NewIstio(
 	labels map[string]string,
 	toKubeAPIServerPolicyLabel string,
 	lbAnnotations map[string]string,
+	loadBalancerClass *string,
 	externalTrafficPolicy *corev1.ServiceExternalTrafficPolicy,
 	serviceExternalIP *string,
 	servicePorts []corev1.ServicePort,
@@ -54,11 +67,6 @@ func NewIstio(
 	istio.Interface,
 	error,
 ) {
-	var (
-		minReplicas *int
-		maxReplicas *int
-	)
-
 	istiodImage, err := ImageVector.FindImage(imagevector.ContainerImageNameIstioIstiod)
 	if err != nil {
 		return nil, err
@@ -69,16 +77,8 @@ func NewIstio(
 		return nil, err
 	}
 
-	if len(zones) > 1 {
-		// Each availability zone should have at least 2 replicas as on some infrastructures each
-		// zonal load balancer is exposed individually via its own IP address. Therefore, having
-		// just one replica may negatively affect availability.
-		minReplicas = ptr.To(len(zones) * 2)
-		// The default configuration without availability zones has 9 as the maximum amount of
-		// replicas, which apparently works in all known Gardener scenarios. Reducing it to less
-		// per zone gives some room for autoscaling while it is assumed to never reach the maximum.
-		maxReplicas = ptr.To(len(zones) * 6)
-	}
+	minReplicas := ptr.To(max(1, len(zones)) * minReplicasPerZone)
+	maxReplicas := ptr.To(max(1, len(zones)) * maxReplicasPerZone)
 
 	policyLabels := commonIstioIngressNetworkPolicyLabels(vpnEnabled)
 	policyLabels[toKubeAPIServerPolicyLabel] = v1beta1constants.LabelNetworkPolicyAllowed
@@ -96,6 +96,7 @@ func NewIstio(
 		Image:                              igwImage.String(),
 		IstiodNamespace:                    v1beta1constants.IstioSystemNamespace,
 		Annotations:                        lbAnnotations,
+		LoadBalancerClass:                  loadBalancerClass,
 		ExternalTrafficPolicy:              externalTrafficPolicy,
 		MinReplicas:                        minReplicas,
 		MaxReplicas:                        maxReplicas,
@@ -143,6 +144,7 @@ func AddIstioIngressGateway(
 	namespace string,
 	annotations map[string]string,
 	labels map[string]string,
+	loadBalancerClass *string,
 	externalTrafficPolicy *corev1.ServiceExternalTrafficPolicy,
 	serviceExternalIP *string,
 	zone *string,
@@ -158,22 +160,21 @@ func AddIstioIngressGateway(
 	// Take the first ingress gateway values to create additional gateways
 	templateValues := gatewayValues[0]
 
-	var (
-		zones                    []string
-		minReplicas              *int
-		maxReplicas              *int
-		enforceSpreadAcrossHosts bool
-		err                      error
-	)
+	var zones []string
 
-	if zone == nil {
-		minReplicas = templateValues.MinReplicas
-		maxReplicas = templateValues.MaxReplicas
-		enforceSpreadAcrossHosts = templateValues.EnforceSpreadAcrossHosts
-	} else {
+	minReplicas := templateValues.MinReplicas
+	maxReplicas := templateValues.MaxReplicas
+
+	enforceSpreadAcrossHosts := templateValues.EnforceSpreadAcrossHosts
+
+	if zone != nil {
 		zones = []string{*zone}
 
-		enforceSpreadAcrossHosts, err = ShouldEnforceSpreadAcrossHosts(ctx, cl, []string{*zone})
+		minReplicas = ptr.To(minReplicasPerZone)
+		maxReplicas = ptr.To(maxReplicasPerZone)
+
+		var err error
+		enforceSpreadAcrossHosts, err = ShouldEnforceSpreadAcrossHosts(ctx, cl, zones)
 		if err != nil {
 			return err
 		}
@@ -186,6 +187,7 @@ func AddIstioIngressGateway(
 		Namespace:                          namespace,
 		MinReplicas:                        minReplicas,
 		MaxReplicas:                        maxReplicas,
+		LoadBalancerClass:                  loadBalancerClass,
 		ExternalTrafficPolicy:              externalTrafficPolicy,
 		LoadBalancerIP:                     serviceExternalIP,
 		Image:                              templateValues.Image,
@@ -263,6 +265,41 @@ func IsZonalIstioExtension(labels map[string]string) (bool, string) {
 	return false, ""
 }
 
+// AreZonalGatewaysInUse checks whether any shoots are using zonal Istio ingress gateways.
+// It returns true if any shoot control plane gateway targets a zonal Istio ingress gateway in the specified zones.
+func AreZonalGatewaysInUse(ctx context.Context, c client.Client, zones []string) (bool, error) {
+	gatewayList := &istionetworkingv1beta1.GatewayList{}
+	if err := c.List(ctx, gatewayList); err != nil {
+		// If the Gateway CRD is not yet installed (NoMatchError) return false.
+		// The Gateway CRD will eventually be installed.
+		if meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	zoneSet := make(map[string]struct{}, len(zones))
+	for _, zone := range zones {
+		zoneSet[zone] = struct{}{}
+	}
+
+	for _, gateway := range gatewayList.Items {
+		// Only check shoot control plane Gateways
+		if gateway.Name != v1beta1constants.DeploymentNameKubeAPIServer {
+			continue
+		}
+
+		// Check if the Gateway selector points to a zonal ingress gateway
+		if isZonal, zone := IsZonalIstioExtension(gateway.Spec.Selector); isZonal {
+			if _, exists := zoneSet[zone]; exists {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
 // ShouldEnforceSpreadAcrossHosts checks whether all given zones have at least two nodes so that Istio can be spread across hosts in each zone.
 func ShouldEnforceSpreadAcrossHosts(ctx context.Context, cl client.Client, zones []string) (bool, error) {
 	// If there are multiple zones, losing multiple Istio ingress replicas on one node is not a big problem since there are also replicas in two other zones.
@@ -316,7 +353,7 @@ func commonIstioIngressNetworkPolicyLabels(vpnEnabled bool) map[string]string {
 	if vpnEnabled {
 		labels[gardenerutils.NetworkPolicyLabel(v1beta1constants.LabelNetworkPolicyShootNamespaceAlias+"-"+v1beta1constants.DeploymentNameVPNSeedServer, vpnseedserver.OpenVPNPort)] = v1beta1constants.LabelNetworkPolicyAllowed
 
-		for i := 0; i < vpnseedserver.HighAvailabilityReplicaCount; i++ {
+		for i := range vpnseedserver.HighAvailabilityReplicaCount {
 			labels[gardenerutils.NetworkPolicyLabel(fmt.Sprintf("%s-%s-%d", v1beta1constants.LabelNetworkPolicyShootNamespaceAlias, v1beta1constants.DeploymentNameVPNSeedServer, i), vpnseedserver.OpenVPNPort)] = v1beta1constants.LabelNetworkPolicyAllowed
 		}
 	}

@@ -12,10 +12,12 @@ import (
 
 	"github.com/gardener/gardener/cmd/gardener-resource-manager/app"
 	"github.com/gardener/gardener/cmd/utils"
+	"github.com/gardener/gardener/pkg/resourcemanager/features"
 )
 
 func main() {
 	utils.DeduplicateWarnings()
+	features.RegisterFeatureGates()
 
 	if err := app.NewCommand().ExecuteContext(signals.SetupSignalHandler()); err != nil {
 		fmt.Println(err)

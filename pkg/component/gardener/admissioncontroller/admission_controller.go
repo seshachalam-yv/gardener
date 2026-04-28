@@ -12,7 +12,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/admissioncontroller/apis/config/v1alpha1"
+	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/admissioncontroller/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
@@ -29,7 +29,8 @@ const (
 	// ServiceName is the name of the service.
 	ServiceName = DeploymentName
 
-	roleName = "admission-controller"
+	containerName = "gardener-admission-controller"
+	roleName      = "admission-controller"
 
 	serverPort  = 2719
 	probePort   = 2722
@@ -55,8 +56,9 @@ type Values struct {
 	ResourceAdmissionConfiguration *admissioncontrollerconfigv1alpha1.ResourceAdmissionConfiguration
 	// RuntimeVersion is the Kubernetes version of the runtime cluster.
 	RuntimeVersion *semver.Version
-	// SeedRestrictionEnabled specifies whether the seed-restriction webhook is enabled.
-	SeedRestrictionEnabled bool
+	// AuthorizerRestrictionsEnabled specifies whether the restriction webhooks for the seed/shoot authorizer shall be
+	// enabled.
+	AuthorizerRestrictionsEnabled bool
 	// TopologyAwareRoutingEnabled determines whether topology aware hints are intended for the gardener-admission-controller.
 	TopologyAwareRoutingEnabled bool
 }

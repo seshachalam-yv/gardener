@@ -7,12 +7,12 @@ package namespacedcloudprofile
 import (
 	"context"
 	"fmt"
+	"slices"
 
-	"golang.org/x/exp/maps"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -20,10 +20,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gardener/gardener/pkg/api"
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -33,15 +34,12 @@ import (
 type Reconciler struct {
 	Client   client.Client
 	Config   controllermanagerconfigv1alpha1.NamespacedCloudProfileControllerConfiguration
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 }
 
 // Reconcile performs the main reconciliation logic.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
 
 	namespacedCloudProfile := &gardencorev1beta1.NamespacedCloudProfile{}
 	if err := r.Client.Get(ctx, request.NamespacedName, namespacedCloudProfile); err != nil {
@@ -79,7 +77,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		}
 
 		message := fmt.Sprintf("Cannot delete NamespacedCloudProfile, because the following Shoots are still referencing it: %+v", associatedShoots)
-		r.Recorder.Event(namespacedCloudProfile, corev1.EventTypeNormal, v1beta1constants.EventResourceReferenced, message)
+		r.Recorder.Eventf(namespacedCloudProfile, nil, corev1.EventTypeNormal, v1beta1constants.EventResourceReferenced, gardencorev1beta1.EventActionReconcile, message)
 		return reconcile.Result{}, fmt.Errorf("%s", message)
 	}
 
@@ -121,8 +119,11 @@ func MergeCloudProfiles(namespacedCloudProfile *gardencorev1beta1.NamespacedClou
 	if namespacedCloudProfile.Spec.Kubernetes != nil {
 		namespacedCloudProfile.Status.CloudProfileSpec.Kubernetes.Versions = mergeDeep(namespacedCloudProfile.Status.CloudProfileSpec.Kubernetes.Versions, namespacedCloudProfile.Spec.Kubernetes.Versions, expirableVersionKeyFunc, mergeExpirationDates, false)
 	}
-	namespacedCloudProfile.Status.CloudProfileSpec.MachineImages = mergeDeep(namespacedCloudProfile.Status.CloudProfileSpec.MachineImages, namespacedCloudProfile.Spec.MachineImages, machineImageKeyFunc, mergeMachineImages, true)
-	namespacedCloudProfile.Status.CloudProfileSpec.MachineTypes = mergeDeep(namespacedCloudProfile.Status.CloudProfileSpec.MachineTypes, namespacedCloudProfile.Spec.MachineTypes, machineTypeKeyFunc, nil, true)
+
+	// TODO(Roncossek): Remove TransformSpecToParentFormat once all CloudProfiles have been migrated to use CapabilityFlavors and the Architecture fields are effectively forbidden or have been removed.
+	uniformNamespacedCloudProfileSpec := gardenerutils.TransformSpecToParentFormat(namespacedCloudProfile.Spec, cloudProfile.Spec.MachineCapabilities)
+	namespacedCloudProfile.Status.CloudProfileSpec.MachineImages = mergeDeep(namespacedCloudProfile.Status.CloudProfileSpec.MachineImages, uniformNamespacedCloudProfileSpec.MachineImages, machineImageKeyFunc, mergeMachineImages, true)
+	namespacedCloudProfile.Status.CloudProfileSpec.MachineTypes = mergeDeep(namespacedCloudProfile.Status.CloudProfileSpec.MachineTypes, uniformNamespacedCloudProfileSpec.MachineTypes, machineTypeKeyFunc, nil, true)
 	namespacedCloudProfile.Status.CloudProfileSpec.VolumeTypes = mergeDeep(namespacedCloudProfile.Status.CloudProfileSpec.VolumeTypes, namespacedCloudProfile.Spec.VolumeTypes, volumeTypeKeyFunc, nil, true)
 	if namespacedCloudProfile.Spec.CABundle != nil {
 		mergedCABundles := fmt.Sprintf("%s%s", ptr.Deref(namespacedCloudProfile.Status.CloudProfileSpec.CABundle, ""), ptr.Deref(namespacedCloudProfile.Spec.CABundle, ""))
@@ -143,17 +144,39 @@ func MergeCloudProfiles(namespacedCloudProfile *gardencorev1beta1.NamespacedClou
 func syncArchitectureCapabilities(namespacedCloudProfile *gardencorev1beta1.NamespacedCloudProfile) {
 	var coreCloudProfileSpec gardencore.CloudProfileSpec
 	_ = api.Scheme.Convert(&namespacedCloudProfile.Status.CloudProfileSpec, &coreCloudProfileSpec, nil)
-	gardenerutils.SyncArchitectureCapabilityFields(coreCloudProfileSpec, gardencore.CloudProfileSpec{})
-	defaultMachineTypeArchitectures(coreCloudProfileSpec)
+	defaultMachineTypeArchitectures(coreCloudProfileSpec, coreCloudProfileSpec.MachineCapabilities)
+	defaultMachineImageArchitectures(coreCloudProfileSpec, coreCloudProfileSpec.MachineCapabilities)
 	_ = api.Scheme.Convert(&coreCloudProfileSpec, &namespacedCloudProfile.Status.CloudProfileSpec, nil)
 }
 
 // defaultMachineTypeArchitectures defaults the architectures of the machine types for NamespacedCloudProfiles.
 // The sync can only happen after having had a look at the parent CloudProfile and whether it uses capabilities.
-func defaultMachineTypeArchitectures(cloudProfile gardencore.CloudProfileSpec) {
+func defaultMachineTypeArchitectures(cloudProfile gardencore.CloudProfileSpec, capabilitiesDefinitions []gardencore.CapabilityDefinition) {
 	for i, machineType := range cloudProfile.MachineTypes {
-		if machineType.GetArchitecture() == "" {
+		effectiveArchitecture := machineType.GetArchitecture(capabilitiesDefinitions)
+		if effectiveArchitecture == "" {
 			cloudProfile.MachineTypes[i].Architecture = ptr.To(v1beta1constants.ArchitectureAMD64)
+		} else if cloudProfile.MachineTypes[i].Architecture == nil {
+			cloudProfile.MachineTypes[i].Architecture = ptr.To(effectiveArchitecture)
+		}
+	}
+}
+
+// defaultMachineImageArchitectures defaults the architectures of the machine images for NamespacedCloudProfiles.
+// The sync can only happen after having had a look at the parent CloudProfile and whether it uses capabilities.
+func defaultMachineImageArchitectures(cloudProfile gardencore.CloudProfileSpec, capabilitiesDefinitions []gardencore.CapabilityDefinition) {
+	for i, machineImage := range cloudProfile.MachineImages {
+		for j, version := range machineImage.Versions {
+			if len(version.Architectures) > 0 {
+				continue
+			}
+			capabilityFlavors := gardencorehelper.GetImageFlavorsWithAppliedDefaults(version.CapabilityFlavors, capabilitiesDefinitions)
+			capabilityArchitectures := gardencorehelper.ExtractArchitecturesFromImageFlavors(capabilityFlavors)
+			if len(capabilityArchitectures) == 0 {
+				cloudProfile.MachineImages[i].Versions[j].Architectures = []string{v1beta1constants.ArchitectureAMD64}
+			} else if len(capabilityArchitectures) > 0 {
+				cloudProfile.MachineImages[i].Versions[j].Architectures = capabilityArchitectures
+			}
 		}
 	}
 }
@@ -181,7 +204,7 @@ func mergeMachineImages(base, override gardencorev1beta1.MachineImage) gardencor
 
 func mergeMachineImageVersions(base, override gardencorev1beta1.MachineImageVersion) gardencorev1beta1.MachineImageVersion {
 	if len(override.Architectures) > 0 ||
-		len(override.CapabilitySets) > 0 ||
+		len(override.CapabilityFlavors) > 0 ||
 		len(override.CRI) > 0 ||
 		len(ptr.Deref(override.KubeletVersionConstraint, "")) > 0 ||
 		len(ptr.Deref(override.Classification, "")) > 0 {
@@ -193,20 +216,25 @@ func mergeMachineImageVersions(base, override gardencorev1beta1.MachineImageVers
 }
 
 func mergeDeep[T any](baseArr, override []T, keyFunc func(T) string, mergeFunc func(T, T) T, allowAdditional bool) []T {
-	existing := utils.CreateMapFromSlice(baseArr, keyFunc)
+	existing := utils.CreateOrderedMapFromSlice(baseArr, keyFunc)
 	for _, value := range override {
 		key := keyFunc(value)
-		if _, exists := existing[key]; !exists {
+		existingValue, exists := existing.Get(key)
+		if !exists {
 			if allowAdditional {
-				existing[key] = value
+				existing.Set(key, value)
 			}
 			continue
 		}
 		if mergeFunc != nil {
-			existing[key] = mergeFunc(existing[key], value)
+			existing.Set(key, mergeFunc(existingValue, value))
 		} else {
-			existing[key] = value
+			existing.Set(key, value)
 		}
 	}
-	return maps.Values(existing)
+	if res := slices.Collect(existing.Values()); res != nil {
+		return res
+	}
+	// If the merged result is empty, slices.Collect returns nil. Instead, return the baseArr as-is (which might be an empty slice but not nil).
+	return baseArr
 }

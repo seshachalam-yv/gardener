@@ -14,6 +14,7 @@ import (
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/apiserver/pkg/storage"
+	clientauthorizationv1 "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	kubecorev1listers "k8s.io/client-go/listers/core/v1"
 
 	"github.com/gardener/gardener/pkg/apis/core"
@@ -44,6 +45,7 @@ func NewStorage(
 	adminKubeconfigMaxExpiration time.Duration,
 	viewerKubeconfigMaxExpiration time.Duration,
 	credentialsRotationInterval time.Duration,
+	subjectAccessReviewer clientauthorizationv1.SubjectAccessReviewInterface,
 ) ShootStorage {
 	shootRest, shootStatusRest, bindingREST := NewREST(optsGetter, credentialsRotationInterval)
 
@@ -51,8 +53,8 @@ func NewStorage(
 		Shoot:            shootRest,
 		Status:           shootStatusRest,
 		Binding:          bindingREST,
-		AdminKubeconfig:  NewAdminKubeconfigREST(shootRest, secretLister, internalSecretLister, configMapLister, adminKubeconfigMaxExpiration),
-		ViewerKubeconfig: NewViewerKubeconfigREST(shootRest, secretLister, internalSecretLister, configMapLister, viewerKubeconfigMaxExpiration),
+		AdminKubeconfig:  NewAdminKubeconfigREST(shootRest, secretLister, internalSecretLister, configMapLister, adminKubeconfigMaxExpiration, subjectAccessReviewer),
+		ViewerKubeconfig: NewViewerKubeconfigREST(shootRest, secretLister, internalSecretLister, configMapLister, viewerKubeconfigMaxExpiration, subjectAccessReviewer),
 	}
 }
 
@@ -73,6 +75,7 @@ func NewREST(optsGetter generic.RESTOptionsGetter, credentialsRotationInterval t
 			DeleteStrategy: shootStrategy,
 
 			TableConvertor: newTableConvertor(),
+			Decorator:      defaultOnRead,
 		}
 		options = &generic.StoreOptions{
 			RESTOptions: optsGetter,
@@ -170,4 +173,30 @@ var _ rest.ShortNamesProvider = &REST{}
 // ShortNames implements the ShortNamesProvider interface. Returns a list of short names for a resource.
 func (r *REST) ShortNames() []string {
 	return []string{}
+}
+
+// defaultOnRead ensures the shoot.status.credentials.encryptionAtRest.resources field is set on read requests.
+// TODO(vpnachev): Remove this function once support for Kubernetes 1.34 is dropped.
+func defaultOnRead(obj runtime.Object) {
+	switch s := obj.(type) {
+	case *core.Shoot:
+		defaultOnReadShoot(s)
+	case *core.ShootList:
+		defaultOnReadShoots(s)
+	default:
+	}
+}
+
+func defaultOnReadShoot(s *core.Shoot) {
+	shoot.SyncDNSProviderCredentials(s)
+}
+
+func defaultOnReadShoots(shootList *core.ShootList) {
+	if shootList == nil {
+		return
+	}
+
+	for i := range shootList.Items {
+		defaultOnReadShoot(&shootList.Items[i])
+	}
 }

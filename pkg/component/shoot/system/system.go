@@ -23,7 +23,7 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
@@ -57,6 +57,8 @@ type Values struct {
 	ExternalClusterDomain *string
 	// IsWorkerless specifies whether the cluster has worker nodes.
 	IsWorkerless bool
+	// IsSelfHosted specifies whether the cluster is self-hosted.
+	IsSelfHosted bool
 	// KubernetesVersion is the version of the cluster.
 	KubernetesVersion *semver.Version
 	// EncryptedResources is the list of resources which are encrypted by the kube-apiserver.
@@ -175,14 +177,6 @@ func (s *shootSystem) computeResourcesData() (map[string][]byte, error) {
 
 	if !s.values.IsWorkerless {
 		var (
-			shootInfoConfigMap = &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      v1beta1constants.ConfigMapNameShootInfo,
-					Namespace: metav1.NamespaceSystem,
-				},
-				Data: s.shootInfoData(),
-			}
-
 			port53      = intstr.FromInt32(53)
 			port443     = intstr.FromInt32(kubeapiserverconstants.Port)
 			port8053    = intstr.FromInt32(corednsconstants.PortServer)
@@ -300,7 +294,6 @@ func (s *shootSystem) computeResourcesData() (map[string][]byte, error) {
 		)
 
 		if err := registry.Add(
-			shootInfoConfigMap,
 			networkPolicyAllowToShootAPIServer,
 			networkPolicyAllowToDNS,
 			networkPolicyAllowToKubelet,
@@ -314,10 +307,28 @@ func (s *shootSystem) computeResourcesData() (map[string][]byte, error) {
 		}
 	}
 
+	shootInfoConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      v1beta1constants.ConfigMapNameShootInfo,
+			Namespace: metav1.NamespaceSystem,
+		},
+		Data: s.shootInfoData(),
+	}
+
+	if err := registry.Add(
+		shootInfoConfigMap,
+	); err != nil {
+		return nil, err
+	}
+
 	if len(s.values.APIResourceList) > 0 {
-		if err := registry.Add(s.readOnlyRBACResources()...); err != nil {
+		if err := registry.Add(s.readOnlyClusterRole()); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := registry.Add(s.selfHostedShootResources()...); err != nil {
+		return nil, err
 	}
 
 	return registry.SerializedObjects()
@@ -356,18 +367,24 @@ func (s *shootSystem) shootInfoData() map[string]string {
 	data := map[string]string{
 		"extensions":        strings.Join(s.values.Extensions, ","),
 		"projectName":       s.values.ProjectName,
+		"shootNamespace":    s.values.Object.Namespace,
 		"shootName":         s.values.Object.Name,
 		"provider":          s.values.Object.Spec.Provider.Type,
 		"region":            s.values.Object.Spec.Region,
 		"kubernetesVersion": s.values.Object.Spec.Kubernetes.Version,
-		"podNetwork":        s.values.PodNetworkCIDRs[0].String(),
 		"serviceNetwork":    s.values.ServiceNetworkCIDRs[0].String(),
 		"maintenanceBegin":  s.values.Object.Spec.Maintenance.TimeWindow.Begin,
 		"maintenanceEnd":    s.values.Object.Spec.Maintenance.TimeWindow.End,
+		"uid":               string(s.values.Object.UID),
+		"statusUID":         string(s.values.Object.Status.UID),
 	}
 
 	if domain := s.values.ExternalClusterDomain; domain != nil {
 		data["domain"] = *domain
+	}
+
+	if len(s.values.PodNetworkCIDRs) > 0 {
+		data["podNetwork"] = s.values.PodNetworkCIDRs[0].String()
 	}
 
 	if len(s.values.NodeNetworkCIDRs) > 0 {
@@ -382,7 +399,7 @@ func (s *shootSystem) shootInfoData() map[string]string {
 	return data
 }
 
-func (s *shootSystem) readOnlyRBACResources() []client.Object {
+func (s *shootSystem) readOnlyClusterRole() client.Object {
 	allowedSubResources := map[string]map[string][]string{
 		corev1.GroupName: {
 			"pods": {"log"},
@@ -431,7 +448,7 @@ func (s *shootSystem) readOnlyRBACResources() []client.Object {
 
 	clusterRole := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "gardener.cloud:system:read-only",
+			Name: v1beta1constants.ShootReadOnlyClusterRoleName,
 		},
 		Rules: make([]rbacv1.PolicyRule, 0, len(allAPIGroups)),
 	}
@@ -444,23 +461,7 @@ func (s *shootSystem) readOnlyRBACResources() []client.Object {
 		})
 	}
 
-	clusterRoleBinding := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        "gardener.cloud:system:read-only",
-			Annotations: map[string]string{resourcesv1alpha1.DeleteOnInvalidUpdate: "true"},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacv1.GroupName,
-			Kind:     "ClusterRole",
-			Name:     clusterRole.Name,
-		},
-		Subjects: []rbacv1.Subject{{
-			Kind: rbacv1.GroupKind,
-			Name: v1beta1constants.ShootGroupViewers,
-		}},
-	}
-
-	return []client.Object{clusterRole, clusterRoleBinding}
+	return clusterRole
 }
 
 func (s *shootSystem) isEncryptedResource(resource, group string) bool {
@@ -478,4 +479,55 @@ func addNetworkToMap(name string, cidrs []net.IPNet, data map[string]string) {
 	if networks != "" {
 		data[name] = networks
 	}
+}
+
+func (s *shootSystem) selfHostedShootResources() []client.Object {
+	if !s.values.IsSelfHosted {
+		return nil
+	}
+
+	var (
+		rbacName = "gardener.cloud:gardenadm"
+
+		clusterRole = &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: rbacName,
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups:     []string{extensionsv1alpha1.SchemeGroupVersion.Group},
+					Resources:     []string{"clusters"},
+					Verbs:         []string{"get"},
+					ResourceNames: []string{metav1.NamespaceSystem},
+				},
+				{
+					APIGroups: []string{corev1.SchemeGroupVersion.Group},
+					Resources: []string{"nodes"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+				{
+					APIGroups: []string{corev1.SchemeGroupVersion.Group},
+					Resources: []string{"secrets"},
+					Verbs:     []string{"get", "list", "watch", "create", "patch", "update"},
+				},
+			},
+		}
+		clusterRoleBinding = &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: rbacName,
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     clusterRole.Name,
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Group",
+				Name:     v1beta1constants.ShootsGroup,
+			}},
+		}
+	)
+
+	return []client.Object{clusterRole, clusterRoleBinding}
 }

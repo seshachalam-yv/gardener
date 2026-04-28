@@ -14,8 +14,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	"github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	predicateutils "github.com/gardener/gardener/pkg/controllerutils/predicate"
 )
 
@@ -28,7 +30,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager) error {
 		r.Client = mgr.GetClient()
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor(ControllerName + "-scheduler")
+		r.Recorder = mgr.GetEventRecorder(ControllerName + "-scheduler")
 	}
 	if r.GardenNamespace == "" {
 		r.GardenNamespace = v1beta1constants.GardenNamespace
@@ -40,10 +42,12 @@ func (r *Reconciler) AddToManager(mgr manager.Manager) error {
 		For(&gardencorev1beta1.Shoot{}, builder.WithPredicates(
 			r.ShootUnassignedPredicate(),
 			r.ShootSpecChangedPredicate(),
+			r.ShootIsNotSelfHosted(),
 			predicate.Not(predicateutils.IsDeleting()),
 		)).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.Config.ConcurrentSyncs,
+			ReconciliationTimeout:   controllerutils.DefaultReconciliationTimeout,
 		}).
 		Complete(r)
 }
@@ -76,4 +80,15 @@ func (r *Reconciler) ShootSpecChangedPredicate() predicate.Predicate {
 			return !apiequality.Semantic.DeepEqual(shootNew.Spec, shootOld.Spec)
 		},
 	}
+}
+
+// ShootIsNotSelfHosted is a predicate that returns true if a shoot is not mark as 'self-hosted shoot cluster' (meaning,
+// that the control plane components run in the same cluster, hence, no seed selection is required).
+func (r *Reconciler) ShootIsNotSelfHosted() predicate.Predicate {
+	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		if shoot, ok := obj.(*gardencorev1beta1.Shoot); ok {
+			return !helper.IsShootSelfHosted(shoot.Spec.Provider.Workers)
+		}
+		return false
+	})
 }

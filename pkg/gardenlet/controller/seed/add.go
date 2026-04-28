@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"os"
 
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/seed/care"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/seed/lease"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/seed/seed"
@@ -50,12 +51,7 @@ func AddToManager(
 		return fmt.Errorf("failed adding care reconciler: %w", err)
 	}
 
-	if err := (&lease.Reconciler{
-		SeedRESTClient: seedClientSet.RESTClient(),
-		Config:         *cfg.Controllers.Seed,
-		HealthManager:  healthManager,
-		SeedName:       cfg.SeedConfig.Name,
-	}).AddToManager(mgr, gardenCluster); err != nil {
+	if err := lease.AddToManager(mgr, gardenCluster, seedClientSet.RESTClient(), *cfg.Controllers.Seed, healthManager, cfg.SeedConfig.Name, nil, ptr.To(gardencorev1beta1.GardenerSeedLeaseNamespace)); err != nil {
 		return fmt.Errorf("failed adding lease reconciler: %w", err)
 	}
 

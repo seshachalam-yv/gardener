@@ -6,6 +6,7 @@ package networkpolicy_test
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
@@ -14,12 +15,15 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/gardener/gardener/pkg/api/indexer"
 	resourcemanagerclient "github.com/gardener/gardener/pkg/resourcemanager/client"
 	. "github.com/gardener/gardener/pkg/resourcemanager/controller/networkpolicy"
 )
@@ -34,7 +38,10 @@ var _ = Describe("Add", func() {
 
 	BeforeEach(func() {
 		log = logr.Discard()
-		fakeClient = fakeclient.NewClientBuilder().WithScheme(resourcemanagerclient.TargetScheme).Build()
+		fakeClient = fakeclient.NewClientBuilder().
+			WithScheme(resourcemanagerclient.TargetScheme).
+			WithIndex(&corev1.Service{}, indexer.ServiceNamespaceSelectors, indexer.ServiceNamespaceSelectorsIndexerFunc).
+			Build()
 		reconciler = &Reconciler{
 			TargetClient: fakeClient,
 		}
@@ -229,29 +236,321 @@ var _ = Describe("Add", func() {
 		})
 	})
 
-	Describe("#MapToAllServices", func() {
+	Describe("#EventHandlerForNamespace", func() {
 		var (
-			service1 *corev1.Service
-			service2 *corev1.Service
+			nsName1  = "test-ns"
+			nsName2  = "other-ns"
+			svcName  = "test-svc"
+			queue    workqueue.TypedRateLimitingInterface[reconcile.Request]
+			ns1, ns2 *corev1.Namespace
+			handler  handler.EventHandler
 		)
 
 		BeforeEach(func() {
-			service1 = &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "service1", Namespace: "namespace1"}}
-			service2 = &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "service2", Namespace: "namespace2"}}
+			queue = workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+			DeferCleanup(func() { queue.ShutDown() })
+			handler = reconciler.EventHandlerForNamespace(log)
+
+			ns1 = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName1}}
+			Expect(fakeClient.Create(ctx, ns1)).To(Succeed())
+
+			// Service annotation that selects namespaces with label foo=bar
+			namespaceSelectors := []metav1.LabelSelector{{MatchLabels: map[string]string{"foo": "bar"}}}
+			encoded, _ := json.Marshal(namespaceSelectors)
+
+			service := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      svcName,
+					Namespace: nsName1,
+					Annotations: map[string]string{
+						"networking.resources.gardener.cloud/namespace-selectors": string(encoded),
+					},
+				},
+			}
+			Expect(fakeClient.Create(ctx, service)).To(Succeed())
+
+			ns2 = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName2}}
 		})
 
-		It("should map to all services", func() {
-			Expect(fakeClient.Create(ctx, service1)).To(Succeed())
-			Expect(fakeClient.Create(ctx, service2)).To(Succeed())
-
-			Expect(reconciler.MapToAllServices(log)(ctx, nil)).To(ConsistOf(
-				reconcile.Request{NamespacedName: types.NamespacedName{Namespace: service1.Namespace, Name: service1.Name}},
-				reconcile.Request{NamespacedName: types.NamespacedName{Namespace: service2.Namespace, Name: service2.Name}},
-			))
+		It("should enqueue no services on Create", func() {
+			handler.Create(context.TODO(), event.CreateEvent{Object: ns2}, queue)
+			verifyRequests(queue, 0, "", "")
 		})
 
-		It("should return nil if there are no services", func() {
-			Expect(reconciler.MapToAllServices(log)(ctx, nil)).To(BeNil())
+		It("should enqueue all services of which namespace selector matches namespace label on Create", func() {
+			ns2.Labels = map[string]string{"foo": "bar"}
+			handler.Create(context.TODO(), event.CreateEvent{Object: ns2}, queue)
+			verifyRequests(queue, 1, svcName, nsName1)
+		})
+
+		It("should enqueue no services on Delete", func() {
+			handler.Delete(context.TODO(), event.DeleteEvent{Object: ns2}, queue)
+			verifyRequests(queue, 0, "", "")
+
+		})
+
+		It("should enqueue all services of which namespace selector matches namespace label on Delete", func() {
+			ns2.Labels = map[string]string{"foo": "bar"}
+			handler.Delete(context.TODO(), event.DeleteEvent{Object: ns2}, queue)
+			verifyRequests(queue, 1, svcName, nsName1)
+		})
+
+		It("should enqueue no services on Generic", func() {
+			handler.Generic(context.TODO(), event.GenericEvent{Object: ns2}, queue)
+			verifyRequests(queue, 0, "", "")
+
+		})
+
+		It("should enqueue all services of which namespace selector matches namespace label on Generic", func() {
+			ns2.Labels = map[string]string{"foo": "bar"}
+			handler.Generic(context.TODO(), event.GenericEvent{Object: ns2}, queue)
+			verifyRequests(queue, 1, svcName, nsName1)
+		})
+
+		It("should enqueue all services of which namespace selector matches namespace label on old object but not new", func() {
+			oldNs := ns2.DeepCopy()
+			newNs := ns2.DeepCopy()
+			oldNs.Labels = map[string]string{"foo": "bar"}
+			handler.Update(context.TODO(), event.UpdateEvent{ObjectOld: oldNs, ObjectNew: newNs}, queue)
+			verifyRequests(queue, 1, svcName, nsName1)
+		})
+
+		It("should enqueue all services of which namespace selector matches namespace label on new object but not old", func() {
+			oldNs := ns2.DeepCopy()
+			newNs := ns2.DeepCopy()
+			newNs.Labels = map[string]string{"foo": "bar"}
+			handler.Update(context.TODO(), event.UpdateEvent{ObjectOld: oldNs, ObjectNew: newNs}, queue)
+			verifyRequests(queue, 1, svcName, nsName1)
+		})
+
+		It("should not enqueue services on Update if labels did not change", func() {
+			oldNs := ns2.DeepCopy()
+			newNs := ns2.DeepCopy()
+			handler.Update(context.TODO(), event.UpdateEvent{ObjectOld: oldNs, ObjectNew: newNs}, queue)
+			verifyRequests(queue, 0, "", "")
+		})
+	})
+
+	Describe("#PodPredicate", func() {
+		var (
+			p   predicate.Predicate
+			pod *corev1.Pod
+		)
+
+		BeforeEach(func() {
+			p = reconciler.PodPredicate()
+			pod = &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: "ns"}}
+		})
+
+		Describe("#Create", func() {
+			It("should return false for pod without netpol labels", func() {
+				pod.Labels = map[string]string{"app": "foo"}
+				Expect(p.Create(event.CreateEvent{Object: pod})).To(BeFalse())
+			})
+
+			It("should return true for pod with netpol to-label", func() {
+				pod.Labels = map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"}
+				Expect(p.Create(event.CreateEvent{Object: pod})).To(BeTrue())
+			})
+		})
+
+		Describe("#Update", func() {
+			It("should return false when netpol labels did not change", func() {
+				pod.Labels = map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed", "app": "old"}
+				newPod := pod.DeepCopy()
+				newPod.Labels["app"] = "new"
+				Expect(p.Update(event.UpdateEvent{ObjectOld: pod, ObjectNew: newPod})).To(BeFalse())
+			})
+
+			It("should return true when netpol label is added", func() {
+				newPod := pod.DeepCopy()
+				newPod.Labels = map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"}
+				Expect(p.Update(event.UpdateEvent{ObjectOld: pod, ObjectNew: newPod})).To(BeTrue())
+			})
+
+			It("should return true when netpol label is removed", func() {
+				pod.Labels = map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"}
+				newPod := pod.DeepCopy()
+				newPod.Labels = nil
+				Expect(p.Update(event.UpdateEvent{ObjectOld: pod, ObjectNew: newPod})).To(BeTrue())
+			})
+		})
+
+		Describe("#Delete", func() {
+			It("should return false for pod without netpol labels", func() {
+				Expect(p.Delete(event.DeleteEvent{Object: pod})).To(BeFalse())
+			})
+
+			It("should return true for pod with netpol to-label", func() {
+				pod.Labels = map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"}
+				Expect(p.Delete(event.DeleteEvent{Object: pod})).To(BeTrue())
+			})
+		})
+
+		Describe("#Generic", func() {
+			It("should return false for pod without netpol labels", func() {
+				Expect(p.Generic(event.GenericEvent{Object: pod})).To(BeFalse())
+			})
+
+			It("should return true for pod with netpol to-label", func() {
+				pod.Labels = map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"}
+				Expect(p.Generic(event.GenericEvent{Object: pod})).To(BeTrue())
+			})
+		})
+	})
+
+	Describe("#EventHandlerForPod", func() {
+		var (
+			nsName  = "test-ns"
+			svcName = "test-svc"
+			queue   workqueue.TypedRateLimitingInterface[reconcile.Request]
+			handler handler.EventHandler
+		)
+
+		BeforeEach(func() {
+			queue = workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+			DeferCleanup(func() { queue.ShutDown() })
+			handler = reconciler.EventHandlerForPod(log)
+
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName, Labels: map[string]string{"foo": "bar"}}}
+			Expect(fakeClient.Create(ctx, ns)).To(Succeed())
+
+			namespaceSelectors := []metav1.LabelSelector{{MatchLabels: map[string]string{"foo": "bar"}}}
+			encoded, _ := json.Marshal(namespaceSelectors)
+
+			service := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      svcName,
+					Namespace: "other-ns",
+					Annotations: map[string]string{
+						"networking.resources.gardener.cloud/namespace-selectors": string(encoded),
+					},
+				},
+			}
+			Expect(fakeClient.Create(ctx, service)).To(Succeed())
+		})
+
+		Describe("#Create", func() {
+			It("should enqueue services when pod with new label keys is created", func() {
+				pod := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"},
+				}}
+				pod.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Create(ctx, event.CreateEvent{Object: pod}, queue)
+				verifyRequests(queue, 1, svcName, "other-ns")
+			})
+
+			It("should not enqueue when all label keys are already tracked", func() {
+				pod1 := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"},
+				}}
+				pod1.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Create(ctx, event.CreateEvent{Object: pod1}, queue)
+				item, _ := queue.Get()
+				queue.Done(item)
+
+				pod2 := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-2", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"},
+				}}
+				pod2.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Create(ctx, event.CreateEvent{Object: pod2}, queue)
+				Expect(queue.Len()).To(Equal(0))
+			})
+
+			It("should enqueue when pod brings a new label key", func() {
+				pod1 := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"},
+				}}
+				pod1.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Create(ctx, event.CreateEvent{Object: pod1}, queue)
+				item, _ := queue.Get()
+				queue.Done(item)
+
+				pod2 := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-2", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-bar-tcp-9090": "allowed"},
+				}}
+				pod2.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Create(ctx, event.CreateEvent{Object: pod2}, queue)
+				verifyRequests(queue, 1, svcName, "other-ns")
+			})
+		})
+
+		Describe("#Delete", func() {
+			It("should always enqueue and clear tracking so re-create enqueues again", func() {
+				pod := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"},
+				}}
+				pod.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Create(ctx, event.CreateEvent{Object: pod}, queue)
+				item, _ := queue.Get()
+				queue.Done(item)
+
+				handler.Delete(ctx, event.DeleteEvent{Object: pod}, queue)
+				verifyRequests(queue, 1, svcName, "other-ns")
+
+				// Re-create with the same key should enqueue again since delete cleared tracking.
+				handler.Create(ctx, event.CreateEvent{Object: pod}, queue)
+				verifyRequests(queue, 1, svcName, "other-ns")
+			})
+		})
+
+		Describe("#Update", func() {
+			It("should enqueue when labels change", func() {
+				oldPod := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"},
+				}}
+				oldPod.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				newPod := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-bar-tcp-9090": "allowed"},
+				}}
+				newPod.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Update(ctx, event.UpdateEvent{ObjectOld: oldPod, ObjectNew: newPod}, queue)
+				verifyRequests(queue, 1, svcName, "other-ns")
+			})
+		})
+
+		Describe("#Generic", func() {
+			It("should enqueue when keys are new", func() {
+				pod := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"},
+				}}
+				pod.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Generic(ctx, event.GenericEvent{Object: pod}, queue)
+				verifyRequests(queue, 1, svcName, "other-ns")
+			})
+
+			It("should not enqueue when keys are already tracked", func() {
+				pod := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-1", Namespace: nsName,
+					Labels: map[string]string{"networking.resources.gardener.cloud/to-foo-tcp-8080": "allowed"},
+				}}
+				pod.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Pod"))
+
+				handler.Generic(ctx, event.GenericEvent{Object: pod}, queue)
+				item, _ := queue.Get()
+				queue.Done(item)
+
+				handler.Generic(ctx, event.GenericEvent{Object: pod}, queue)
+				Expect(queue.Len()).To(Equal(0))
+			})
 		})
 	})
 
@@ -330,13 +629,16 @@ var _ = Describe("Add", func() {
 				reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: service3}},
 			))
 		})
-
-		It("should return nil if there are no referenced services", func() {
-			Expect(reconciler.MapToAllServices(log)(ctx, &networkingv1.Ingress{Spec: networkingv1.IngressSpec{Rules: []networkingv1.IngressRule{{Host: "foo"}}}})).To(BeNil())
-		})
-
-		It("should return nil if the passed object is nil", func() {
-			Expect(reconciler.MapToAllServices(log)(ctx, nil)).To(BeNil())
-		})
 	})
 })
+
+func verifyRequests(queue workqueue.TypedRateLimitingInterface[reconcile.Request], queueLength int, svcName, svcNamespace string) {
+	ExpectWithOffset(1, queue.Len()).To(Equal(queueLength))
+
+	if queueLength != 0 {
+		item, _ := queue.Get()
+		ExpectWithOffset(1, item.NamespacedName.Name).To(Equal(svcName))
+		ExpectWithOffset(1, item.NamespacedName.Namespace).To(Equal(svcNamespace))
+		queue.Done(item)
+	}
+}

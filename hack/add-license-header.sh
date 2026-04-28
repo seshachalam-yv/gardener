@@ -21,9 +21,9 @@ addlicense \
   -ignore ".vscode/**" \
   -ignore "dev/**" \
   -ignore "**/*.md" \
+  -ignore "**/*.toml" \
   -ignore "**/*.html" \
   -ignore "**/*.yaml" \
   -ignore "**/Dockerfile" \
   -ignore "pkg/**/*.sh" \
-  -ignore "third_party/gopkg.in/yaml.v2/**" \
   .

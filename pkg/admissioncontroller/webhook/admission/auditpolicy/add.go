@@ -5,23 +5,13 @@
 package auditpolicy
 
 import (
-	"fmt"
-	"net/http"
-
-	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apiserver/pkg/apis/audit"
-	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
-	auditvalidation "k8s.io/apiserver/pkg/apis/audit/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	"github.com/gardener/gardener/pkg/webhook/configvalidator"
 )
 
@@ -36,7 +26,6 @@ const (
 func AddToManager(mgr manager.Manager) error {
 	webhook := &admission.Webhook{
 		Handler: NewHandler(
-			mgr.GetLogger().WithName("webhook").WithName(HandlerName),
 			mgr.GetAPIReader(),
 			mgr.GetClient(),
 			admission.NewDecoder(mgr.GetScheme()),
@@ -49,9 +38,8 @@ func AddToManager(mgr manager.Manager) error {
 }
 
 // NewHandler returns a new handler for validating audit policies.
-func NewHandler(log logr.Logger, apiReader, c client.Reader, decoder admission.Decoder) admission.Handler {
+func NewHandler(apiReader, c client.Reader, decoder admission.Decoder) admission.Handler {
 	return &configvalidator.Handler{
-		Logger:    log,
 		APIReader: apiReader,
 		Client:    c,
 		Decoder:   decoder,
@@ -65,29 +53,6 @@ func NewHandler(log logr.Logger, apiReader, c client.Reader, decoder admission.D
 	}
 }
 
-var decoder runtime.Decoder
-
-func init() {
-	scheme := runtime.NewScheme()
-	schemeBuilder := runtime.NewSchemeBuilder(auditv1.AddToScheme, audit.AddToScheme)
-	utilruntime.Must(schemeBuilder.AddToScheme(scheme))
-	decoder = serializer.NewCodecFactory(scheme).UniversalDecoder()
-}
-
 func admitConfig(auditPolicyRaw string, _ []*gardencore.Shoot) (int32, error) {
-	obj, schemaVersion, err := decoder.Decode([]byte(auditPolicyRaw), nil, nil)
-	if err != nil {
-		return http.StatusUnprocessableEntity, fmt.Errorf("failed to decode the provided audit policy: %w", err)
-	}
-
-	auditPolicy, ok := obj.(*audit.Policy)
-	if !ok {
-		return http.StatusInternalServerError, fmt.Errorf("failed to cast to audit policy type: %v", schemaVersion)
-	}
-
-	if errList := auditvalidation.ValidatePolicy(auditPolicy); len(errList) != 0 {
-		return http.StatusUnprocessableEntity, fmt.Errorf("provided invalid audit policy: %v", errList)
-	}
-
-	return 0, nil
+	return configvalidator.AdmitAuditPolicy(auditPolicyRaw)
 }

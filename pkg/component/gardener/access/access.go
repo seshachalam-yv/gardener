@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -58,6 +59,8 @@ type Values struct {
 	ServerInCluster string
 	// ManagedResourceLabels are labels added to the ManagedResource.
 	ManagedResourceLabels map[string]string
+	// IsGardenCluster is specifying whether the component is deployed to a Garden cluster.
+	IsGardenCluster bool
 }
 
 type accessNameToServer struct {
@@ -136,7 +139,7 @@ func (g *gardener) computeResourcesData(serviceAccountNames ...string) (map[stri
 	var (
 		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
 
-		clusterRoleBinding = &rbacv1.ClusterRoleBinding{
+		gardenerSystemClusterRoleBinding = &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "gardener.cloud:system:gardener",
 			},
@@ -149,12 +152,102 @@ func (g *gardener) computeResourcesData(serviceAccountNames ...string) (map[stri
 	)
 
 	for _, name := range serviceAccountNames {
-		clusterRoleBinding.Subjects = append(clusterRoleBinding.Subjects, rbacv1.Subject{
+		gardenerSystemClusterRoleBinding.Subjects = append(gardenerSystemClusterRoleBinding.Subjects, rbacv1.Subject{
 			Kind:      rbacv1.ServiceAccountKind,
 			Name:      name,
 			Namespace: metav1.NamespaceSystem,
 		})
 	}
 
-	return registry.AddAllAndSerialize(clusterRoleBinding)
+	resources := []client.Object{gardenerSystemClusterRoleBinding}
+	if !g.values.IsGardenCluster {
+		resources = append(resources, adminClusterRoleBindings()...)
+		resources = append(resources, viewerClusterRoleBindings()...)
+	}
+
+	return registry.AddAllAndSerialize(resources...)
+}
+
+// adminClusterRoleBindings returns the ClusterRoleBindings granting access to credentials obtained via the shoot/adminkubeconfig subresource.
+func adminClusterRoleBindings() []client.Object {
+	return []client.Object{
+		&rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: v1beta1constants.ShootSystemAdminsGroupName,
+				Annotations: map[string]string{
+					resourcesv1alpha1.DeleteOnInvalidUpdate: "true",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: rbacv1.GroupName,
+				Kind:     rbacv1.GroupKind,
+				Name:     v1beta1constants.ShootSystemAdminsGroupName,
+			}},
+		},
+		&rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: v1beta1constants.ShootProjectAdminsGroupName,
+				Annotations: map[string]string{
+					resourcesv1alpha1.DeleteOnInvalidUpdate: "true",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: rbacv1.GroupName,
+				Kind:     rbacv1.GroupKind,
+				Name:     v1beta1constants.ShootProjectAdminsGroupName,
+			}},
+		},
+	}
+}
+
+// viewerClusterRoleBindings returns the ClusterRoleBindings granting access to credentials obtained via the shoot/viewerkubeconfig subresource.
+func viewerClusterRoleBindings() []client.Object {
+	return []client.Object{
+		&rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: v1beta1constants.ShootSystemViewersGroupName,
+				Annotations: map[string]string{
+					resourcesv1alpha1.DeleteOnInvalidUpdate: "true",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     v1beta1constants.ShootReadOnlyClusterRoleName,
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: rbacv1.GroupName,
+				Kind:     rbacv1.GroupKind,
+				Name:     v1beta1constants.ShootSystemViewersGroupName,
+			}},
+		},
+		&rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: v1beta1constants.ShootProjectViewersGroupName,
+				Annotations: map[string]string{
+					resourcesv1alpha1.DeleteOnInvalidUpdate: "true",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     v1beta1constants.ShootReadOnlyClusterRoleName,
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: rbacv1.GroupName,
+				Kind:     rbacv1.GroupKind,
+				Name:     v1beta1constants.ShootProjectViewersGroupName,
+			}},
+		},
+	}
 }

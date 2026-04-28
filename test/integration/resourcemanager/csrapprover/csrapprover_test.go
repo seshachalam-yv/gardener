@@ -416,56 +416,6 @@ var _ = Describe("CertificateSigningRequest Approver Controller tests", func() {
 			})
 		})
 
-		// TODO(oliver-goetz): remove this context when NodeAgentAuthorizer feature gate is removed. Remove "testClientNodeAgentSA" and "userNameNodeAgentSA" from test suite too.
-		Context("gardener-node-agent service account", func() {
-			JustBeforeEach(func() {
-				By("Create CertificateSigningRequest")
-				Expect(testClientNodeAgentSA.Create(ctx, csr)).To(Succeed())
-				log.Info("Created CertificateSigningRequest for test", "certificateSigningRequest", client.ObjectKeyFromObject(csr))
-
-				DeferCleanup(func() {
-					By("Delete CertificateSigningRequest")
-					Expect(client.IgnoreNotFound(testClientNodeAgentSA.Delete(ctx, csr))).To(Succeed())
-				})
-			})
-
-			Context("constraints fulfilled", func() {
-				BeforeEach(func() {
-					createNode(node)
-					createMachine(machine, true)
-				})
-
-				It("should approve the CSR", func() {
-					Eventually(func(g Gomega) {
-						g.Expect(testClientBootstrap.Get(ctx, client.ObjectKeyFromObject(csr), csr)).To(Succeed())
-						g.Expect(csr.Status.Conditions).To(ContainElement(And(
-							HaveField("Type", certificatesv1.CertificateApproved),
-							HaveField("Reason", "RequestApproved"),
-							HaveField("Message", "Approving gardener-node-agent certificate CSR (all checks passed)"),
-						)))
-					}).Should(Succeed())
-				})
-			})
-
-			Context("constraints violated", func() {
-				Context("no machine", func() {
-					It("should deny the CSR", func() {
-						runDenyNodeAgentCSRTest(testClientBootstrap, csr, "machine %q does not exist", &machineName)
-					})
-				})
-
-				Context("node not registered yet", func() {
-					BeforeEach(func() {
-						createMachine(machine, false)
-					})
-
-					It("should deny the CSR", func() {
-						runDenyNodeAgentCSRTest(testClientBootstrap, csr, "gardener-node-agent service account is allowed to create CSRs for machines with existing nodes only")
-					})
-				})
-			})
-		})
-
 		Context("kubelet user tries to get gardener-node-agent certificate", func() {
 			BeforeEach(func() {
 				createNode(node)
@@ -558,7 +508,7 @@ func patchNodeAddresses(node *corev1.Node, addresses ...corev1.NodeAddress) {
 }
 
 func runDenyNodeAgentCSRTest(c client.Client, csr *certificatesv1.CertificateSigningRequest, expectedReason string, argPtrs ...*string) {
-	var args []interface{}
+	var args []any
 	for _, arg := range argPtrs {
 		args = append(args, *arg)
 	}

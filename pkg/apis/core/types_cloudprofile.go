@@ -27,6 +27,8 @@ type CloudProfile struct {
 
 	// Spec defines the provider environment properties.
 	Spec CloudProfileSpec
+	// Status contains the current status of the cloud profile.
+	Status CloudProfileStatus
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -71,11 +73,11 @@ type CloudProfileSpec struct {
 	// Limits configures operational limits for Shoot clusters using this CloudProfile.
 	// See https://github.com/gardener/gardener/blob/master/docs/usage/shoot/shoot_limits.md.
 	Limits *Limits
-	// Capabilities contains the definition of all possible capabilities in the CloudProfile.
+	// MachineCapabilities contains the definition of all possible capabilities in the CloudProfile.
 	// Only capabilities and values defined here can be used to describe MachineImages and MachineTypes.
 	// The order of values for a given capability is relevant. The most important value is listed first.
 	// During maintenance upgrades, the image that matches most capabilities will be selected.
-	Capabilities []CapabilityDefinition
+	MachineCapabilities []CapabilityDefinition
 }
 
 // SeedSelector contains constraints for selecting seed to be usable for shoots using a profile
@@ -124,9 +126,9 @@ type MachineImageVersion struct {
 	KubeletVersionConstraint *string
 	// InPlaceUpdates contains the configuration for in-place updates for this machine image version.
 	InPlaceUpdates *InPlaceUpdates
-	// CapabilitySets is an array of capability sets. Each entry represents a combination of capabilities that is provided by
+	// CapabilityFlavors is an array of MachineImageFlavor. Each entry represents a combination of capabilities that is provided by
 	// the machine image version.
-	CapabilitySets []CapabilitySet
+	CapabilityFlavors []MachineImageFlavor
 }
 
 // SupportsArchitecture checks if the machine image version supports a given architecture.
@@ -134,7 +136,7 @@ func (m *MachineImageVersion) SupportsArchitecture(capabilities Capabilities, ar
 	if len(capabilities) == 0 {
 		return slices.Contains(m.Architectures, architecture)
 	}
-	for _, capability := range m.CapabilitySets {
+	for _, capability := range m.CapabilityFlavors {
 		if slices.Contains(capability.Capabilities[constants.ArchitectureName], architecture) {
 			return true
 		}
@@ -142,15 +144,39 @@ func (m *MachineImageVersion) SupportsArchitecture(capabilities Capabilities, ar
 	return slices.Contains(capabilities[constants.ArchitectureName], architecture)
 }
 
-// ExpirableVersion contains a version and an expiration date.
+// ExpirableVersion contains a version with associated lifecycle information.
 type ExpirableVersion struct {
 	// Version is the version identifier.
 	Version string
 	// ExpirationDate defines the time at which this version expires.
+	//
+	// Deprecated: Is replaced by Lifecycle; mutually exclusive with it.
 	ExpirationDate *metav1.Time
 	// Classification defines the state of a version (preview, supported, deprecated).
-	// To get the currently valid classification, use CurrentLifecycleClassification().
+	//
+	// Deprecated: Is replaced by Lifecycle. mutually exclusive with it.
 	Classification *VersionClassification
+	// Lifecycle defines the lifecycle stages for this version.
+	// Mutually exclusive with Classification and ExpirationDate.
+	// This can only be used when the VersionClassificationLifecycle feature gate is enabled.
+	Lifecycle []LifecycleStage
+}
+
+// LifecycleStage describes a stage in the versions lifecycle.
+// Each stage defines the classification of the version (e.g. unavailable, preview, supported, deprecated, expired)
+// and the time at which this classification becomes effective.
+type LifecycleStage struct {
+	// Classification is the category of this lifecycle stage (unavailable, preview, supported, deprecated, expired).
+	Classification VersionClassification
+	// StartTime defines when this lifecycle stage becomes active.
+	// StartTime can be omitted for the first lifecycle stage, implying a start time in the past.
+	StartTime *metav1.Time
+}
+
+// CloudProfileMachineControllerManagerSettings contains a subset of the MachineControllerManagerSettings which can be defaulted for a machine type in a CloudProfile.
+type CloudProfileMachineControllerManagerSettings struct {
+	// MachineCreationTimeout is the period after which creation of a machine of this machine type is declared failed.
+	MachineCreationTimeout *metav1.Duration
 }
 
 // MachineType contains certain properties of a machine type.
@@ -171,14 +197,8 @@ type MachineType struct {
 	Architecture *string
 	// Capabilities contains the machine type capabilities.
 	Capabilities Capabilities
-}
-
-// GetArchitecture returns the architecture of the machine type.
-func (m *MachineType) GetArchitecture() string {
-	if len(m.Capabilities[constants.ArchitectureName]) == 1 {
-		return m.Capabilities[constants.ArchitectureName][0]
-	}
-	return ptr.Deref(m.Architecture, "")
+	// MachineControllerManager contains a subset of the MachineControllerManagerSettings which can be defaulted for a machine type in a CloudProfile.
+	MachineControllerManager *CloudProfileMachineControllerManagerSettings
 }
 
 // MachineTypeStorage is the amount of storage associated with the root volume of this machine type.
@@ -252,6 +272,36 @@ type BastionMachineType struct {
 	Name string
 }
 
+// CloudProfileStatus contains the status of the cloud profile.
+type CloudProfileStatus struct {
+	// Kubernetes contains the status information for kubernetes.
+	Kubernetes *KubernetesStatus
+	// MachineImages contains the statuses of the machine image versions.
+	MachineImages []MachineImageStatus
+}
+
+// KubernetesStatus contains the status information for kubernetes.
+type KubernetesStatus struct {
+	// Versions contains the statuses of the kubernetes versions.
+	Versions []ExpirableVersionStatus
+}
+
+// MachineImageStatus contains the status of a machine image and its version classifications.
+type MachineImageStatus struct {
+	// Name matches the name of the MachineImage the status is represented of.
+	Name string
+	// Versions contains the statuses of the machine image versions.
+	Versions []ExpirableVersionStatus
+}
+
+// ExpirableVersionStatus defines the current status of an expirable version.
+type ExpirableVersionStatus struct {
+	// Version is the version identifier.
+	Version string
+	// Classification reflects the current state in the classification lifecycle.
+	Classification VersionClassification
+}
+
 // Limits configures operational limits for Shoot clusters using this CloudProfile.
 // See https://github.com/gardener/gardener/blob/master/docs/usage/shoot/shoot_limits.md.
 type Limits struct {
@@ -272,6 +322,19 @@ type VersionClassification string
 // IsActive returns whether the version can be used.
 func (v VersionClassification) IsActive() bool {
 	return v != ClassificationExpired && v != ClassificationUnavailable
+}
+
+var order = map[VersionClassification]int{
+	ClassificationUnavailable: 0,
+	ClassificationPreview:     1,
+	ClassificationSupported:   2,
+	ClassificationDeprecated:  3,
+	ClassificationExpired:     4,
+}
+
+// Compare compares two VersionClassification objects to determine their order.
+func (c1 VersionClassification) Compare(c2 VersionClassification) int {
+	return order[c1] - order[c2]
 }
 
 const (
@@ -327,8 +390,30 @@ type CapabilityValues []string
 // Capabilities of a machine type or machine image.
 type Capabilities map[string]CapabilityValues
 
-// CapabilitySet is a wrapper for Capabilities.
+// MachineImageFlavor is a wrapper for Capabilities.
 // This is a workaround as the Protobuf generator can't handle a slice of maps.
-type CapabilitySet struct {
+type MachineImageFlavor struct {
 	Capabilities
+}
+
+// GetArchitecture returns the architecture of the machine type.
+func (m *MachineType) GetArchitecture(capabilityDefinitions []CapabilityDefinition) string {
+	capabilityArchitecture := GetCapabilitiesWithAppliedDefaults(m.Capabilities, capabilityDefinitions)[constants.ArchitectureName]
+	if len(capabilityArchitecture) == 1 {
+		return capabilityArchitecture[0]
+	}
+	return ptr.Deref(m.Architecture, "")
+}
+
+// GetCapabilitiesWithAppliedDefaults returns new capabilities with applied defaults from the capability definitions.
+func GetCapabilitiesWithAppliedDefaults(capabilities Capabilities, capabilityDefinitions []CapabilityDefinition) Capabilities {
+	result := make(Capabilities, len(capabilityDefinitions))
+	for _, capabilityDefinition := range capabilityDefinitions {
+		if values, ok := capabilities[capabilityDefinition.Name]; ok {
+			result[capabilityDefinition.Name] = values
+		} else {
+			result[capabilityDefinition.Name] = capabilityDefinition.Values
+		}
+	}
+	return result
 }

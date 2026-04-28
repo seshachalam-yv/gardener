@@ -10,10 +10,12 @@ spec:
     kind: Deployment
     name: gardener-admission-controller
   updatePolicy:
-    updateMode: Auto
+    updateMode: Recreate
   resourcePolicy:
     containerPolicies:
-      - containerName: '*'
+      - containerName: gardener-admission-controller
         minAllowed:
           memory: 25Mi
+      - containerName: '*'
+        mode: "Off"
 {{- end }}

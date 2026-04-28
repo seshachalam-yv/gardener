@@ -30,6 +30,7 @@ var _ = Describe("Shoot defaulting", func() {
 				},
 				Provider: Provider{
 					Workers: []Worker{{}},
+					Type:    "local",
 				},
 			},
 		}
@@ -58,6 +59,7 @@ var _ = Describe("Shoot defaulting", func() {
 						SetObjectDefaults_Shoot(obj)
 
 						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize).To(Equal(ptr.To[int32](23)))
+						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6).To(BeNil())
 					})
 
 					It("should make nodeCIDRMaskSize big enough for 2*maxPods (consider worker pool settings)", func() {
@@ -83,6 +85,7 @@ var _ = Describe("Shoot defaulting", func() {
 						SetObjectDefaults_Shoot(obj)
 
 						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize).To(Equal(ptr.To[int32](22)))
+						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6).To(BeNil())
 					})
 				})
 
@@ -96,7 +99,31 @@ var _ = Describe("Shoot defaulting", func() {
 					It("should default nodeCIDRMaskSize to 64", func() {
 						SetObjectDefaults_Shoot(obj)
 
+						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6).To(BeNil())
 						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize).To(PointTo(Equal(int32(64))))
+					})
+
+					It("should not default NodeCIDRMaskSize if NodeCIDRMaskSizeIPv6 is set by user for IPv6 single stack", func() {
+						obj.Spec.Kubernetes.KubeControllerManager = &KubeControllerManagerConfig{
+							NodeCIDRMaskSizeIPv6: ptr.To[int32](80),
+						}
+						SetObjectDefaults_Shoot(obj)
+						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6).To(PointTo(Equal(int32(80))))
+						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize).To(BeNil())
+					})
+				})
+
+				Context("DualStack", func() {
+					BeforeEach(func() {
+						obj.Spec.Provider.Workers = []Worker{{}}
+						obj.Spec.Networking = &Networking{}
+						obj.Spec.Networking.IPFamilies = []IPFamily{IPFamilyIPv4, IPFamilyIPv6}
+					})
+
+					It("should default both NodeCIDRMaskSize and NodeCIDRMaskSizeIPv6", func() {
+						SetObjectDefaults_Shoot(obj)
+						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize).To(PointTo(Equal(int32(24))))
+						Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6).To(PointTo(Equal(int32(64))))
 					})
 				})
 			})
@@ -223,15 +250,15 @@ var _ = Describe("Shoot defaulting", func() {
 			})
 
 			It("should not overwrite already set values for swap behaviour", func() {
-				unlimitedSwap := UnlimitedSwap
+				noSwap := NoSwap
 				obj.Spec.Kubernetes.Kubelet = &KubeletConfig{}
 				obj.Spec.Kubernetes.Kubelet.FailSwapOn = ptr.To(false)
 				obj.Spec.Kubernetes.Kubelet.FeatureGates = map[string]bool{"NodeSwap": true}
-				obj.Spec.Kubernetes.Kubelet.MemorySwap = &MemorySwapConfiguration{SwapBehavior: &unlimitedSwap}
+				obj.Spec.Kubernetes.Kubelet.MemorySwap = &MemorySwapConfiguration{SwapBehavior: &noSwap}
 				SetObjectDefaults_Shoot(obj)
 
 				Expect(obj.Spec.Kubernetes.Kubelet.MemorySwap).To(Not(BeNil()))
-				Expect(obj.Spec.Kubernetes.Kubelet.MemorySwap.SwapBehavior).To(PointTo(Equal(UnlimitedSwap)))
+				Expect(obj.Spec.Kubernetes.Kubelet.MemorySwap.SwapBehavior).To(PointTo(Equal(NoSwap)))
 			})
 
 			It("should not default the swap behaviour because failSwapOn=true", func() {
@@ -355,13 +382,13 @@ var _ = Describe("Shoot defaulting", func() {
 		})
 
 		It("should not overwrite already set values for swap behaviour for a worker pool", func() {
-			unlimitedSwap := UnlimitedSwap
+			noSwap := NoSwap
 			obj.Spec.Provider.Workers = []Worker{
 				{
 					Kubernetes: &WorkerKubernetes{
 						Kubelet: &KubeletConfig{
 							MemorySwap: &MemorySwapConfiguration{
-								SwapBehavior: &unlimitedSwap,
+								SwapBehavior: &noSwap,
 							},
 						},
 					},
@@ -371,7 +398,7 @@ var _ = Describe("Shoot defaulting", func() {
 			obj.Spec.Provider.Workers[0].Kubernetes.Kubelet.FeatureGates = map[string]bool{"NodeSwap": true}
 			SetObjectDefaults_Shoot(obj)
 
-			Expect(obj.Spec.Provider.Workers[0].Kubernetes.Kubelet.MemorySwap.SwapBehavior).To(PointTo(Equal(UnlimitedSwap)))
+			Expect(obj.Spec.Provider.Workers[0].Kubernetes.Kubelet.MemorySwap.SwapBehavior).To(PointTo(Equal(NoSwap)))
 		})
 
 		It("should not default the swap behaviour for a worker pool because failSwapOn=true (defaulted to true)", func() {
@@ -493,22 +520,63 @@ var _ = Describe("Shoot defaulting", func() {
 	})
 
 	Describe("Addons defaulting", func() {
-		It("should default the addons field for shoot with workers", func() {
-			obj.Spec.Addons = nil
-
-			SetObjectDefaults_Shoot(obj)
-
-			Expect(obj.Spec.Addons).NotTo(BeNil())
-		})
-
-		It("should default the kubernetesDashboard field for shoot with workers", func() {
-			obj.Spec.Addons = nil
+		It("should default the kubernetesDashboard field for shoot with workers when dashboard is enabled", func() {
+			obj.Spec.Addons = &Addons{
+				KubernetesDashboard: &KubernetesDashboard{
+					Addon: Addon{
+						Enabled: true,
+					},
+				},
+			}
 
 			SetObjectDefaults_Shoot(obj)
 
 			Expect(obj.Spec.Addons).NotTo(BeNil())
 			Expect(obj.Spec.Addons.KubernetesDashboard).NotTo(BeNil())
 			Expect(obj.Spec.Addons.KubernetesDashboard.AuthenticationMode).To(PointTo(Equal(KubernetesDashboardAuthModeToken)))
+		})
+
+		It("should not default the kubernetesDashboard field for shoot with workers when dashboard is disabled", func() {
+			obj.Spec.Addons = &Addons{
+				KubernetesDashboard: &KubernetesDashboard{
+					Addon: Addon{
+						Enabled: false,
+					},
+				},
+			}
+
+			SetObjectDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Addons).NotTo(BeNil())
+			Expect(obj.Spec.Addons.KubernetesDashboard).NotTo(BeNil())
+			Expect(obj.Spec.Addons.KubernetesDashboard.AuthenticationMode).To(BeNil())
+		})
+
+		It("should default the kubernetesDashboard field for shoot with workers when dashboard is not specified", func() {
+			obj.Spec.Addons = &Addons{}
+
+			SetObjectDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Addons).NotTo(BeNil())
+			Expect(obj.Spec.Addons.KubernetesDashboard).To(BeNil())
+		})
+
+		It("should not default the addons for shoots with kubernetes >= 1.35", func() {
+			obj.Spec.Addons = nil
+			obj.Spec.Kubernetes.Version = "1.35"
+
+			SetObjectDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Addons).To(BeNil())
+		})
+
+		It("should not default the addons when version is invalid", func() {
+			obj.Spec.Addons = nil
+			obj.Spec.Kubernetes.Version = "123"
+
+			SetObjectDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Addons).To(BeNil())
 		})
 
 		It("should not overwrite the already set values for kubernetesDashboard field", func() {
@@ -606,6 +674,46 @@ var _ = Describe("Shoot defaulting", func() {
 			Expect(obj.Spec.Maintenance.AutoUpdate.KubernetesVersion).To(BeFalse())
 			Expect(obj.Spec.Maintenance.AutoUpdate.MachineImageVersion).To(PointTo(BeFalse()))
 		})
+
+		It("should default the maintenance rotation config for configured credentials", func() {
+			obj.Spec.Maintenance = &Maintenance{
+				AutoRotation: &MaintenanceAutoRotation{
+					Credentials: &MaintenanceCredentialsAutoRotation{
+						SSHKeypair: &MaintenanceRotationConfig{},
+					},
+				},
+			}
+			SetObjectDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Maintenance.AutoRotation.Credentials.SSHKeypair).To(Equal(&MaintenanceRotationConfig{
+				RotationPeriod: &metav1.Duration{Duration: 7 * 24 * time.Hour},
+			}))
+			Expect(obj.Spec.Maintenance.AutoRotation.Credentials.Observability).To(BeNil())
+			Expect(obj.Spec.Maintenance.AutoRotation.Credentials.ETCDEncryptionKey).To(BeNil())
+		})
+
+		It("should not overwrite the already set values for maintenance rotation config", func() {
+			obj.Spec.Maintenance = &Maintenance{
+				AutoRotation: &MaintenanceAutoRotation{
+					Credentials: &MaintenanceCredentialsAutoRotation{
+						SSHKeypair:        &MaintenanceRotationConfig{RotationPeriod: &metav1.Duration{Duration: 48 * time.Hour}},
+						Observability:     &MaintenanceRotationConfig{RotationPeriod: &metav1.Duration{Duration: 1 * time.Hour}},
+						ETCDEncryptionKey: &MaintenanceRotationConfig{RotationPeriod: &metav1.Duration{Duration: 168 * time.Hour}},
+					},
+				},
+			}
+			SetObjectDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Maintenance.AutoRotation.Credentials.SSHKeypair).To(Equal(&MaintenanceRotationConfig{
+				RotationPeriod: &metav1.Duration{Duration: 48 * time.Hour},
+			}))
+			Expect(obj.Spec.Maintenance.AutoRotation.Credentials.Observability).To(Equal(&MaintenanceRotationConfig{
+				RotationPeriod: &metav1.Duration{Duration: 1 * time.Hour},
+			}))
+			Expect(obj.Spec.Maintenance.AutoRotation.Credentials.ETCDEncryptionKey).To(Equal(&MaintenanceRotationConfig{
+				RotationPeriod: &metav1.Duration{Duration: 168 * time.Hour},
+			}))
+		})
 	})
 
 	Describe("KubeAPIServer defaulting", func() {
@@ -664,6 +772,21 @@ var _ = Describe("Shoot defaulting", func() {
 			SetObjectDefaults_Shoot(obj)
 
 			Expect(obj.Spec.Kubernetes.KubeAPIServer.Logging.Verbosity).To(PointTo(Equal(int32(3))))
+		})
+
+		It("should default the encryption provider type", func() {
+			SetObjectDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Kubernetes.KubeAPIServer.EncryptionConfig.Provider.Type).To(PointTo(Equal(EncryptionProviderTypeAESCBC)))
+		})
+
+		It("should not overwrite the already set encryption provider type", func() {
+			const EncryptionProviderTypeFoo EncryptionProviderType = "foo"
+			obj.Spec.Kubernetes.KubeAPIServer = &KubeAPIServerConfig{EncryptionConfig: &EncryptionConfig{Provider: EncryptionProvider{Type: ptr.To(EncryptionProviderTypeFoo)}}}
+
+			SetObjectDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Kubernetes.KubeAPIServer.EncryptionConfig.Provider.Type).To(PointTo(Equal(EncryptionProviderTypeFoo)))
 		})
 
 		It("should default the defaultNotReadyTolerationSeconds field", func() {
@@ -856,8 +979,8 @@ var _ = Describe("Shoot defaulting", func() {
 			Expect(obj.Spec.Provider.Workers[0].MachineControllerManagerSettings).NotTo(BeNil())
 			Expect(obj.Spec.Provider.Workers[0].MachineControllerManagerSettings.DisableHealthTimeout).To(PointTo(BeTrue()))
 
-			Expect(obj.Spec.Provider.Workers[1].MaxSurge).To(PointTo(Equal(intstr.FromInt32(0))))
-			Expect(obj.Spec.Provider.Workers[1].MaxUnavailable).To(PointTo(Equal(intstr.FromInt32(1))))
+			Expect(obj.Spec.Provider.Workers[1].MaxSurge).To(BeNil())
+			Expect(obj.Spec.Provider.Workers[1].MaxUnavailable).To(BeNil())
 			Expect(obj.Spec.Provider.Workers[1].SystemComponents).NotTo(BeNil())
 			Expect(obj.Spec.Provider.Workers[1].SystemComponents.Allow).To(BeTrue())
 			Expect(obj.Spec.Provider.Workers[1].UpdateStrategy).To(PointTo(Equal(ManualInPlaceUpdate)))
@@ -944,25 +1067,31 @@ var _ = Describe("Shoot defaulting", func() {
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.NewPodScaleUpDelay).To(PointTo(Equal(metav1.Duration{Duration: 0})))
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxScaleDownParallelism).To(PointTo(Equal(int32(10))))
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxDrainParallelism).To(PointTo(Equal(int32(1))))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.InitialNodeGroupBackoffDuration).To(PointTo(Equal(metav1.Duration{Duration: 5 * time.Minute})))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxNodeGroupBackoffDuration).To(PointTo(Equal(metav1.Duration{Duration: 30 * time.Minute})))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.NodeGroupBackoffResetTimeout).To(PointTo(Equal(metav1.Duration{Duration: 3 * time.Hour})))
 		})
 
 		It("should not overwrite the already set values for ClusterAutoscaler field", func() {
 			obj.Spec.Kubernetes.ClusterAutoscaler = &ClusterAutoscaler{
-				ScaleDownDelayAfterAdd:        &metav1.Duration{Duration: 1 * time.Hour},
-				ScaleDownDelayAfterDelete:     &metav1.Duration{Duration: 2 * time.Hour},
-				ScaleDownDelayAfterFailure:    &metav1.Duration{Duration: 3 * time.Hour},
-				ScaleDownUnneededTime:         &metav1.Duration{Duration: 4 * time.Hour},
-				ScaleDownUtilizationThreshold: ptr.To(0.8),
-				ScanInterval:                  &metav1.Duration{Duration: 5 * time.Hour},
-				Expander:                      &expanderRandom,
-				MaxNodeProvisionTime:          &metav1.Duration{Duration: 6 * time.Hour},
-				MaxGracefulTerminationSeconds: ptr.To(int32(60 * 60 * 24)),
-				IgnoreDaemonsetsUtilization:   ptr.To(true),
-				Verbosity:                     ptr.To[int32](4),
-				NewPodScaleUpDelay:            &metav1.Duration{Duration: 1},
-				MaxEmptyBulkDelete:            ptr.To[int32](20),
-				MaxScaleDownParallelism:       ptr.To[int32](15),
-				MaxDrainParallelism:           ptr.To[int32](5),
+				ScaleDownDelayAfterAdd:          &metav1.Duration{Duration: 1 * time.Hour},
+				ScaleDownDelayAfterDelete:       &metav1.Duration{Duration: 2 * time.Hour},
+				ScaleDownDelayAfterFailure:      &metav1.Duration{Duration: 3 * time.Hour},
+				ScaleDownUnneededTime:           &metav1.Duration{Duration: 4 * time.Hour},
+				ScaleDownUtilizationThreshold:   ptr.To(0.8),
+				ScanInterval:                    &metav1.Duration{Duration: 5 * time.Hour},
+				Expander:                        &expanderRandom,
+				MaxNodeProvisionTime:            &metav1.Duration{Duration: 6 * time.Hour},
+				MaxGracefulTerminationSeconds:   ptr.To(int32(60 * 60 * 24)),
+				IgnoreDaemonsetsUtilization:     ptr.To(true),
+				Verbosity:                       ptr.To[int32](4),
+				NewPodScaleUpDelay:              &metav1.Duration{Duration: 1},
+				MaxEmptyBulkDelete:              ptr.To[int32](20),
+				MaxScaleDownParallelism:         ptr.To[int32](15),
+				MaxDrainParallelism:             ptr.To[int32](5),
+				InitialNodeGroupBackoffDuration: &metav1.Duration{Duration: 10 * time.Minute},
+				MaxNodeGroupBackoffDuration:     &metav1.Duration{Duration: 20 * time.Minute},
+				NodeGroupBackoffResetTimeout:    &metav1.Duration{Duration: 1 * time.Hour},
 			}
 
 			SetObjectDefaults_Shoot(obj)
@@ -982,24 +1111,30 @@ var _ = Describe("Shoot defaulting", func() {
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxEmptyBulkDelete).To(PointTo(Equal(int32(20))))
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxScaleDownParallelism).To(PointTo(Equal(int32(15))))
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxDrainParallelism).To(PointTo(Equal(int32(5))))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.InitialNodeGroupBackoffDuration).To(PointTo(Equal(metav1.Duration{Duration: 10 * time.Minute})))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxNodeGroupBackoffDuration).To(PointTo(Equal(metav1.Duration{Duration: 20 * time.Minute})))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.NodeGroupBackoffResetTimeout).To(PointTo(Equal(metav1.Duration{Duration: 1 * time.Hour})))
 		})
 
 		It("should sync MaxScaleDownParallelism value with MaxEmptyBulkDelete when the latter is set and the former is not", func() {
 			obj.Spec.Kubernetes.ClusterAutoscaler = &ClusterAutoscaler{
-				ScaleDownDelayAfterAdd:        &metav1.Duration{Duration: 1 * time.Hour},
-				ScaleDownDelayAfterDelete:     &metav1.Duration{Duration: 2 * time.Hour},
-				ScaleDownDelayAfterFailure:    &metav1.Duration{Duration: 3 * time.Hour},
-				ScaleDownUnneededTime:         &metav1.Duration{Duration: 4 * time.Hour},
-				ScaleDownUtilizationThreshold: ptr.To(0.8),
-				ScanInterval:                  &metav1.Duration{Duration: 5 * time.Hour},
-				Expander:                      &expanderRandom,
-				MaxNodeProvisionTime:          &metav1.Duration{Duration: 6 * time.Hour},
-				MaxGracefulTerminationSeconds: ptr.To(int32(60 * 60 * 24)),
-				IgnoreDaemonsetsUtilization:   ptr.To(true),
-				Verbosity:                     ptr.To[int32](4),
-				NewPodScaleUpDelay:            &metav1.Duration{Duration: 1},
-				MaxEmptyBulkDelete:            ptr.To[int32](17),
-				MaxDrainParallelism:           ptr.To[int32](5),
+				ScaleDownDelayAfterAdd:          &metav1.Duration{Duration: 1 * time.Hour},
+				ScaleDownDelayAfterDelete:       &metav1.Duration{Duration: 2 * time.Hour},
+				ScaleDownDelayAfterFailure:      &metav1.Duration{Duration: 3 * time.Hour},
+				ScaleDownUnneededTime:           &metav1.Duration{Duration: 4 * time.Hour},
+				ScaleDownUtilizationThreshold:   ptr.To(0.8),
+				ScanInterval:                    &metav1.Duration{Duration: 5 * time.Hour},
+				Expander:                        &expanderRandom,
+				MaxNodeProvisionTime:            &metav1.Duration{Duration: 6 * time.Hour},
+				MaxGracefulTerminationSeconds:   ptr.To(int32(60 * 60 * 24)),
+				IgnoreDaemonsetsUtilization:     ptr.To(true),
+				Verbosity:                       ptr.To[int32](4),
+				NewPodScaleUpDelay:              &metav1.Duration{Duration: 1},
+				MaxEmptyBulkDelete:              ptr.To[int32](17),
+				MaxDrainParallelism:             ptr.To[int32](5),
+				InitialNodeGroupBackoffDuration: &metav1.Duration{Duration: 10 * time.Minute},
+				MaxNodeGroupBackoffDuration:     &metav1.Duration{Duration: 20 * time.Minute},
+				NodeGroupBackoffResetTimeout:    &metav1.Duration{Duration: 1 * time.Hour},
 			}
 
 			SetObjectDefaults_Shoot(obj)
@@ -1019,6 +1154,9 @@ var _ = Describe("Shoot defaulting", func() {
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxEmptyBulkDelete).To(PointTo(Equal(int32(17))))
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxScaleDownParallelism).To(PointTo(Equal(int32(17))))
 			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxDrainParallelism).To(PointTo(Equal(int32(5))))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.InitialNodeGroupBackoffDuration).To(PointTo(Equal(metav1.Duration{Duration: 10 * time.Minute})))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.MaxNodeGroupBackoffDuration).To(PointTo(Equal(metav1.Duration{Duration: 20 * time.Minute})))
+			Expect(obj.Spec.Kubernetes.ClusterAutoscaler.NodeGroupBackoffResetTimeout).To(PointTo(Equal(metav1.Duration{Duration: 1 * time.Hour})))
 		})
 	})
 
@@ -1051,6 +1189,7 @@ var _ = Describe("Shoot defaulting", func() {
 			Expect(obj.Spec.Kubernetes.VerticalPodAutoscaler.MemoryHistogramDecayHalfLife).To(PointTo(Equal(metav1.Duration{Duration: 24 * time.Hour})))
 			Expect(obj.Spec.Kubernetes.VerticalPodAutoscaler.MemoryAggregationInterval).To(PointTo(Equal(metav1.Duration{Duration: 24 * time.Hour})))
 			Expect(obj.Spec.Kubernetes.VerticalPodAutoscaler.MemoryAggregationIntervalCount).To(PointTo(Equal(int64(8))))
+			Expect(obj.Spec.Kubernetes.VerticalPodAutoscaler.RecommenderUpdateWorkerCount).To(PointTo(Equal(int64(10))))
 		})
 
 		It("should not overwrite the already set values for VerticalPodAutoscaler field", func() {
@@ -1094,6 +1233,31 @@ var _ = Describe("Shoot defaulting", func() {
 			Expect(obj.Spec.Kubernetes.VerticalPodAutoscaler.MemoryHistogramDecayHalfLife).To(PointTo(Equal(metav1.Duration{Duration: 7 * time.Second})))
 			Expect(obj.Spec.Kubernetes.VerticalPodAutoscaler.MemoryAggregationInterval).To(PointTo(Equal(metav1.Duration{Duration: 22 * time.Minute})))
 			Expect(obj.Spec.Kubernetes.VerticalPodAutoscaler.MemoryAggregationIntervalCount).To(PointTo(Equal(int64(42))))
+		})
+	})
+
+	Describe("Self-Hosted Shoots", func() {
+		BeforeEach(func() {
+			obj.Spec.Provider.Workers[0].ControlPlane = &WorkerControlPlane{
+				Exposure: &Exposure{
+					Extension: &ExtensionExposure{},
+				},
+			}
+		})
+
+		Describe("Exposure Extension defaulting", func() {
+			It("should default extension type to spec.provider.type", func() {
+				SetObjectDefaults_Shoot(obj)
+
+				Expect(obj.Spec.Provider.Workers[0].ControlPlane.Exposure.Extension.Type).To(PointTo(Equal(obj.Spec.Provider.Type)))
+			})
+
+			It("should not overwrite existing extension type", func() {
+				obj.Spec.Provider.Workers[0].ControlPlane.Exposure.Extension.Type = ptr.To("stackit")
+				SetObjectDefaults_Shoot(obj)
+
+				Expect(obj.Spec.Provider.Workers[0].ControlPlane.Exposure.Extension.Type).To(PointTo(Equal("stackit")))
+			})
 		})
 	})
 })

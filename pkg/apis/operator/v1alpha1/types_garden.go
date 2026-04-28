@@ -64,6 +64,9 @@ type GardenSpec struct {
 	RuntimeCluster RuntimeCluster `json:"runtimeCluster"`
 	// VirtualCluster contains configuration for the virtual cluster.
 	VirtualCluster VirtualCluster `json:"virtualCluster"`
+	// Resources holds a list of named resource references that can be referred to in extension configs by their names.
+	// +optional
+	Resources []gardencorev1beta1.NamedResourceReference `json:"resources,omitempty"`
 }
 
 // DNSManagement contains specifications of DNS providers.
@@ -127,6 +130,11 @@ type DNSDomain struct {
 
 // RuntimeNetworking defines the networking configuration of the runtime cluster.
 type RuntimeNetworking struct {
+	// IPFamilies specifies the IP protocol versions to use for the runtime cluster's networking. This field is
+	// immutable.
+	// Defaults to ["IPv4"].
+	// +optional
+	IPFamilies []gardencorev1beta1.IPFamily `json:"ipFamilies,omitempty"`
 	// Nodes are the CIDRs of the node network. Elements can be appended to this list, but not removed.
 	// +optional
 	Nodes []string `json:"nodes,omitempty"`
@@ -176,7 +184,7 @@ type SettingLoadBalancerServices struct {
 }
 
 // SettingVerticalPodAutoscaler controls certain settings for the vertical pod autoscaler components deployed in the
-// seed.
+// cluster.
 type SettingVerticalPodAutoscaler struct {
 	// Enabled controls whether the VPA components shall be deployed into this cluster. It is true by default because
 	// the operator (and Gardener) heavily rely on a VPA being deployed. You should only disable this if your runtime
@@ -185,6 +193,16 @@ type SettingVerticalPodAutoscaler struct {
 	// +kubebuilder:default=true
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
+	// FeatureGates contains information about enabled feature gates.
+	// +optional
+	FeatureGates map[string]bool `json:"featureGates,omitempty"`
+	// MaxAllowed specifies the global maximum allowed (maximum amount of resources) that vpa-recommender can recommend for a container.
+	// The VerticalPodAutoscaler-level maximum allowed takes precedence over the global maximum allowed.
+	// For more information, see https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/examples.md#specifying-global-maximum-allowed-resources-to-prevent-pods-from-being-unschedulable.
+	//
+	// Defaults to nil (no maximum).
+	// +optional
+	MaxAllowed corev1.ResourceList `json:"maxAllowed,omitempty"`
 }
 
 // SettingTopologyAwareRouting controls certain settings for topology-aware traffic routing in the cluster.
@@ -462,8 +480,15 @@ type Gardener struct {
 	// +optional
 	Dashboard *GardenerDashboardConfig `json:"gardenerDashboard,omitempty"`
 	// DiscoveryServer contains configuration settings for the gardener-discovery-server.
+	// Once enabled, the gardener-discovery-server deployment cannot be removed and its domain cannot be changed.
+	// Otherwise, workload identity and/or shoot service account tokens referencing the gardener-discovery-server in the
+	// issuer URL might become unusable.
+	// This field is optional, but once set, it cannot be removed anymore.
 	// +optional
 	DiscoveryServer *GardenerDiscoveryServerConfig `json:"gardenerDiscoveryServer,omitempty"`
+	// ResourceManager contains configuration settings for the gardener-resource-manager.
+	// +optional
+	ResourceManager *GardenerResourceManagerConfig `json:"gardenerResourceManager,omitempty"`
 }
 
 // GardenerAPIServerConfig contains configuration settings for the gardener-apiserver.
@@ -553,7 +578,11 @@ type ResourceLimit struct {
 	// Resources is the name of the resource this rule applies to. WildcardAll represents all resources.
 	Resources []string `json:"resources"`
 	// Size specifies the imposed limit.
-	Size resource.Quantity `json:"size"`
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+	// Count specifies the maximum number of resources of the given kind. Only cluster-scoped resources are considered.
+	// +optional
+	Count *int64 `json:"count,omitempty"`
 }
 
 // GardenerControllerManagerConfig contains configuration settings for the gardener-controller-manager.
@@ -580,6 +609,13 @@ type ProjectQuotaConfiguration struct {
 	// Defaults to empty LabelSelector, which matches all projects.
 	// +optional
 	ProjectSelector *metav1.LabelSelector `json:"projectSelector,omitempty"`
+}
+
+// GardenerResourceManagerConfig contains configuration settings for the gardener-resource-manager.
+type GardenerResourceManagerConfig struct {
+	// AdditionalTargetNamespaces allows specifying custom target namespaces for the gardener-resource-manager instance.
+	// +optional
+	AdditionalTargetNamespaces []string `json:"additionalTargetNamespaces,omitempty"`
 }
 
 // GardenerSchedulerConfig contains configuration settings for the gardener-scheduler.
@@ -710,7 +746,19 @@ type DashboardIngress struct {
 }
 
 // GardenerDiscoveryServerConfig contains configuration settings for the gardener-discovery-server.
-type GardenerDiscoveryServerConfig struct{}
+type GardenerDiscoveryServerConfig struct {
+	// Domain overrides the default ingress domain and optionally the DNS provider for the gardener-discovery-server.
+	// This field is optional, but once the gardener-discovery-server is enabled, its domain cannot be changed anymore.
+	// Defaults to "discovery.<first-runtime-ingress-domain>".
+	// +optional
+	Domain *DNSDomain `json:"domain,omitempty"`
+	// TLSSecretName is the name of a secret (in the garden namespace) containing
+	// a trusted TLS certificate for the domain. If not configured, Gardener falls
+	// back to a secret labelled with 'gardener.cloud/role=garden-cert', if in turn not
+	// configured it generates a self-signed certificate.
+	// +optional
+	TLSSecretName *string `json:"tlsSecretName,omitempty"`
+}
 
 const (
 	// ClusterTypeGarden enables the resource only for the garden cluster.
@@ -742,11 +790,6 @@ type GardenStatus struct {
 	// Credentials contains information about the virtual garden cluster credentials.
 	// +optional
 	Credentials *Credentials `json:"credentials,omitempty"`
-	// EncryptedResources is the list of resources which are currently encrypted in the virtual garden by the virtual kube-apiserver.
-	// Resources which are encrypted by default will not appear here.
-	// See https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config for more details.
-	// +optional
-	EncryptedResources []string `json:"encryptedResources,omitempty"`
 }
 
 // Credentials contains information about the virtual garden cluster credentials.
@@ -754,6 +797,9 @@ type Credentials struct {
 	// Rotation contains information about the credential rotations.
 	// +optional
 	Rotation *CredentialsRotation `json:"rotation,omitempty"`
+	// EncryptionAtRest contains information about garden data encryption at rest.
+	// +optional
+	EncryptionAtRest *EncryptionAtRest `json:"encryptionAtRest,omitempty"`
 }
 
 // CredentialsRotation contains information about the rotation of credentials.
@@ -773,6 +819,23 @@ type CredentialsRotation struct {
 	// WorkloadIdentityKey contains information about the workload identity key credential rotation.
 	// +optional
 	WorkloadIdentityKey *WorkloadIdentityKeyRotation `json:"workloadIdentityKey,omitempty"`
+}
+
+// EncryptionAtRest contains information about virtual garden data encryption at rest.
+type EncryptionAtRest struct {
+	// Resources is the list of resources which are currently encrypted in the virtual garden by the virtual kube-apiserver.
+	// Resources which are encrypted by default will not appear here.
+	// See https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config for more details.
+	// +optional
+	Resources []string `json:"resources,omitempty"`
+	// Provider contains information about virtual garden encryption provider.
+	Provider EncryptionProviderStatus `json:"provider"`
+}
+
+// EncryptionProviderStatus contains information about virtual garden encryption provider.
+type EncryptionProviderStatus struct {
+	// Type is the used encryption provider type.
+	Type gardencorev1beta1.EncryptionProviderType `json:"type"`
 }
 
 // WorkloadIdentityKeyRotation contains information about the workload identity key credential rotation.
@@ -814,6 +877,7 @@ var AvailableOperationAnnotations = sets.New(
 	v1beta1constants.OperationRotateCAComplete,
 	v1beta1constants.OperationRotateServiceAccountKeyStart,
 	v1beta1constants.OperationRotateServiceAccountKeyComplete,
+	v1beta1constants.OperationRotateETCDEncryptionKey,
 	v1beta1constants.OperationRotateETCDEncryptionKeyStart,
 	v1beta1constants.OperationRotateETCDEncryptionKeyComplete,
 	v1beta1constants.OperationRotateObservabilityCredentials,

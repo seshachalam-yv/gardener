@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidcorev1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
@@ -129,8 +130,8 @@ var _ = Describe("#Wait", func() {
 		)()
 		mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 		delete(expected.Annotations, v1beta1constants.GardenerOperation)
-		expected.Status.LastErrors = []druidcorev1alpha1.LastError{}
-		expected.Status.ObservedGeneration = ptr.To[int64](expected.Generation)
+		expected.Status.LastErrors = []druidapicommon.LastError{}
+		expected.Status.ObservedGeneration = ptr.To(expected.Generation)
 		expected.Status.Conditions = []druidcorev1alpha1.Condition{
 			{
 				Type:   druidcorev1alpha1.ConditionTypeAllMembersUpdated,
@@ -341,7 +342,7 @@ var _ = Describe("#CheckEtcdObject", func() {
 	})
 
 	It("should return error if reconciliation failed", func() {
-		obj.Status.LastErrors = []druidcorev1alpha1.LastError{{Code: "ERROR_FOO", Description: "foo", ObservedAt: metav1.Now()}}
+		obj.Status.LastErrors = []druidapicommon.LastError{{Code: "ERROR_FOO", Description: "foo", ObservedAt: metav1.Now()}}
 		err := CheckEtcdObject(obj)
 		Expect(err).To(MatchError(fmt.Sprintf("errors during reconciliation: %+v", obj.Status.LastErrors)))
 		Expect(retry.IsRetriable(err)).To(BeTrue())
@@ -370,9 +371,18 @@ var _ = Describe("#CheckEtcdObject", func() {
 		Expect(CheckEtcdObject(obj)).To(MatchError("gardener operation \"reconcile\" is not yet picked up by etcd-druid"))
 	})
 
-	It("should not return error if replicas is set to 0, even if AllMembersUpdated condition and readiness are not true ", func() {
+	It("should not return error if replicas is set to 0, even if AllMembersUpdated condition and readiness are not true", func() {
 		obj.SetGeneration(1)
 		obj.Spec.Replicas = 0
+		obj.Status.ObservedGeneration = ptr.To[int64](1)
+		obj.Status.Conditions = []druidcorev1alpha1.Condition{{Type: druidcorev1alpha1.ConditionTypeAllMembersUpdated, Status: druidcorev1alpha1.ConditionFalse}}
+		obj.Status.Ready = ptr.To(false)
+		Expect(CheckEtcdObject(obj)).To(Succeed())
+	})
+
+	It("should not return error if runtime component creation is disabled, even if AllMembersUpdated condition and readiness are not true", func() {
+		obj.SetGeneration(1)
+		obj.Annotations = map[string]string{"druid.gardener.cloud/disable-etcd-runtime-component-creation": ""}
 		obj.Status.ObservedGeneration = ptr.To[int64](1)
 		obj.Status.Conditions = []druidcorev1alpha1.Condition{{Type: druidcorev1alpha1.ConditionTypeAllMembersUpdated, Status: druidcorev1alpha1.ConditionFalse}}
 		obj.Status.Ready = ptr.To(false)

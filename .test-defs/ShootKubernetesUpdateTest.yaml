@@ -13,11 +13,11 @@ spec:
   command: [bash, -c]
   args:
   - >-
-    go test -timeout=0 ./test/testmachinery/system/shoot_update
+    go test -timeout=0 ./test/testmachinery/system/shoot_kubernetes_update
     --v -ginkgo.v -ginkgo.show-node-events -ginkgo.no-color -verbose=debug
     -kubecfg=$TM_KUBECONFIG_PATH/gardener.config
     -shoot-name=$SHOOT_NAME
     -project-namespace=$PROJECT_NAMESPACE
-    -version=$K8S_VERSION
-    -version-worker-pools=$K8S_VERSION_WORKER_POOLS
-  image: golang:1.24.4
+    -k8s-version-control-plane=$K8S_VERSION
+    -k8s-version-worker-pools=$K8S_VERSION_WORKER_POOLS
+  image: golang:1.26.1

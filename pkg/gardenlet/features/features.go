@@ -21,9 +21,16 @@ func GetFeatures() []featuregate.Feature {
 	return []featuregate.Feature{
 		features.DefaultSeccompProfile,
 		features.NewWorkerPoolHash,
-		features.NewVPN,
-		features.NodeAgentAuthorizer,
 		features.IstioTLSTermination,
 		features.DoNotCopyBackupCredentials,
+		features.OpenTelemetryCollector,
+		features.VictoriaLogsBackend,
+		features.UseUnifiedHTTPProxyPort,
+		features.VPAInPlaceUpdates,
+		features.CustomDNSServerInNodeLocalDNS,
+		features.VPNBondingModeRoundRobin,
+		features.PrometheusHealthChecks,
+		features.RemoveVali,
+		features.NodeReadinessController,
 	}
 }

@@ -13,9 +13,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	. "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 )
 
 var _ = Describe("Defaults", func() {
@@ -46,7 +46,6 @@ var _ = Describe("Defaults", func() {
 							gardencorev1beta1.ResourceShoots: resource.MustParse("250"),
 						},
 					},
-					SeedConfig: &gardenletconfigv1alpha1.SeedConfig{},
 				}}))
 		})
 

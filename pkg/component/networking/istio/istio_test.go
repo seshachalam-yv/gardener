@@ -52,6 +52,7 @@ var _ = Describe("istiod", func() {
 		labels                        map[string]string
 		networkLabels                 map[string]string
 		expectAPIServerTLSTermination bool
+		expectVPARecreateMode         bool
 
 		managedResourceIstioName   string
 		managedResourceIstio       *resourcesv1alpha1.ManagedResource
@@ -141,6 +142,23 @@ var _ = Describe("istiod", func() {
 			return str
 		}
 
+		istioIngressAutoscalerTLSTerminationHPA = func(min *int, max *int) string {
+			data, _ := os.ReadFile("./test_charts/ingress_autoscaler_tls_termination_hpa.yaml")
+			str := strings.ReplaceAll(string(data), "<MIN_REPLICAS>", strconv.Itoa(ptr.Deref(min, 2)))
+			str = strings.ReplaceAll(str, "<MAX_REPLICAS>", strconv.Itoa(ptr.Deref(max, 9)))
+			return str
+		}
+
+		istioIngressAutoscalerVPA = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_autoscaler_vpa.yaml")
+			return string(data)
+		}
+
+		istioIngressAutoscalerVPARecreate = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_autoscaler_vpa_recreate.yaml")
+			return string(data)
+		}
+
 		istioIngressEnvoyVPNFilter = func(i int) string {
 			data, _ := os.ReadFile("./test_charts/ingress_vpn_envoy_filter.yaml")
 			return strings.Split(string(data), "---\n")[i]
@@ -151,8 +169,8 @@ var _ = Describe("istiod", func() {
 			return string(data)
 		}
 
-		istioIngressVPNGateway = func() string {
-			data, _ := os.ReadFile("./test_charts/ingress_vpn_gateway.yaml")
+		istioIngressHTTPConnectGateway = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_http_connect_gateway.yaml")
 			return string(data)
 		}
 
@@ -191,6 +209,11 @@ var _ = Describe("istiod", func() {
 			return string(data)
 		}
 
+		istioIngressServiceClass = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_service_class.yaml")
+			return string(data)
+		}
+
 		istioIngressServiceETPCluster = func() string {
 			data, _ := os.ReadFile("./test_charts/ingress_service_etp_cluster.yaml")
 			return string(data)
@@ -217,6 +240,11 @@ var _ = Describe("istiod", func() {
 			return string(data)
 		}
 
+		istioIngressTelemetry = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_telemetry.yaml")
+			return string(data)
+		}
+
 		istioProxyProtocolEnvoyFilterSNI = func() string {
 			data, _ := os.ReadFile("./test_charts/proxyprotocol_envoyfilter_sni.yaml")
 			return string(data)
@@ -236,6 +264,51 @@ var _ = Describe("istiod", func() {
 			data, _ := os.ReadFile("./test_charts/strip_trailing_dot_envoyfilter.yaml")
 			return string(data)
 		}
+
+		istioIngressMetricsDestinationRule = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_metrics_destinationrule.yaml")
+			return string(data)
+		}
+
+		istioIngressMetricsEnvoyFilter = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_metrics_envoyfilter.yaml")
+			return string(data)
+		}
+
+		istioIngressMetricsGateway = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_metrics_gateway.yaml")
+			return string(data)
+		}
+
+		istioIngressMetricsServiceEntry = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_metrics_serviceentry.yaml")
+			return string(data)
+		}
+
+		istioIngressMetricsVirtualService = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_metrics_virtualservice.yaml")
+			return string(data)
+		}
+
+		istioIngressNamespace = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_namespace.yaml")
+			return string(data)
+		}
+
+		istioProxyProtocolEnvoyFilterVPNUnified = func() string {
+			data, _ := os.ReadFile("./test_charts/proxyprotocol_envoyfilter_unified.yaml")
+			return string(data)
+		}
+
+		istioIngressHTTPProxyGatewayUnified = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_http_proxy_gateway_unified.yaml")
+			return string(data)
+		}
+
+		istioIngressEnvoyHTTPProxyFilterUnified = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_http_proxy_envoy_filter_unified.yaml")
+			return string(data)
+		}
 	)
 
 	BeforeEach(func() {
@@ -244,6 +317,7 @@ var _ = Describe("istiod", func() {
 		labels = map[string]string{"foo": "bar"}
 		networkLabels = map[string]string{"to-target": "allowed"}
 		expectAPIServerTLSTermination = false
+		expectVPARecreateMode = false
 		expectedCPURequests = "300m"
 		expectedMinReplicas = 2
 		expectedMaxReplicas = 9
@@ -325,24 +399,8 @@ var _ = Describe("istiod", func() {
 			))
 		})
 
-		It("deploys istio-ingress namespace", func() {
-			actualNS := &corev1.Namespace{}
-
-			Expect(c.Get(ctx, client.ObjectKey{Name: deployNSIngress}, actualNS)).ToNot(HaveOccurred())
-
-			Expect(actualNS.Labels).To(And(
-				HaveKeyWithValue("istio-operator-managed", "Reconcile"),
-				HaveKeyWithValue("istio-injection", "disabled"),
-				HaveKeyWithValue("pod-security.kubernetes.io/enforce", "baseline"),
-				HaveKeyWithValue("high-availability-config.resources.gardener.cloud/consider", "true"),
-				HaveKeyWithValue("gardener.cloud/role", "istio-ingress"),
-			))
-			Expect(actualNS.Annotations).To(And(
-				HaveKeyWithValue("high-availability-config.resources.gardener.cloud/zones", "a,b,c"),
-			))
-		})
-
-		checkSuccessfulDeployment := func(minReplicas, maxReplicas *int) {
+		getAndCheckManagedResourceSecret := func() {
+			GinkgoHelper()
 			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceIstio), managedResourceIstio)).To(Succeed())
 			expectedMr := &resourcesv1alpha1.ManagedResource{
 				ObjectMeta: metav1.ObjectMeta{
@@ -366,17 +424,27 @@ var _ = Describe("istiod", func() {
 			Expect(managedResourceIstioSecret.Type).To(Equal(corev1.SecretTypeOpaque))
 			Expect(managedResourceIstioSecret.Immutable).To(Equal(ptr.To(true)))
 			Expect(managedResourceIstioSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+		}
+
+		checkSuccessfulDeployment := func(minReplicas, maxReplicas *int) {
+			getAndCheckManagedResourceSecret()
 
 			expectedIstioManifests := []string{
-				istioIngressAutoscaler(minReplicas, maxReplicas),
+				istioIngressNamespace(),
 				istioIngressRole(),
 				istioIngressRoleBinding(),
 				istioIngressService(),
 				istioIngressServiceInternal(),
 				istioIngressServiceAccount(),
 				istioIngressDeployment(minReplicas),
-				istioIngressServiceMonitor(),
 				istioIngressEnvoyFilter(),
+				istioIngressMetricsDestinationRule(),
+				istioIngressMetricsEnvoyFilter(),
+				istioIngressMetricsGateway(),
+				istioIngressMetricsServiceEntry(),
+				istioIngressMetricsVirtualService(),
+				istioIngressServiceMonitor(),
+				istioIngressTelemetry(),
 			}
 
 			expectedIstioSystemManifests := []string{
@@ -401,17 +469,38 @@ var _ = Describe("istiod", func() {
 			expectedIstioManifests = append(expectedIstioManifests, istioIngressPodDisruptionBudget())
 			expectedIstioSystemManifests = append(expectedIstioSystemManifests, istiodPodDisruptionBudget())
 
+			if expectVPARecreateMode {
+				expectedIstioManifests = append(expectedIstioManifests, istioIngressAutoscalerVPARecreate())
+			} else {
+				expectedIstioManifests = append(expectedIstioManifests, istioIngressAutoscalerVPA())
+			}
+
 			if expectAPIServerTLSTermination {
-				expectedIstioManifests = append(expectedIstioManifests, istioAPIServerTLSTerminationEnvoyFilter())
-				expectedIstioManifests = append(expectedIstioManifests, istioStripTrailingDotEnvoyFilter())
+				expectedIstioManifests = append(expectedIstioManifests,
+					istioAPIServerTLSTerminationEnvoyFilter(),
+					istioIngressAutoscalerTLSTerminationHPA(minReplicas, maxReplicas),
+					istioStripTrailingDotEnvoyFilter(),
+				)
+			} else {
+				expectedIstioManifests = append(expectedIstioManifests, istioIngressAutoscaler(minReplicas, maxReplicas))
 			}
 
 			if igw[0].TerminateLoadBalancerProxyProtocol {
-				expectedIstioManifests = append(expectedIstioManifests, istioProxyProtocolEnvoyFilterSNI(), istioProxyProtocolEnvoyFilterVPN())
+				expectedIstioManifests = append(expectedIstioManifests,
+					istioProxyProtocolEnvoyFilterSNI(),
+					istioProxyProtocolEnvoyFilterVPN(),
+					istioProxyProtocolEnvoyFilterVPNUnified(),
+				)
 			}
 
 			if igw[0].VPNEnabled {
-				expectedIstioManifests = append(expectedIstioManifests, istioIngressVPNGateway(), istioIngressEnvoyVPNFilter(0), istioIngressEnvoyVPNFilter(1))
+				expectedIstioManifests = append(expectedIstioManifests,
+					istioIngressHTTPConnectGateway(),
+					istioIngressEnvoyVPNFilter(0),
+					istioIngressEnvoyVPNFilter(1),
+					istioIngressHTTPProxyGatewayUnified(),
+					istioIngressEnvoyHTTPProxyFilterUnified(),
+				)
 			}
 
 			By("Verify istio resources")
@@ -518,6 +607,36 @@ var _ = Describe("istiod", func() {
 
 			It("should successfully deploy correct autoscaling", func() {
 				checkSuccessfulDeployment(&expectedMinReplicas, &expectedMaxReplicas)
+			})
+		})
+
+		Context("LoadBalancer class", func() {
+			BeforeEach(func() {
+				igw[0].LoadBalancerClass = ptr.To("non-default-loadbalancer-class")
+				istiod = NewIstio(
+					c,
+					renderer,
+					Values{
+						Istiod: IstiodValues{
+							Enabled:     true,
+							Image:       "foo/bar",
+							Namespace:   deployNS,
+							TrustDomain: "foo.local",
+							Zones:       []string{"a", "b", "c"},
+						},
+						IngressGateway: igw,
+					},
+				)
+			})
+
+			It("should successfully deploy correct loadBalancerClass", func() {
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceIstioSecret), managedResourceIstioSecret)).To(Succeed())
+
+				var err error
+				istioManifests, err := test.ExtractManifestsFromManagedResourceData(managedResourceIstioSecret.Data)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(istioManifests).To(ContainElement(istioIngressServiceClass()))
 			})
 		})
 
@@ -699,7 +818,7 @@ var _ = Describe("istiod", func() {
 		Context("With IstioTLSTermination feature gate enabled", func() {
 			BeforeEach(func() {
 				expectAPIServerTLSTermination = true
-				expectedCPURequests = "500m"
+				expectedCPURequests = "1"
 				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.IstioTLSTermination, true))
 			})
 
@@ -711,7 +830,7 @@ var _ = Describe("istiod", func() {
 		Context("With IstioTLSTermination feature gate disabled but with shoots still using the feature", func() {
 			BeforeEach(func() {
 				expectAPIServerTLSTermination = true
-				expectedCPURequests = "500m"
+				expectedCPURequests = "1"
 
 				envoyFilter := istionetworkingv1alpha3.EnvoyFilter{
 					ObjectMeta: metav1.ObjectMeta{
@@ -724,6 +843,17 @@ var _ = Describe("istiod", func() {
 			})
 
 			It("should successfully deploy all resources", func() {
+				checkSuccessfulDeployment(nil, nil)
+			})
+		})
+
+		Context("With VPAInPlaceUpdates feature gate disabled", func() {
+			BeforeEach(func() {
+				expectVPARecreateMode = true
+				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VPAInPlaceUpdates, false))
+			})
+
+			It("should successfully deploy all resources with VPA Recreate mode", func() {
 				checkSuccessfulDeployment(nil, nil)
 			})
 		})
@@ -818,9 +948,7 @@ var _ = Describe("istiod", func() {
 	})
 
 	Context("waiting functions", func() {
-		var (
-			fakeOps *retryfake.Ops
-		)
+		var fakeOps *retryfake.Ops
 
 		BeforeEach(func() {
 			fakeOps = &retryfake.Ops{MaxAttempts: 1}

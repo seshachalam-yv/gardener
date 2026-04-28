@@ -177,7 +177,8 @@ the gardenlet is using `Lease` objects for heart beats of the seed cluster.
 Every two seconds, the gardenlet checks that the seed cluster's `/healthz`
 endpoint returns HTTP status code 200.
 If that is the case, the gardenlet renews the lease in the Garden cluster in the `gardener-system-seed-lease` namespace and updates
-the `GardenletReady` condition in the `status.conditions` field of the `Seed` resource. For more information, see [this section](#lease-reconciler).
+the `GardenletReady` condition in the `status.conditions` field of the `Seed` resource.
+For more information, see [this section](#lease-reconciler).
 
 Similar to the `node-lifecycle-controller` inside the `kube-controller-manager`,
 the `gardener-controller-manager` features a `seed-lifecycle-controller` that sets
@@ -486,13 +487,27 @@ A pod is considered stale when:
 - it was terminated with reason `NodeAffinity`.
 - it is stuck in termination (i.e., if its `deletionTimestamp` is more than `5m` ago).
 
+#### ["Lease" Reconciler](../../pkg/gardenlet/controller/shoot/lease)
+
+This reconciler is only enabled for self-hosted shoot clusters.
+It checks whether the connection to the shoot cluster's `/healthz` endpoint works.
+If this succeeds, then it renews a `Lease` resource in the garden cluster in the  same namespace as the `Shoot` the `gardenlet` is responsible for.
+This indicates a heartbeat to the external world, and internally the `gardenlet` sets its health status to `true`.
+In addition, the `GardenletReady` condition in the `status` of the `Shoot` is set to `True`.
+The whole process is similar to what the `kubelet` does to report heartbeats for its `Node` resource and its `KubeletReady` condition.
+For more information, see [this section](#heartbeats).
+
+If the connection to the `/healthz` endpoint or the update of the `Lease` fails, then the internal health status of `gardenlet` is set to `false`.
+Also, this internal health status is set to `false` automatically after some time, in case the controller gets stuck for whatever reason.
+This internal health status is available via the `gardenlet`'s `/healthz` endpoint and is used for the `livenessProbe` in the `gardenlet` pod.
+
 #### ["State" Reconciler](../../pkg/gardenlet/controller/shoot/state)
 
 This reconciler periodically (default: every `6h`) performs backups of the state of `Shoot` clusters and persists them into `ShootState` resources into the same namespace as the `Shoot`s in the garden cluster.
 It is only started in case the `gardenlet` is responsible for an unmanaged `Seed`, i.e. a `Seed` which is not backed by a `seedmanagement.gardener.cloud/v1alpha1.ManagedSeed` object.
 Alternatively, it can be disabled by setting the `concurrentSyncs=0` for the controller in the `gardenlet`'s component configuration.
 
-Please refer to [GEP-22: Improved Usage of the `ShootState` API](../proposals/22-improved-usage-of-shootstate-api.md) for all information.
+Please refer to [GEP-0022: Improved Usage of the `ShootState` API](https://github.com/gardener/enhancements/tree/main/geps/0022-improved-shootstate-usage) for all information.
 
 ### ["Status" Reconciler](../../pkg/gardenlet/controller/shoot/status)
 
@@ -516,7 +531,13 @@ After the association is made, the `gardenlet` requests a token for the specific
 The `gardenlet` is responsible to keep this token valid by refreshing it periodically.
 The token is then used by components running in the seed cluster in order to present the said `WorkloadIdentity` before external systems, e.g. by calling cloud provider APIs.
 
-Please refer to [GEP-26: Workload Identity - Trust Based Authentication](../proposals/26-workload-identity.md) for more details.
+> [!NOTE]
+>
+> By default, tokens are valid for 6 hours and are renewed after 50% of their lifetime has passed (approximately 3 hours).
+> However, gardenlets cap token validity at 24 hours for renewal calculation purposes, even if tokens are issued with greater validity.
+> This means that tokens with validity longer than 24 hours will be renewed after 12 hours (50% of the 24-hour cap).
+
+Please refer to [GEP-0026: Workload Identity - Trust Based Authentication](https://github.com/gardener/enhancements/tree/main/geps/0026-workload-identity) for more details.
 
 ### [`VPAEvictionRequirements` Controller](../../pkg/gardenlet/controller/vpaevictionrequirements)
 

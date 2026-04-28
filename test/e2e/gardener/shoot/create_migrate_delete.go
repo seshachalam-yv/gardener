@@ -13,9 +13,10 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	. "github.com/gardener/gardener/test/e2e/gardener"
+	"github.com/gardener/gardener/test/e2e/gardener/seed"
 	"github.com/gardener/gardener/test/e2e/gardener/shoot/internal/inclusterclient"
 	shootmigration "github.com/gardener/gardener/test/utils/shoots/migration"
 )
@@ -28,15 +29,10 @@ var _ = Describe("Shoot Tests", Label("Shoot", "control-plane-migration"), func(
 		ItShouldCreateShoot(s)
 		ItShouldWaitForShootToBeReconciledAndHealthy(s)
 		ItShouldGetResponsibleSeed(s)
-		ItShouldInitializeSeedClient(s)
+		seed.ItShouldInitializeSeedClient(&s.SeedContext)
 
 		if !v1beta1helper.IsWorkerless(s.Shoot) && !v1beta1helper.HibernationIsEnabled(s.Shoot) {
 			ItShouldInitializeShootClient(s)
-			// We can only verify in-cluster access to the API server before the migration in local e2e tests.
-			// After the migration, the shoot API server's hostname still points to the source seed, because
-			// the /etc/hosts entry is never updated. Hence, we talk to the API server for starting in-cluster
-			// clients. That's also why the ShootMigrationTest is configured to skip all interactions with the
-			// shoot API server for local e2e tests.
 			inclusterclient.VerifyInClusterAccessToAPIServer(s)
 		}
 
@@ -48,6 +44,15 @@ var _ = Describe("Shoot Tests", Label("Shoot", "control-plane-migration"), func(
 		It("Record current seed client", func() {
 			seedClientSourceCluster = s.SeedClient
 		})
+
+		if !v1beta1helper.IsWorkerless(s.Shoot) {
+			// The operating system config pool hashes secret is only deployed for shoots with workers.
+			It("Mark the operating system config pool hashes secret to verify that it will be correctly migrated", func(ctx SpecContext) {
+				Eventually(ctx, func() error {
+					return shootmigration.MarkOSCSecret(ctx, s.SeedClientSet.Client(), s.Shoot.Status.TechnicalID)
+				}).Should(Succeed())
+			}, SpecTimeout(time.Minute))
+		}
 
 		It("Populate comparison elements before migration", func(ctx SpecContext) {
 			Eventually(ctx, func() error {
@@ -67,7 +72,7 @@ var _ = Describe("Shoot Tests", Label("Shoot", "control-plane-migration"), func(
 
 		ItShouldWaitForShootToBeReconciledAndHealthy(s)
 		ItShouldGetResponsibleSeed(s)
-		ItShouldInitializeSeedClient(s)
+		seed.ItShouldInitializeSeedClient(&s.SeedContext)
 
 		It("Verify that all secrets have been migrated without regeneration", func(ctx SpecContext) {
 			var secretsAfterMigration map[string]corev1.Secret
@@ -82,6 +87,11 @@ var _ = Describe("Shoot Tests", Label("Shoot", "control-plane-migration"), func(
 		It("Verify that there are no orphaned resources in the source seed", func(ctx SpecContext) {
 			Expect(shootmigration.CheckForOrphanedNonNamespacedResources(ctx, s.Shoot.Namespace, seedClientSourceCluster)).To(Succeed())
 		}, SpecTimeout(time.Minute))
+
+		if !v1beta1helper.IsWorkerless(s.Shoot) && !v1beta1helper.HibernationIsEnabled(s.Shoot) {
+			ItShouldInitializeShootClient(s)
+			inclusterclient.VerifyInClusterAccessToAPIServer(s)
+		}
 
 		ItShouldDeleteShoot(s)
 		ItShouldWaitForShootToBeDeleted(s)

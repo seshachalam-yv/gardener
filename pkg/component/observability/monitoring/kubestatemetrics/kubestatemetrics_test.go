@@ -62,7 +62,7 @@ var _ = Describe("KubeStateMetrics", func() {
 		managedResourceTarget     *resourcesv1alpha1.ManagedResource
 		managedResourceSecret     *corev1.Secret
 
-		vpaUpdateMode       = vpaautoscalingv1.UpdateModeAuto
+		vpaUpdateMode       = vpaautoscalingv1.UpdateModeRecreate
 		vpaControlledValues = vpaautoscalingv1.ContainerControlledValuesRequestsOnly
 
 		serviceAccountFor            func(string) *corev1.ServiceAccount
@@ -122,7 +122,7 @@ var _ = Describe("KubeStateMetrics", func() {
 					},
 					{
 						APIGroups: []string{"operator.gardener.cloud"},
-						Resources: []string{"gardens"},
+						Resources: []string{"gardens", "extensions"},
 						Verbs:     []string{"list", "watch"},
 					},
 				},
@@ -279,6 +279,7 @@ var _ = Describe("KubeStateMetrics", func() {
 							"^kube_horizontalpodautoscaler_status_desired_replicas$," +
 							"^kube_horizontalpodautoscaler_status_condition$," +
 							"^kube_namespace_annotations$," +
+							"^kube_node_created$," +
 							"^kube_node_info$," +
 							"^kube_node_labels$," +
 							"^kube_node_spec_taint$," +
@@ -329,6 +330,7 @@ var _ = Describe("KubeStateMetrics", func() {
 						"--metric-annotations-allowlist=namespaces=[shoot.gardener.cloud/uid]",
 						"--metric-allowlist=" +
 							"^kube_pod_container_status_restarts_total$," +
+							"^kube_pod_info$," +
 							"^kube_pod_status_phase$," +
 							"^kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu$," +
 							"^kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_memory$," +
@@ -344,7 +346,8 @@ var _ = Describe("KubeStateMetrics", func() {
 							"^kube_customresource_verticalpodautoscaler_spec_resourcepolicy_containerpolicies_maxallowed_memory$," +
 							"^kube_customresource_verticalpodautoscaler_spec_updatepolicy_updatemode$," +
 							"^garden_garden_condition$," +
-							"^garden_garden_last_operation$",
+							"^garden_garden_last_operation$," +
+							"^garden_extension_condition$",
 						"--custom-resource-state-config-file=/config/custom-resource-state.yaml",
 					}
 				}
@@ -402,6 +405,7 @@ var _ = Describe("KubeStateMetrics", func() {
 						"^kube_deployment_status_replicas_available$," +
 						"^kube_deployment_status_replicas_unavailable$," +
 						"^kube_deployment_status_replicas_updated$," +
+						"^kube_node_created$," +
 						"^kube_node_info$," +
 						"^kube_node_labels$," +
 						"^kube_node_spec_taint$," +
@@ -878,11 +882,15 @@ var _ = Describe("KubeStateMetrics", func() {
 					ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 						ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 							{
-								ContainerName:    "*",
+								ContainerName:    "kube-state-metrics",
 								ControlledValues: &vpaControlledValues,
 								MinAllowed: corev1.ResourceList{
 									corev1.ResourceMemory: resource.MustParse("32Mi"),
 								},
+							},
+							{
+								ContainerName: "*",
+								Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 							},
 						},
 					},
@@ -1076,7 +1084,6 @@ var _ = Describe("KubeStateMetrics", func() {
 				Expect(managedResourceSecret.Immutable).To(Equal(ptr.To(true)))
 				Expect(managedResourceSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
 				Expect(managedResource).To(consistOf(expectedObjects...))
-
 			})
 		})
 

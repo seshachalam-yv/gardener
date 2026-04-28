@@ -14,11 +14,11 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 
 	"github.com/gardener/gardener/cmd/utils/initrun"
+	gardenletvalidation "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/validation"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/features"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	gardenletvalidation "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1/validation"
 )
 
 var configDecoder runtime.Decoder
@@ -66,7 +66,7 @@ func (o *options) Complete() error {
 }
 
 func (o *options) Validate() error {
-	if errs := gardenletvalidation.ValidateGardenletConfiguration(o.config, nil, false); len(errs) > 0 {
+	if errs := gardenletvalidation.ValidateGardenletConfiguration(o.config, nil); len(errs) > 0 {
 		return errs.ToAggregate()
 	}
 
@@ -74,7 +74,7 @@ func (o *options) Validate() error {
 	// ManagedSeed and Gardenlet resources in the seedmanagement API group. Here, the .metadata.name field is not
 	// required and might indeed be empty, since it will be defaulted to the name of the resource during gardenlet
 	// deployment.
-	if o.config.SeedConfig.Name == "" {
+	if o.config.SeedConfig != nil && o.config.SeedConfig.Name == "" {
 		return fmt.Errorf("seedConfig.metadata.name must be set in the gardenlet configuration")
 	}
 

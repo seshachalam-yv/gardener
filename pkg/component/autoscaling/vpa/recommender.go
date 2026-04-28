@@ -32,9 +32,10 @@ import (
 )
 
 const (
-	recommender            = "vpa-recommender"
-	recommenderPortServer  = 8080
-	recommenderPortMetrics = 8942
+	recommenderContainerName = "recommender"
+	recommender              = "vpa-recommender"
+	recommenderPortServer    = 8080
+	recommenderPortMetrics   = 8942
 )
 
 // ValuesRecommender is a set of configuration values for the vpa-recommender.
@@ -65,6 +66,10 @@ type ValuesRecommender struct {
 	// MemoryAggregationWindowLength which in turn is the period for memory usage aggregation by VPA. In other words,
 	// `MemoryAggregationWindowLength = memory-aggregation-interval * memory-aggregation-interval-count`.
 	MemoryAggregationIntervalCount *int64
+	// MaxAllowed specifies the global maximum allowed (maximum amount of resources) that vpa-recommender can recommend for a container.
+	// The VerticalPodAutoscaler-level maximum allowed takes precedence over the global maximum allowed.
+	// For more information, see https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/examples.md#specifying-global-maximum-allowed-resources-to-prevent-pods-from-being-unschedulable.
+	MaxAllowed corev1.ResourceList
 	// Image is the container image.
 	Image string
 	// Interval is the interval how often the recommender should run.
@@ -73,6 +78,8 @@ type ValuesRecommender struct {
 	PriorityClassName string
 	// Replicas is the number of pod replicas.
 	Replicas *int32
+	// UpdateWorkerCount is the number of workers used for updating VPAs and VPACheckpoints in parallel.
+	UpdateWorkerCount *int64
 }
 
 func (v *vpa) recommenderResourceConfigs() component.ResourceConfigs {
@@ -255,7 +262,7 @@ func (v *vpa) reconcileRecommenderDeployment(deployment *appsv1.Deployment, serv
 			Spec: corev1.PodSpec{
 				PriorityClassName: v.values.Recommender.PriorityClassName,
 				Containers: []corev1.Container{{
-					Name:            "recommender",
+					Name:            recommenderContainerName,
 					Image:           v.values.Recommender.Image,
 					ImagePullPolicy: corev1.PullIfNotPresent,
 					Args:            v.computeRecommenderArgs(),
@@ -306,12 +313,16 @@ func (v *vpa) reconcileRecommenderVPA(vpa *vpaautoscalingv1.VerticalPodAutoscale
 			Kind:       "Deployment",
 			Name:       deployment.Name,
 		},
-		UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto)},
+		UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate)},
 		ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 				{
-					ContainerName:    "*",
+					ContainerName:    recommenderContainerName,
 					ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+				},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 				},
 			},
 		},
@@ -342,10 +353,22 @@ func (v *vpa) computeRecommenderArgs() []string {
 		"--leader-elect=true",
 		"--leader-elect-resource-name=" + recommender,
 		fmt.Sprintf("--leader-elect-resource-namespace=%s", v.namespaceForApplicationClassResource()),
+		fmt.Sprintf("--update-worker-count=%d", ptr.Deref(v.values.Recommender.UpdateWorkerCount, gardencorev1beta1.DefaultRecommenderUpdateWorkerCount)),
 	}
 
 	if v.values.ClusterType == component.ClusterTypeShoot {
 		out = append(out, "--kubeconfig="+gardenerutils.PathGenericKubeconfig)
+	}
+
+	if v.values.FeatureGates != nil {
+		out = append(out, v.computeFeatureGates())
+	}
+
+	if quantity, ok := v.values.Recommender.MaxAllowed[corev1.ResourceCPU]; ok {
+		out = append(out, fmt.Sprintf("--container-recommendation-max-allowed-cpu=%s", quantity.String()))
+	}
+	if quantity, ok := v.values.Recommender.MaxAllowed[corev1.ResourceMemory]; ok {
+		out = append(out, fmt.Sprintf("--container-recommendation-max-allowed-memory=%s", quantity.String()))
 	}
 
 	return out

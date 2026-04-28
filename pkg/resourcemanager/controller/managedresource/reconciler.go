@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,12 +44,12 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	resourcesv1alpha1helper "github.com/gardener/gardener/pkg/api/resources/v1alpha1/helper"
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
-	resourcesv1alpha1helper "github.com/gardener/gardener/pkg/apis/resources/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	resourcemanagerpredicate "github.com/gardener/gardener/pkg/resourcemanager/predicate"
 	errorsutils "github.com/gardener/gardener/pkg/utils/errors"
@@ -111,7 +112,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// must be delayed, until the deletion is finished.
 	if r.ClassFilter.IsWaitForCleanupRequired(mr) {
 		log.Info("Waiting for previous handler to clean resources created by ManagedResource")
-		return reconcile.Result{Requeue: true}, nil
+		return reconcile.Result{}, nil
 	}
 	return r.reconcile(ctx, log, mr)
 }
@@ -150,15 +151,12 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, mr *resourc
 		forceOverwriteAnnotations = *v
 	}
 
-	reconcileCtx, cancel := controllerutils.GetMainReconciliationContext(ctx, r.Config.SyncPeriod.Duration)
-	defer cancel()
-
 	// Initialize condition based on the current status.
 	conditionResourcesApplied := v1beta1helper.GetOrInitConditionWithClock(r.Clock, mr.Status.Conditions, resourcesv1alpha1.ResourcesApplied)
 
 	for _, ref := range mr.Spec.SecretRefs {
 		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: mr.Namespace}}
-		if err := r.SourceClient.Get(reconcileCtx, client.ObjectKeyFromObject(secret), secret); err != nil {
+		if err := r.SourceClient.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
 			conditionResourcesApplied = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionResourcesApplied, gardencorev1beta1.ConditionFalse, "CannotReadSecret", err.Error())
 			if err := updateConditions(ctx, r.SourceClient, mr, conditionResourcesApplied); err != nil {
 				return reconcile.Result{}, fmt.Errorf("could not update the ManagedResource status: %w", err)
@@ -310,7 +308,7 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, mr *resourc
 		}
 	}
 
-	if deletionPending, err := r.cleanOldResources(reconcileCtx, log, mr, existingResourcesIndex); err != nil {
+	if deletionPending, err := r.cleanOldResources(ctx, log, mr, existingResourcesIndex); err != nil {
 		var (
 			reason string
 			status gardencorev1beta1.ConditionStatus
@@ -347,7 +345,7 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, mr *resourc
 	}
 
 	injectLabels := mergeMaps(mr.Spec.InjectLabels, map[string]string{resourcesv1alpha1.ManagedBy: *r.Config.ManagedByLabelValue})
-	if err := r.applyNewResources(reconcileCtx, log, origin, newResourcesObjects, injectLabels, equivalences); err != nil {
+	if err := r.applyNewResources(ctx, log, origin, newResourcesObjects, injectLabels, equivalences); err != nil {
 		conditionResourcesApplied = v1beta1helper.UpdatedConditionWithClock(r.Clock, conditionResourcesApplied, gardencorev1beta1.ConditionFalse, resourcesv1alpha1.ConditionApplyFailed, err.Error())
 		if err := updateConditions(ctx, r.SourceClient, mr, conditionResourcesApplied); err != nil {
 			return reconcile.Result{}, fmt.Errorf("could not update the ManagedResource status: %w", err)
@@ -373,9 +371,6 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, mr *resourc
 func (r *Reconciler) delete(ctx context.Context, log logr.Logger, mr *resourcesv1alpha1.ManagedResource) (reconcile.Result, error) {
 	log.Info("Started deleting resources created by ManagedResource")
 
-	deleteCtx, cancel := controllerutils.GetMainReconciliationContext(ctx, r.Config.SyncPeriod.Duration)
-	defer cancel()
-
 	if err := r.updateConditionsForDeletion(ctx, mr); err != nil {
 		return reconcile.Result{}, fmt.Errorf("could not update the ManagedResource status: %w", err)
 	}
@@ -396,7 +391,7 @@ func (r *Reconciler) delete(ctx context.Context, log logr.Logger, mr *resourcesv
 			return reconcile.Result{}, fmt.Errorf("could not update the ManagedResource status: %w", err)
 		}
 
-		if deletionPending, err := r.cleanOldResources(deleteCtx, log, mr, existingResourcesIndex); err != nil {
+		if deletionPending, err := r.cleanOldResources(ctx, log, mr, existingResourcesIndex); err != nil {
 			var (
 				reason string
 				status gardencorev1beta1.ConditionStatus
@@ -848,10 +843,8 @@ func eventsForObject(ctx context.Context, scheme *runtime.Scheme, c client.Clien
 		eventLimit = 5
 	)
 
-	for _, gk := range relevantGKs {
-		if gk == obj.GetObjectKind().GroupVersionKind().GroupKind() {
-			return kubernetesutils.FetchEventMessages(ctx, scheme, c, obj, corev1.EventTypeWarning, eventLimit)
-		}
+	if slices.Contains(relevantGKs, obj.GetObjectKind().GroupVersionKind().GroupKind()) {
+		return kubernetesutils.FetchEventMessages(ctx, scheme, c, obj, corev1.EventTypeWarning, eventLimit)
 	}
 	return "", nil
 }
@@ -969,12 +962,9 @@ func stringMapToInterfaceMap(in map[string]string) map[string]any {
 // mergeMaps merges the two string maps. If a key is present in both maps, the value in the second map takes precedence
 func mergeMaps(one, two map[string]string) map[string]string {
 	out := make(map[string]string, len(one)+len(two))
-	for k, v := range one {
-		out[k] = v
-	}
-	for k, v := range two {
-		out[k] = v
-	}
+	maps.Copy(out, one)
+	maps.Copy(out, two)
+
 	return out
 }
 

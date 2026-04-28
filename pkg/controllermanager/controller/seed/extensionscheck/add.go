@@ -38,6 +38,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager) error {
 		Named(ControllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
+			ReconciliationTimeout:   r.Config.SyncPeriod.Duration,
 		}).
 		Watches(
 			&gardencorev1beta1.ControllerInstallation{},
@@ -59,7 +60,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager) error {
 // MapControllerInstallationToSeed is a handler.MapFunc for mapping a ControllerInstallation to the referenced Seed.
 func (r *Reconciler) MapControllerInstallationToSeed(_ context.Context, obj client.Object) []reconcile.Request {
 	controllerInstallation, ok := obj.(*gardencorev1beta1.ControllerInstallation)
-	if !ok {
+	if !ok || controllerInstallation.Spec.SeedRef == nil {
 		return nil
 	}
 

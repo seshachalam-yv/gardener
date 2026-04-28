@@ -8,6 +8,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/pflag"
+
+	"github.com/gardener/gardener/pkg/gardenadm/botanist"
 )
 
 // ManifestOptions contains options related to handling the manifest files.
@@ -38,3 +40,6 @@ func (o *ManifestOptions) AddFlags(fs *pflag.FlagSet) {
 		"the Gardener configuration files for the init command, i.e., files containing resources like CloudProfile, "+
 		"Shoot, etc. The files must be in YAML/JSON and have .{yaml,yml,json} file extensions to be considered.")
 }
+
+// ConfigDirLocation is the location where `gardenadm init` stores the config directory path.
+const ConfigDirLocation = botanist.GardenadmBaseDir + "/config-directory"

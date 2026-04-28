@@ -1,11 +1,10 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  creationTimestamp: null
   labels:
     prometheus: aggregate
   name: aggregate-istio-ingressgateway
-  namespace: istio-system
+  namespace: test-ingress
 spec:
   endpoints:
   - metricRelabelings:
@@ -14,16 +13,16 @@ spec:
       sourceLabels:
       - __name__
     path: /stats/prometheus
-    port: tls-tunnel
+    port: tcp
     relabelings:
     - action: replace
       regex: (.+)
-      replacement: ${1}:15020
+      replacement: ${1}:15022
       sourceLabels:
       - __meta_kubernetes_pod_ip
       targetLabel: __address__
-  namespaceSelector:
-    any: true
+  namespaceSelector: {}
   selector:
     matchLabels:
       app: istio-ingressgateway
+      metrics-scrape-target: "true"

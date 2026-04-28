@@ -6,7 +6,6 @@ package apiserver
 
 import (
 	"context"
-	"fmt"
 	"maps"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -41,10 +40,20 @@ func (k *kubeAPIServer) reconcileVerticalPodAutoscaler(ctx context.Context, vert
 				Name:       deployment.Name,
 			},
 			UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-				UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+				UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 			},
 			ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
-				ContainerPolicies: k.computeVerticalPodAutoscalerContainerResourcePolicies(kubeAPIServerMinAllowed),
+				ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+					{
+						ContainerName:    ContainerNameKubeAPIServer,
+						MinAllowed:       kubeAPIServerMinAllowed,
+						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+					},
+					{
+						ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+						Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+					},
+				},
 			},
 		}
 
@@ -60,31 +69,4 @@ func (k *kubeAPIServer) reconcileVerticalPodAutoscaler(ctx context.Context, vert
 	})
 
 	return err
-}
-
-func (k *kubeAPIServer) computeVerticalPodAutoscalerContainerResourcePolicies(kubeAPIServerMinAllowed corev1.ResourceList) []vpaautoscalingv1.ContainerResourcePolicy {
-	var (
-		vpaContainerResourcePolicies = []vpaautoscalingv1.ContainerResourcePolicy{
-			{
-				ContainerName:    ContainerNameKubeAPIServer,
-				MinAllowed:       kubeAPIServerMinAllowed,
-				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-			},
-		}
-	)
-
-	if k.values.VPN.HighAvailabilityEnabled {
-		for i := 0; i < k.values.VPN.HighAvailabilityNumberOfSeedServers; i++ {
-			vpaContainerResourcePolicies = append(vpaContainerResourcePolicies, vpaautoscalingv1.ContainerResourcePolicy{
-				ContainerName: fmt.Sprintf("%s-%d", containerNameVPNSeedClient, i),
-				Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-			})
-		}
-		vpaContainerResourcePolicies = append(vpaContainerResourcePolicies, vpaautoscalingv1.ContainerResourcePolicy{
-			ContainerName: containerNameVPNPathController,
-			Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-		})
-	}
-
-	return vpaContainerResourcePolicies
 }

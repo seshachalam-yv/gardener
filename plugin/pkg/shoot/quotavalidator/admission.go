@@ -20,8 +20,8 @@ import (
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/utils/ptr"
 
+	"github.com/gardener/gardener/pkg/api/core/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	"github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
@@ -137,7 +137,7 @@ func (q *QuotaValidator) ValidateInitialization() error {
 	return nil
 }
 
-var _ admission.ValidationInterface = &QuotaValidator{}
+var _ admission.ValidationInterface = (*QuotaValidator)(nil)
 
 // Validate checks that the requested Shoot resources do not exceed the quota limits.
 func (q *QuotaValidator) Validate(_ context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {

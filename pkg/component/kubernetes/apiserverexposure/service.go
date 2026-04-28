@@ -132,11 +132,13 @@ func (s *service) Deploy(ctx context.Context) error {
 			{MatchLabels: map[string]string{v1beta1constants.GardenRole: v1beta1constants.GardenRoleIstioIngress}},
 			{MatchLabels: map[string]string{v1beta1constants.LabelNetworkPolicyAccessTargetAPIServer: v1beta1constants.LabelNetworkPolicyAllowed}},
 		}
+		networkPolicyPort := networkingv1.NetworkPolicyPort{Port: ptr.To(intstr.FromInt32(kubeapiserverconstants.Port)), Protocol: ptr.To(corev1.ProtocolTCP)}
 
 		// For shoot namespaces the kube-apiserver service needs extra labels and annotations to create required network policies
 		// which allow a connection from istio-ingress components to kube-apiserver.
-		networkPolicyPort := networkingv1.NetworkPolicyPort{Port: ptr.To(intstr.FromInt32(kubeapiserverconstants.Port)), Protocol: ptr.To(corev1.ProtocolTCP)}
-		if gardenerutils.IsShootNamespace(obj.Namespace) {
+		if isShootNamespace, err := gardenerutils.IsShootNamespace(ctx, s.client, obj.Namespace); err != nil {
+			return fmt.Errorf("error checking if service is in a shoot namespace: %w", err)
+		} else if isShootNamespace {
 			utilruntime.Must(gardenerutils.InjectNetworkPolicyAnnotationsForScrapeTargets(obj, networkPolicyPort))
 			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, resourcesv1alpha1.NetworkingPodLabelSelectorNamespaceAlias, v1beta1constants.LabelNetworkPolicyShootNamespaceAlias)
 
@@ -153,6 +155,11 @@ func (s *service) Deploy(ctx context.Context) error {
 		gardenerutils.ReconcileTopologyAwareRoutingSettings(obj, s.values.topologyAwareRoutingEnabled, s.values.runtimeKubernetesVersion)
 
 		obj.Labels = utils.MergeStringMaps(obj.Labels, getLabels())
+		// Only the primary service should be scraped for metrics. Otherwise, we would have duplicate metrics.
+		if s.values.nameSuffix == "" {
+			obj.Labels[kubeapiserver.LabelMetricsScrapeTarget] = "true"
+		}
+
 		obj.Spec.Type = corev1.ServiceTypeClusterIP
 		obj.Spec.Selector = getLabels()
 		obj.Spec.Ports = kubernetesutils.ReconcileServicePorts(obj.Spec.Ports, []corev1.ServicePort{

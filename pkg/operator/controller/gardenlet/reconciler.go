@@ -14,22 +14,20 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/operator/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	"github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controller/gardenletdeployer"
-	"github.com/gardener/gardener/pkg/controllerutils"
-	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/operator/apis/config/v1alpha1"
 	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/oci"
@@ -46,7 +44,7 @@ type Reconciler struct {
 	VirtualClient               client.Client
 	Config                      operatorconfigv1alpha1.GardenletDeployerControllerConfig
 	Clock                       clock.Clock
-	Recorder                    record.EventRecorder
+	Recorder                    events.EventRecorder
 	HelmRegistry                oci.Interface
 	GardenNamespace             string
 	GardenNamespaceTarget       string
@@ -56,9 +54,6 @@ type Reconciler struct {
 // Reconcile performs the main reconciliation logic.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
 
 	gardenlet := &seedmanagementv1alpha1.Gardenlet{}
 	if err := r.VirtualClient.Get(ctx, request.NamespacedName, gardenlet); err != nil {
@@ -100,22 +95,10 @@ func (r *Reconciler) newActuator(gardenlet *seedmanagementv1alpha1.Gardenlet) ga
 		CheckIfVPAAlreadyExists: func(_ context.Context) (bool, error) {
 			return false, nil
 		},
-		GetInfrastructureSecret: func(ctx context.Context) (*corev1.Secret, error) {
-			seedTemplate, _, err := helper.ExtractSeedTemplateAndGardenletConfig(gardenlet.GetName(), &gardenlet.Spec.Config)
-			if err != nil {
-				return nil, fmt.Errorf("failed to extract seed template and gardenlet config: %w", err)
-			}
-
-			if seedTemplate.Spec.Backup == nil {
-				return nil, nil
-			}
-			// TODO(vpnachev): Add support for WorkloadIdentity
-			return kubernetesutils.GetSecretByObjectReference(ctx, r.VirtualClient, seedTemplate.Spec.Backup.CredentialsRef)
-		},
 		GetTargetDomain: func() string {
 			return ""
 		},
-		ApplyGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]interface{}) error {
+		ApplyGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]any) error {
 			archive, err := r.HelmRegistry.Pull(ctx, &gardenlet.Spec.Deployment.Helm.OCIRepository)
 			if err != nil {
 				return fmt.Errorf("failed pulling Helm chart from OCI repository: %w", err)
@@ -123,10 +106,10 @@ func (r *Reconciler) newActuator(gardenlet *seedmanagementv1alpha1.Gardenlet) ga
 
 			return targetChartApplier.ApplyFromArchive(ctx, archive, r.GardenNamespaceTarget, "gardenlet", kubernetes.Values(values))
 		},
-		Clock:                 r.Clock,
-		ValuesHelper:          gardenletdeployer.NewValuesHelper(nil),
-		Recorder:              r.Recorder,
-		GardenNamespaceTarget: r.GardenNamespaceTarget,
+		Clock:                    r.Clock,
+		ValuesHelper:             gardenletdeployer.NewValuesHelper(nil),
+		Recorder:                 r.Recorder,
+		GardenletNamespaceTarget: r.GardenNamespaceTarget,
 	}
 }
 

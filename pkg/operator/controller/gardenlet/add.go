@@ -7,10 +7,11 @@ package gardenlet
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/clock"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -23,7 +24,9 @@ import (
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	predicateutils "github.com/gardener/gardener/pkg/controllerutils/predicate"
+	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	"github.com/gardener/gardener/pkg/utils/oci"
 )
 
@@ -54,17 +57,18 @@ func (r *Reconciler) AddToManager(ctx context.Context, mgr manager.Manager, virt
 		r.GardenNamespaceTarget = v1beta1constants.GardenNamespace
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor(ControllerName + "-controller")
+		r.Recorder = mgr.GetEventRecorder(ControllerName + "-controller")
 	}
 	if r.HelmRegistry == nil {
-		r.HelmRegistry = oci.NewHelmRegistry(r.RuntimeCluster.GetClient())
+		r.HelmRegistry = oci.NewHelmRegistry(virtualCluster.GetClient())
 	}
 
 	return builder.
 		ControllerManagedBy(mgr).
 		Named(ControllerName).
 		WithOptions(controller.Options{
-			MaxConcurrentReconciles: pointer.IntDeref(r.Config.ConcurrentSyncs, 0),
+			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
+			ReconciliationTimeout:   controllerutils.DefaultReconciliationTimeout,
 		}).
 		WatchesRawSource(source.Kind[client.Object](virtualCluster.GetCache(), &seedmanagementv1alpha1.Gardenlet{},
 			&handler.EnqueueRequestForObject{},
@@ -84,9 +88,10 @@ func (r *Reconciler) OperatorResponsiblePredicate(ctx context.Context) predicate
 		if !ok {
 			return false
 		}
-		return hasForceRedeployOperationAnnotation(gardenlet) ||
-			r.seedDoesNotExist(ctx, gardenlet) ||
-			gardenlet.Spec.KubeconfigSecretRef != nil
+		return !strings.HasPrefix(gardenlet.Name, gardenletutils.ResourcePrefixSelfHostedShoot) &&
+			(hasForceRedeployOperationAnnotation(gardenlet) ||
+				r.seedDoesNotExist(ctx, gardenlet) ||
+				gardenlet.Spec.KubeconfigSecretRef != nil)
 	})
 }
 

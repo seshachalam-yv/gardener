@@ -6,20 +6,25 @@ package gardenlet_test
 
 import (
 	"context"
+	"os"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.uber.org/mock/gomock"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement/encoding"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	mockclient "github.com/gardener/gardener/third_party/mock/controller-runtime/client"
 )
 
@@ -61,6 +66,38 @@ var _ = Describe("Gardenlet", func() {
 					return &meta.NoResourceMatchError{}
 				})
 			Expect(SeedIsGarden(ctx, mockReader)).To(BeFalse())
+		})
+	})
+
+	Describe("#SeedIsSelfHostedShoot", func() {
+		var (
+			ctx        = context.Background()
+			fakeClient client.Client
+		)
+
+		BeforeEach(func() {
+			fakeClient = fake.NewClientBuilder().Build()
+		})
+
+		It("should return that the seed is a self-hosted shoot", func() {
+			Expect(fakeClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", Labels: map[string]string{"gardener.cloud/role": "shoot"}}})).To(Succeed())
+			Expect(SeedIsSelfHostedShoot(ctx, fakeClient)).To(BeTrue())
+		})
+
+		It("should return that the seed is not a self-hosted shoot because kube-system namespace is not labeled correctly", func() {
+			Expect(fakeClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", Labels: map[string]string{"gardener.cloud/role": "kube-system"}}})).To(Succeed())
+			Expect(SeedIsSelfHostedShoot(ctx, fakeClient)).To(BeFalse())
+		})
+
+		It("should return that the seed is not a self-hosted shoot because kube-system namespace is not labeled at all", func() {
+			Expect(fakeClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}})).To(Succeed())
+			Expect(SeedIsSelfHostedShoot(ctx, fakeClient)).To(BeFalse())
+		})
+
+		It("should return an error no kube-system namespace is found", func() {
+			result, err := SeedIsSelfHostedShoot(ctx, fakeClient)
+			Expect(err).To(BeNotFoundError())
+			Expect(result).To(BeFalse())
 		})
 	})
 
@@ -117,6 +154,233 @@ var _ = Describe("Gardenlet", func() {
 				Expect(newGardenletConfig.GardenClientConnection).NotTo(BeNil())
 				Expect(newGardenletConfig.GardenClientConnection.GardenClusterAddress).To(Equal(ptr.To("existing-address")))
 			})
+		})
+	})
+
+	Describe("#IsResponsibleForSelfHostedShoot", func() {
+		It("should return true because the NAMESPACE environment variable is set to 'kube-system'", func() {
+			Expect(os.Setenv("NAMESPACE", "kube-system")).To(Succeed())
+			DeferCleanup(func() { Expect(os.Setenv("NAMESPACE", "")).To(Succeed()) })
+
+			Expect(IsResponsibleForSelfHostedShoot()).To(BeTrue())
+		})
+
+		It("should return false because the NAMESPACE environment variable is not set to 'kube-system'", func() {
+			Expect(IsResponsibleForSelfHostedShoot()).To(BeFalse())
+		})
+	})
+
+	Describe("#ShootMetaFromBootstrapToken", func() {
+		var (
+			ctx        = context.Background()
+			fakeClient client.Client
+
+			bootstrapTokenSecretName string
+			expectedShootNamespace   string
+			expectedShootName        string
+			expectedNamespacedName   types.NamespacedName
+		)
+
+		BeforeEach(func() {
+			fakeClient = fake.NewClientBuilder().Build()
+
+			bootstrapTokenSecretName = "bootstrap-token-123456"
+			expectedShootNamespace = "garden-my-project"
+			expectedShootName = "my-shoot"
+			expectedNamespacedName = types.NamespacedName{
+				Namespace: expectedShootNamespace,
+				Name:      expectedShootName,
+			}
+		})
+
+		It("should successfully extract shoot meta from bootstrap token", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Used for connecting the self-hosted Shoot " + expectedShootNamespace + "/" + expectedShootName + " to Gardener via 'gardenadm connect'"),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(result).To(Equal(expectedNamespacedName))
+		})
+
+		It("should return an error when bootstrap token secret is not found", func() {
+			_, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).To(BeNotFoundError())
+			Expect(found).To(BeFalse())
+		})
+
+		It("should return found=false when description does not start with required prefix", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Invalid prefix " + expectedShootNamespace + "/" + expectedShootName),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			_, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
+		It("should return an error when description has no shoot meta after prefix", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Used for connecting the self-hosted Shoot "),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			_, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).To(MatchError(ContainSubstring("could not extract shoot meta from bootstrap token description")))
+			Expect(found).To(BeFalse())
+		})
+
+		It("should return an error when description has only whitespace after prefix", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Used for connecting the self-hosted Shoot    "),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			_, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).To(MatchError(ContainSubstring("could not extract shoot meta from bootstrap token description")))
+			Expect(found).To(BeFalse())
+		})
+
+		It("should return an error when shoot meta format is invalid (no slash)", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Used for connecting the self-hosted Shoot invalid-format-no-slash"),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			_, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).To(MatchError(ContainSubstring("could not extract shoot namespace and name from bootstrap token description")))
+			Expect(found).To(BeFalse())
+		})
+
+		It("should return an error when shoot meta format has multiple slashes", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Used for connecting the self-hosted Shoot namespace/shoot/extra"),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			_, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).To(MatchError(ContainSubstring("could not extract shoot namespace and name from bootstrap token description")))
+			Expect(found).To(BeFalse())
+		})
+
+		It("should extract shoot meta when namespace is empty", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Used for connecting the self-hosted Shoot /my-shoot"),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(result).To(Equal(types.NamespacedName{Namespace: "", Name: "my-shoot"}))
+		})
+
+		It("should extract shoot meta when name is empty", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Used for connecting the self-hosted Shoot my-namespace/"),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(result).To(Equal(types.NamespacedName{Namespace: "my-namespace", Name: ""}))
+		})
+
+		It("should handle description with additional text after shoot meta", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"description": []byte("Used for connecting the self-hosted Shoot " + expectedShootNamespace + "/" + expectedShootName + " additional text here"),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			result, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(result).To(Equal(expectedNamespacedName))
+		})
+
+		It("should return found=false when description key is missing", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      bootstrapTokenSecretName,
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"other-key": []byte("some-value"),
+				},
+			}
+
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			_, found, err := ShootMetaFromBootstrapToken(ctx, fakeClient, bootstrapTokenSecretName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
 		})
 	})
 })

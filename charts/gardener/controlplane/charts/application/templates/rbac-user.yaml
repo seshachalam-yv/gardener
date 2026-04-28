@@ -9,10 +9,6 @@ metadata:
 rules:
 - apiGroups:
   - core.gardener.cloud
-  - seedmanagement.gardener.cloud
-  - dashboard.gardener.cloud
-  - settings.gardener.cloud
-  - operations.gardener.cloud
   resources:
   - '*'
   verbs:
@@ -29,6 +25,23 @@ rules:
   - modify-spec-kubernetes
   - modify-spec-machineimages
   - modify-spec-providerconfig
+  - mark-self-hosted
+- apiGroups:
+  - seedmanagement.gardener.cloud
+  - dashboard.gardener.cloud
+  - settings.gardener.cloud
+  - operations.gardener.cloud
+  resources:
+  - '*'
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
 - apiGroups:
   - security.gardener.cloud
   resources:
@@ -45,10 +58,26 @@ rules:
   - update
 - apiGroups:
   - ""
+  - events.k8s.io
   resources:
   - events
   - namespaces
   - resourcequotas
+  - services
+  - endpoints
+  verbs:
+  - create
+  - delete
+  - deletecollection
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
   verbs:
   - create
   - delete
@@ -227,6 +256,16 @@ rules:
   - events
   - namespaces
   - resourcequotas
+  - services
+  - endpoints
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
   verbs:
   - get
   - list
@@ -311,7 +350,7 @@ metadata:
   name: gardener.cloud:system:read-global-resources
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -341,7 +380,7 @@ metadata:
   name: gardener.cloud:system:read-global-resources
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 roleRef:
@@ -361,7 +400,7 @@ metadata:
   name: gardener.cloud:system:user-auth
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -384,7 +423,7 @@ metadata:
   name: gardener.cloud:system:user-auth
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 roleRef:
@@ -405,7 +444,7 @@ metadata:
   namespace: kube-system
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -427,7 +466,7 @@ metadata:
   namespace: kube-system
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 roleRef:
@@ -448,7 +487,7 @@ metadata:
   namespace: gardener-system-public
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -471,7 +510,7 @@ metadata:
   namespace: gardener-system-public
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 roleRef:
@@ -493,7 +532,7 @@ metadata:
   name: gardener.cloud:system:project-creation
   labels:
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -515,7 +554,7 @@ metadata:
   labels:
     gardener.cloud/role: project-member
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 aggregationRule:
@@ -530,7 +569,7 @@ metadata:
   labels:
     rbac.gardener.cloud/aggregate-to-project-member: "true"
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -645,6 +684,12 @@ rules:
 - apiGroups:
   - core.gardener.cloud
   resources:
+  - shoots/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - core.gardener.cloud
+  resources:
   - namespacedcloudprofiles
   verbs:
   - get
@@ -666,7 +711,7 @@ metadata:
   labels:
     gardener.cloud/role: project-serviceaccountmanager
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 aggregationRule:
@@ -681,7 +726,7 @@ metadata:
   labels:
     rbac.gardener.cloud/aggregate-to-project-serviceaccountmanager: "true"
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:
@@ -716,7 +761,7 @@ metadata:
   labels:
     gardener.cloud/role: project-viewer
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 aggregationRule:
@@ -731,7 +776,7 @@ metadata:
   labels:
     rbac.gardener.cloud/aggregate-to-project-viewer: "true"
     app: gardener
-    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}"
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" | trunc 32 }}"
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
 rules:

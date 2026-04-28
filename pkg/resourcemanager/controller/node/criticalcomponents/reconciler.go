@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
@@ -18,15 +19,17 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gardener/gardener/pkg/api/indexer"
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/controllerutils"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/node/criticalcomponents/helper"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 )
@@ -36,15 +39,12 @@ import (
 type Reconciler struct {
 	TargetClient client.Client
 	Config       resourcemanagerconfigv1alpha1.NodeCriticalComponentsControllerConfig
-	Recorder     record.EventRecorder
+	Recorder     events.EventRecorder
 }
 
 // Reconcile checks if the critical components not ready taint can be removed from the Node object.
-func (r *Reconciler) Reconcile(reconcileCtx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	log := logf.FromContext(reconcileCtx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(reconcileCtx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
+func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	log := logf.FromContext(ctx)
 
 	node := &corev1.Node{}
 	if err := r.TargetClient.Get(ctx, req.NamespacedName, node); err != nil {
@@ -64,12 +64,12 @@ func (r *Reconciler) Reconcile(reconcileCtx context.Context, req reconcile.Reque
 
 	// prep for checks: list all DaemonSets and all node-critical pods on the given node
 	daemonSetList := &appsv1.DaemonSetList{}
-	if err := r.TargetClient.List(ctx, daemonSetList, client.MatchingLabels{v1beta1constants.LabelNodeCriticalComponent: "true"}); err != nil {
+	if err := r.TargetClient.List(ctx, daemonSetList, client.InNamespace(metav1.NamespaceSystem), client.MatchingLabels{v1beta1constants.LabelNodeCriticalComponent: "true"}); err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed listing node-critical DaemonSets on node: %w", err)
 	}
 
 	podList := &corev1.PodList{}
-	if err := r.TargetClient.List(ctx, podList, client.MatchingFields{indexer.PodNodeName: node.Name}, client.MatchingLabels{v1beta1constants.LabelNodeCriticalComponent: "true"}); err != nil {
+	if err := r.TargetClient.List(ctx, podList, client.InNamespace(metav1.NamespaceSystem), client.MatchingFields{indexer.PodNodeName: node.Name}, client.MatchingLabels{v1beta1constants.LabelNodeCriticalComponent: "true"}); err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed listing node-critical Pods on node: %w", err)
 	}
 
@@ -99,8 +99,16 @@ func (r *Reconciler) Reconcile(reconcileCtx context.Context, req reconcile.Reque
 		return reconcile.Result{RequeueAfter: backoff}, nil
 	}
 
-	log.Info("All node-critical components got ready, removing taint")
-	r.Recorder.Event(node, corev1.EventTypeNormal, "NodeCriticalComponentsReady", "All node-critical components got ready, removing taint")
+	log.Info("All node-critical components got ready")
+	r.Recorder.Eventf(node, nil, corev1.EventTypeNormal, "NodeCriticalComponentsReady", gardencorev1beta1.EventActionReconcile, "All node-critical components got ready")
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.NodeReadinessController) {
+		// When NRC integration is enabled, write a node condition that the upstream NRC will react to.
+		// NRC manages the taint; we no longer remove it directly.
+		return reconcile.Result{}, WriteNodeConditionCriticalComponentsReady(ctx, r.TargetClient, node)
+	}
+
+	log.Info("Removing taint (legacy mode)")
 	return reconcile.Result{}, RemoveTaint(ctx, r.TargetClient, node)
 }
 
@@ -108,7 +116,7 @@ var daemonSetGVK = appsv1.SchemeGroupVersion.WithKind("DaemonSet")
 
 // AllNodeCriticalDaemonPodsAreScheduled returns true if all node-critical DaemonSets that should be scheduled to the
 // given node have been scheduled. It uses ownerReferences of the given node-critical pods on the node for this check.
-func AllNodeCriticalDaemonPodsAreScheduled(log logr.Logger, recorder record.EventRecorder, node *corev1.Node, daemonSets []appsv1.DaemonSet, nodeCriticalPods []corev1.Pod) bool {
+func AllNodeCriticalDaemonPodsAreScheduled(log logr.Logger, recorder events.EventRecorder, node *corev1.Node, daemonSets []appsv1.DaemonSet, nodeCriticalPods []corev1.Pod) bool {
 	// collect a set of all scheduled DaemonSets on the node
 	scheduledDaemonSets := sets.New[types.UID]()
 	for _, pod := range nodeCriticalPods {
@@ -128,7 +136,7 @@ func AllNodeCriticalDaemonPodsAreScheduled(log logr.Logger, recorder record.Even
 		}
 
 		// determine whether DaemonSet needs to be scheduled to the node at all
-		if shouldRun, _ := helper.NodeShouldRunDaemonPod(node, &daemonSet); !shouldRun {
+		if shouldRun, _ := helper.NodeShouldRunDaemonPod(log, node, &daemonSet); !shouldRun {
 			continue
 		}
 
@@ -141,7 +149,7 @@ func AllNodeCriticalDaemonPodsAreScheduled(log logr.Logger, recorder record.Even
 
 	if len(unscheduledDaemonSets) > 0 {
 		log.Info("Node-critical DaemonSets found that were not scheduled to Node yet", "daemonSets", unscheduledDaemonSets)
-		recorder.Eventf(node, corev1.EventTypeWarning, "UnscheduledNodeCriticalDaemonSets", "Node-critical DaemonSets found that were not scheduled to Node yet: %s", objectKeysToString(unscheduledDaemonSets))
+		recorder.Eventf(node, nil, corev1.EventTypeWarning, "UnscheduledNodeCriticalDaemonSets", gardencorev1beta1.EventActionReconcile, "Node-critical DaemonSets found that were not scheduled to Node yet: %s", objectKeysToString(unscheduledDaemonSets))
 		return false
 	}
 
@@ -149,7 +157,7 @@ func AllNodeCriticalDaemonPodsAreScheduled(log logr.Logger, recorder record.Even
 }
 
 // AllNodeCriticalPodsAreReady returns true if all the given pods are ready by checking their Ready conditions.
-func AllNodeCriticalPodsAreReady(log logr.Logger, recorder record.EventRecorder, node *corev1.Node, nodeCriticalPods []corev1.Pod) bool {
+func AllNodeCriticalPodsAreReady(log logr.Logger, recorder events.EventRecorder, node *corev1.Node, nodeCriticalPods []corev1.Pod) bool {
 	var unreadyPods []client.ObjectKey
 	for _, pod := range nodeCriticalPods {
 		if !health.IsPodReady(&pod) {
@@ -159,7 +167,7 @@ func AllNodeCriticalPodsAreReady(log logr.Logger, recorder record.EventRecorder,
 
 	if len(unreadyPods) > 0 {
 		log.Info("Unready node-critical Pods found on Node", "pods", unreadyPods)
-		recorder.Eventf(node, corev1.EventTypeWarning, "UnreadyNodeCriticalPods", "Unready node-critical Pods found on Node: %s", objectKeysToString(unreadyPods))
+		recorder.Eventf(node, nil, corev1.EventTypeWarning, "UnreadyNodeCriticalPods", gardencorev1beta1.EventActionReconcile, "Unready node-critical Pods found on Node: %s", objectKeysToString(unreadyPods))
 		return false
 	}
 
@@ -207,11 +215,11 @@ func GetExistingDriversFromCSINode(ctx context.Context, client client.Client, cs
 // that are specified by csi-driver-node pods) with a set of existing drivers
 // (i.e. drivers for which the CSINode object had information stored in spec).
 // Either set could be empty.
-func AllCSINodeDriversAreReady(log logr.Logger, recorder record.EventRecorder, node *corev1.Node, requiredDrivers, existingDrivers sets.Set[string]) bool {
+func AllCSINodeDriversAreReady(log logr.Logger, recorder events.EventRecorder, node *corev1.Node, requiredDrivers, existingDrivers sets.Set[string]) bool {
 	unreadyDrivers := requiredDrivers.Difference(existingDrivers)
 	if unreadyDrivers.Len() >= 1 {
 		log.Info("Unready required CSI drivers for Node", "drivers", unreadyDrivers.UnsortedList())
-		recorder.Eventf(node, corev1.EventTypeWarning, "UnreadyRequiredCSIDrivers", "Unready required CSI drivers for Node: %s", unreadyDrivers.UnsortedList())
+		recorder.Eventf(node, nil, corev1.EventTypeWarning, "UnreadyRequiredCSIDrivers", gardencorev1beta1.EventActionReconcile, "Unready required CSI drivers for Node: %s", unreadyDrivers.UnsortedList())
 	}
 	return unreadyDrivers.Len() == 0
 }
@@ -239,4 +247,40 @@ func objectKeysToString(objKeys []client.ObjectKey) string {
 	}
 
 	return strings.Join(keys, ", ")
+}
+
+// WriteNodeConditionCriticalComponentsReady patches the node's status to set the
+// NodeConditionCriticalComponentsReady condition to True. This is used when the
+// NodeReadinessController feature gate is enabled — the upstream NRC reacts to
+// this condition and removes the taint instead of this controller doing it directly.
+func WriteNodeConditionCriticalComponentsReady(ctx context.Context, w client.StatusClient, node *corev1.Node) error {
+	patch := client.MergeFromWithOptions(node.DeepCopy(), client.MergeFromWithOptimisticLock{})
+
+	now := metav1.NewTime(time.Now())
+	newCondition := corev1.NodeCondition{
+		Type:              corev1.NodeConditionType(v1beta1constants.NodeConditionCriticalComponentsReady),
+		Status:            corev1.ConditionTrue,
+		Reason:            "AllCriticalComponentsReady",
+		Message:           "All node-critical DaemonSet pods are scheduled and ready, and all required CSI drivers are registered.",
+		LastHeartbeatTime: now,
+	}
+
+	for i, existing := range node.Status.Conditions {
+		if existing.Type == newCondition.Type {
+			if existing.Status == newCondition.Status {
+				// Status unchanged: preserve LastTransitionTime, but always update LastHeartbeatTime.
+				newCondition.LastTransitionTime = existing.LastTransitionTime
+			} else {
+				// Status changed: set LastTransitionTime to now.
+				newCondition.LastTransitionTime = now
+			}
+			node.Status.Conditions[i] = newCondition
+			return w.Status().Patch(ctx, node, patch)
+		}
+	}
+
+	// Condition not found: new condition, set both timestamps to now.
+	newCondition.LastTransitionTime = now
+	node.Status.Conditions = append(node.Status.Conditions, newCondition)
+	return w.Status().Patch(ctx, node, patch)
 }

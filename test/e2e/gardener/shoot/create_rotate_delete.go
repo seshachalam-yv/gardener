@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -22,13 +23,14 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	. "github.com/gardener/gardener/test/e2e"
 	. "github.com/gardener/gardener/test/e2e/gardener"
+	"github.com/gardener/gardener/test/e2e/gardener/seed"
 	"github.com/gardener/gardener/test/e2e/gardener/shoot/internal/inclusterclient"
 	"github.com/gardener/gardener/test/e2e/gardener/shoot/internal/rotation"
 	"github.com/gardener/gardener/test/utils/access"
@@ -71,13 +73,13 @@ func testCredentialRotation(s *ShootContext, shootVerifiers, utilsverifiers rota
 		}, SpecTimeout(time.Minute))
 
 		if inPlaceUpdate {
-			inplace.ItShouldVerifyInPlaceUpdateStart(s.GardenClient, s.Shoot, true, true)
+			inplace.ItShouldVerifyInPlaceUpdateStart(s, true, true)
 		}
 
 		ItShouldWaitForShootToBeReconciledAndHealthy(s)
 
 		if inPlaceUpdate {
-			inplace.ItShouldVerifyInPlaceUpdateCompletion(s.GardenClient, s.Shoot)
+			inplace.ItShouldVerifyInPlaceUpdateCompletion(s)
 		}
 
 		shootVerifiers.AfterPrepared(context.TODO())
@@ -213,13 +215,13 @@ func testCredentialRotationWithoutWorkersRollout(s *ShootContext, shootVerifiers
 
 	// In case of rotation without workers rollout, the in-place update status in only populated when the rollout for that worker pool is triggered
 	if inPlaceUpdate {
-		inplace.ItShouldVerifyInPlaceUpdateStart(s.GardenClient, s.Shoot, true, true)
+		inplace.ItShouldVerifyInPlaceUpdateStart(s, true, true)
 	}
 
 	ItShouldWaitForShootToBeReconciledAndHealthy(s)
 
 	if inPlaceUpdate {
-		inplace.ItShouldVerifyInPlaceUpdateCompletion(s.GardenClient, s.Shoot)
+		inplace.ItShouldVerifyInPlaceUpdateCompletion(s)
 	}
 
 	It("Credential rotation in status prepared", func() {
@@ -237,14 +239,79 @@ func testCredentialRotationWithoutWorkersRollout(s *ShootContext, shootVerifiers
 	testCredentialRotationComplete(s, shootVerifiers, utilsverifiers, v1beta1constants.OperationRotateCredentialsComplete)
 }
 
+// Testing the annotation requires that we assert that a rollout has been triggered and finishes successfully.
+// Current check verifies that a new MachineSet gets created after the annotation is set by
+// checking the creation timestamp of the current MachineSet, annotating the Shoot, then checking that
+// the creation timestamp of the new MachineSet is newer than the old one.
+func testManualWorkersRollout(s *ShootContext) {
+	var oldMachineSetCreationTimestamps map[string]time.Time
+
+	It("Should fetch old machine set creation timestamps", func(ctx SpecContext) {
+		Eventually(ctx, func(g Gomega) {
+			poolName := s.Shoot.Spec.Provider.Workers[0].Name
+			oldMachineSetCreationTimestamps = make(map[string]time.Time)
+
+			machineDeployments := &machinev1alpha1.MachineDeploymentList{}
+			g.Expect(s.SeedClient.List(ctx, machineDeployments, client.InNamespace(s.Shoot.Status.TechnicalID), client.MatchingLabels{"worker.gardener.cloud/pool": poolName})).To(Succeed())
+			g.Expect(machineDeployments.Items).NotTo(BeEmpty(), "expected at least one MachineDeployment for worker pool %s", poolName)
+
+			machineSetList := &machinev1alpha1.MachineSetList{}
+			g.Expect(s.SeedClient.List(ctx, machineSetList, client.InNamespace(s.Shoot.Status.TechnicalID))).To(Succeed())
+
+			ownerToMachineSets := gardenerutils.BuildOwnerToMachineSetsMap(machineSetList.Items)
+
+			for _, machineDeployment := range machineDeployments.Items {
+				machineSetListForDeployment := ownerToMachineSets[machineDeployment.Name]
+				g.Expect(machineSetListForDeployment).NotTo(BeEmpty(), "no MachineSets found for MachineDeployment %s", machineDeployment.Name)
+				g.Expect(machineSetListForDeployment).To(HaveLen(1), "expected exactly one MachineSet for MachineDeployment %s", machineDeployment.Name)
+
+				oldMachineSetCreationTimestamps[machineDeployment.Name] = machineSetListForDeployment[0].CreationTimestamp.Time
+			}
+		}).Should(Succeed())
+	}, SpecTimeout(10*time.Second))
+
+	ItShouldAnnotateShoot(s, map[string]string{
+		v1beta1constants.GardenerOperation: "rollout-workers=" + s.Shoot.Spec.Provider.Workers[0].Name,
+	})
+	ItShouldEventuallyNotHaveOperationAnnotation(s.GardenKomega, s.Shoot)
+
+	It("Should fetch new MachineSet creation timestamps and ensure they're newer", func(ctx SpecContext) {
+		Eventually(ctx, func(g Gomega) {
+			poolName := s.Shoot.Spec.Provider.Workers[0].Name
+
+			machineDeployments := &machinev1alpha1.MachineDeploymentList{}
+			g.Expect(s.SeedClient.List(ctx, machineDeployments, client.InNamespace(s.Shoot.Status.TechnicalID), client.MatchingLabels{"worker.gardener.cloud/pool": poolName})).To(Succeed())
+			g.Expect(machineDeployments.Items).NotTo(BeEmpty(), "expected at least one MachineDeployment for worker pool %s", poolName)
+
+			machineSetList := &machinev1alpha1.MachineSetList{}
+			g.Expect(s.SeedClient.List(ctx, machineSetList, client.InNamespace(s.Shoot.Status.TechnicalID))).To(Succeed())
+
+			ownerToMachineSets := gardenerutils.BuildOwnerToMachineSetsMap(machineSetList.Items)
+
+			for _, machineDeployment := range machineDeployments.Items {
+				machineSetListForDeployment := ownerToMachineSets[machineDeployment.Name]
+				g.Expect(machineSetListForDeployment).NotTo(BeEmpty(), "no MachineSets found for MachineDeployment %s", machineDeployment.Name)
+				g.Expect(machineSetListForDeployment).To(HaveLen(1), "expected exactly one MachineSet for MachineDeployment %s", machineDeployment.Name)
+
+				newMachineSetCreationTimestamp := machineSetListForDeployment[0].CreationTimestamp.Time
+				oldTimestamp, exists := oldMachineSetCreationTimestamps[machineDeployment.Name]
+				g.Expect(exists).To(BeTrue(), "no old timestamp found for MachineDeployment %s", machineDeployment.Name)
+				g.Expect(oldTimestamp.Before(newMachineSetCreationTimestamp)).To(BeTrue(), "new MachineSet creation timestamp should be newer than the old one for MachineDeployment %s", machineDeployment.Name)
+			}
+		}).Should(Succeed())
+	}, SpecTimeout(5*time.Minute))
+
+	ItShouldWaitForShootToBeReconciledAndHealthy(s)
+}
+
 var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 	Describe("Create Shoot, Rotate Credentials and Delete Shoot", Label("credentials-rotation"), func() {
-		test := func(s *ShootContext, withoutWorkersRollout, inPlaceUpdate bool) {
+		test := func(s *ShootContext, withoutWorkersRollout, inPlaceUpdate, workersRollout bool) {
 			ItShouldCreateShoot(s)
 			ItShouldWaitForShootToBeReconciledAndHealthy(s)
 			ItShouldInitializeShootClient(s)
 			ItShouldGetResponsibleSeed(s)
-			ItShouldInitializeSeedClient(s)
+			seed.ItShouldInitializeSeedClient(&s.SeedContext)
 
 			// isolated test for ssh key rotation (does not trigger node rolling update)
 			if !v1beta1helper.IsWorkerless(s.Shoot) && !withoutWorkersRollout && !inPlaceUpdate {
@@ -328,7 +395,9 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 			var nodesOfInPlaceWorkersBeforeTest sets.Set[string]
 
 			if inPlaceUpdate {
-				nodesOfInPlaceWorkersBeforeTest = inplace.ItShouldFindNodesOfInPlaceWorkers(s)
+				It("should get the nodes of worker with in-place update strategy", func(ctx SpecContext) {
+					nodesOfInPlaceWorkersBeforeTest = inplace.FindNodesOfInPlaceWorkers(ctx, s.Log, s.ShootClient, s.Shoot)
+				}, SpecTimeout(2*time.Minute))
 				inplace.ItShouldLabelManualInPlaceNodesWithSelectedForUpdate(s)
 			}
 
@@ -345,9 +414,20 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 				inclusterclient.VerifyInClusterAccessToAPIServer(s)
 
 				if inPlaceUpdate {
-					nodesOfInPlaceWorkersAfterTest := inplace.ItShouldFindNodesOfInPlaceWorkers(s)
-					Expect(nodesOfInPlaceWorkersBeforeTest.UnsortedList()).To(ConsistOf(nodesOfInPlaceWorkersAfterTest.UnsortedList()))
+					It("should compare the node names after the test", func(ctx SpecContext) {
+						totalInPlaceWorkersMaxSurge := inplace.GetTotalInPlaceWorkersMaxSurge(s.Shoot)
+						s.Log.Info("Total in-place workers max surge", "maxSurge", totalInPlaceWorkersMaxSurge)
+
+						nodesOfInPlaceWorkersAfterTest := inplace.FindNodesOfInPlaceWorkers(ctx, s.Log, s.ShootClient, s.Shoot)
+						s.Log.Info("Nodes of in-place workers before test and after test", "beforeNodes", nodesOfInPlaceWorkersBeforeTest.UnsortedList(), "afterNodes", nodesOfInPlaceWorkersAfterTest.UnsortedList())
+
+						Expect(nodesOfInPlaceWorkersAfterTest.Intersection(nodesOfInPlaceWorkersBeforeTest)).To(HaveLen(nodesOfInPlaceWorkersBeforeTest.Len() - totalInPlaceWorkersMaxSurge))
+					}, SpecTimeout(2*time.Minute))
 				}
+			}
+
+			if workersRollout {
+				testManualWorkersRollout(s)
 			}
 
 			ItShouldDeleteShoot(s)
@@ -356,7 +436,7 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 
 		Context("Shoot with workers", Label("basic"), func() {
 			Context("with workers rollout", Label("with-workers-rollout"), Ordered, func() {
-				test(NewTestContext().ForShoot(DefaultShoot("e2e-rotate")), false, false)
+				test(NewTestContext().ForShoot(DefaultShoot("e2e-rotate")), false, false, false)
 			})
 
 			Context("with workers rollout, in-place update strategy", Label("with-workers-rollout", "in-place"), Ordered, func() {
@@ -385,7 +465,7 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 					return
 				}
 
-				test(s, false, true)
+				test(s, false, true, false)
 			})
 
 			Context("without workers rollout", Label("without-workers-rollout"), Ordered, func() {
@@ -400,7 +480,7 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 					s = NewTestContext().ForShoot(shoot)
 				})
 
-				test(s, true, false)
+				test(s, true, false, true)
 			})
 
 			Context("without workers rollout, in-place update strategy", Label("without-workers-rollout", "in-place"), Ordered, func() {
@@ -433,12 +513,12 @@ var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {
 					return
 				}
 
-				test(s, true, true)
+				test(s, true, true, false)
 			})
 		})
 
 		Context("Workerless Shoot", Label("workerless"), Ordered, func() {
-			test(NewTestContext().ForShoot(DefaultWorkerlessShoot("e2e-rotate")), false, false)
+			test(NewTestContext().ForShoot(DefaultWorkerlessShoot("e2e-rotate")), false, false, false)
 		})
 	})
 })

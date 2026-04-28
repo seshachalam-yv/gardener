@@ -15,7 +15,9 @@ import (
 	. "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
 	mockcomponents "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/mock"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
+	"github.com/gardener/gardener/pkg/utils/test"
 )
 
 var _ = Describe("Original", func() {
@@ -96,6 +98,10 @@ var _ = Describe("Original", func() {
 	})
 
 	Describe("#Components", func() {
+		BeforeEach(func() {
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.OpenTelemetryCollector, false))
+		})
+
 		It("should compute the units and files", func() {
 			var order []string
 			for _, component := range Components(true) {
@@ -103,7 +109,6 @@ var _ = Describe("Original", func() {
 			}
 
 			Expect(order).To(Equal([]string{
-				"valitail",
 				"var-lib-kubelet-mount",
 				"root-certificates",
 				"containerd",
@@ -112,6 +117,7 @@ var _ = Describe("Original", func() {
 				"kubelet",
 				"sshd-ensurer",
 				"gardener-node-agent",
+				"valitail",
 				"gardener-user",
 			}))
 		})
@@ -123,7 +129,6 @@ var _ = Describe("Original", func() {
 			}
 
 			Expect(order).To(Equal([]string{
-				"valitail",
 				"var-lib-kubelet-mount",
 				"root-certificates",
 				"containerd",
@@ -132,6 +137,48 @@ var _ = Describe("Original", func() {
 				"kubelet",
 				"sshd-ensurer",
 				"gardener-node-agent",
+				"valitail",
+			}))
+		})
+	})
+
+	Describe("#Components with OpenTelemetryCollector feature gate enabled", func() {
+		It("should compute the units and files", func() {
+			var order []string
+			for _, component := range Components(true) {
+				order = append(order, component.Name())
+			}
+
+			Expect(order).To(Equal([]string{
+				"var-lib-kubelet-mount",
+				"root-certificates",
+				"containerd",
+				"journald",
+				"kernel-config",
+				"kubelet",
+				"sshd-ensurer",
+				"gardener-node-agent",
+				"opentelemetry-collector",
+				"gardener-user",
+			}))
+		})
+
+		It("should compute the units and files without gardener-user because SSH is disabled", func() {
+			var order []string
+			for _, component := range Components(false) {
+				order = append(order, component.Name())
+			}
+
+			Expect(order).To(Equal([]string{
+				"var-lib-kubelet-mount",
+				"root-certificates",
+				"containerd",
+				"journald",
+				"kernel-config",
+				"kubelet",
+				"sshd-ensurer",
+				"gardener-node-agent",
+				"opentelemetry-collector",
 			}))
 		})
 	})

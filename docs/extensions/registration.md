@@ -233,6 +233,34 @@ data:
   .dockerconfigjson: <base64-encoded-docker-config-json>
 ```
 
+Additionally, you can also specify a CA bundle secret for the repository, for example, if you are using a registry with a custom certificate.
+
+```yaml
+helm:
+  ociRepository:
+    repository: registry.example.com
+    tag: 1.0.0
+    caBundleSecretRef:
+      name: my-ca-bundle
+    pullSecretRef:
+      name: my-pull-secret
+```
+
+The CA bundle secret must be available in the `garden` namespace of the cluster where the `ControllerDeployment` is created and must contain the data key `bundle.crt` with a PEM-encoded certificate bundle.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-ca-bundle
+  namespace: garden
+  labels:
+    gardener.cloud/role: oci-ca-bundle
+type: Opaque
+data:
+  bundle.crt: <base64-encoded-ca-bundle>
+```
+
 The downloaded chart is cached in memory. It is recommended to always specify a digest, because if it is not specified, the manifest is fetched in every reconciliation to compare the digest with the local cache.
 
 ### Helm Values
@@ -275,7 +303,7 @@ In order to allow extension controller deployments to get information about the 
     gardenlet:
       featureGates: <gardenlet-feature-gates>
   ```
-- If the extension is deployed in an [autonomous shoot cluster](../proposals/28-autonomous-shoot-clusters.md), then the `.gardener.autonomousShootCluster` field is additionally propagated and set to `true`.
+- If the extension is deployed in an [self-hosted shoot cluster](https://github.com/gardener/enhancements/tree/main/geps/0028-self-hosted-shoot-clusters), then the `.gardener.selfHostedShootCluster` field is additionally propagated and set to `true`.
 
 Extension controller deployments can use this information in their Helm chart in case they require knowledge about the garden and the seed environment.
 The list might be extended in the future.

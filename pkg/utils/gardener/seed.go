@@ -6,21 +6,17 @@ package gardener
 
 import (
 	"context"
-	"crypto/x509"
 	"fmt"
-	"reflect"
 	"strings"
 
-	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 )
 
@@ -41,56 +37,6 @@ func ComputeSeedName(seedNamespaceName string) string {
 		return ""
 	}
 	return seedName
-}
-
-var (
-	seedClientRequiredOrganization = []string{v1beta1constants.SeedsGroup}
-	seedClientRequiredKeyUsages    = []certificatesv1.KeyUsage{
-		certificatesv1.UsageKeyEncipherment,
-		certificatesv1.UsageDigitalSignature,
-		certificatesv1.UsageClientAuth,
-	}
-)
-
-// IsSeedClientCert returns true when the given CSR and usages match the requirements for a client certificate for a
-// seed. If false is returned, a reason will be returned explaining which requirement was not met.
-func IsSeedClientCert(x509cr *x509.CertificateRequest, usages []certificatesv1.KeyUsage) (bool, string) {
-	if !reflect.DeepEqual(seedClientRequiredOrganization, x509cr.Subject.Organization) {
-		return false, fmt.Sprintf("subject's organization is not set to %v", seedClientRequiredOrganization)
-	}
-
-	if (len(x509cr.DNSNames) > 0) || (len(x509cr.EmailAddresses) > 0) || (len(x509cr.IPAddresses) > 0) {
-		return false, "DNSNames, EmailAddresses and IPAddresses fields must be empty"
-	}
-
-	if !hasExactUsages(usages, seedClientRequiredKeyUsages) {
-		return false, fmt.Sprintf("key usages are not set to %v", seedClientRequiredKeyUsages)
-	}
-
-	if !strings.HasPrefix(x509cr.Subject.CommonName, v1beta1constants.SeedUserNamePrefix) {
-		return false, fmt.Sprintf("CommonName does not start with %q", v1beta1constants.SeedUserNamePrefix)
-	}
-
-	return true, ""
-}
-
-func hasExactUsages(usages, requiredUsages []certificatesv1.KeyUsage) bool {
-	if len(requiredUsages) != len(usages) {
-		return false
-	}
-
-	usageMap := map[certificatesv1.KeyUsage]struct{}{}
-	for _, u := range usages {
-		usageMap[u] = struct{}{}
-	}
-
-	for _, u := range requiredUsages {
-		if _, ok := usageMap[u]; !ok {
-			return false
-		}
-	}
-
-	return true
 }
 
 // GetWildcardCertificate gets the wildcard TLS certificate for the seed ingress domain.
@@ -131,21 +77,8 @@ func ComputeRequiredExtensionsForSeed(seed *gardencorev1beta1.Seed, controllerRe
 		wantedKindTypeCombinations.Insert(ExtensionsID(extensionsv1alpha1.DNSRecordResource, seed.Spec.DNS.Provider.Type))
 	}
 
-	disabledExtensionTypes := sets.New[string]()
-	for _, extension := range seed.Spec.Extensions {
-		if ptr.Deref(extension.Disabled, false) {
-			disabledExtensionTypes.Insert(extension.Type)
-		} else {
-			wantedKindTypeCombinations.Insert(ExtensionsID(extensionsv1alpha1.ExtensionResource, extension.Type))
-		}
-	}
-
-	for _, controllerRegistration := range controllerRegistrationList.Items {
-		for _, resource := range controllerRegistration.Spec.Resources {
-			if extensionEnabledForCluster(gardencorev1beta1.ClusterTypeSeed, resource, disabledExtensionTypes) {
-				wantedKindTypeCombinations.Insert(ExtensionsID(extensionsv1alpha1.ExtensionResource, resource.Type))
-			}
-		}
+	for enabledExtensionType := range ComputeEnabledTypesForKindExtensionSeed(seed, controllerRegistrationList) {
+		wantedKindTypeCombinations.Insert(ExtensionsID(extensionsv1alpha1.ExtensionResource, enabledExtensionType))
 	}
 
 	// add extension combinations for seed provider type
@@ -154,6 +87,18 @@ func ComputeRequiredExtensionsForSeed(seed *gardencorev1beta1.Seed, controllerRe
 	wantedKindTypeCombinations.Insert(ExtensionsID(extensionsv1alpha1.WorkerResource, seed.Spec.Provider.Type))
 
 	return wantedKindTypeCombinations
+}
+
+// ComputeEnabledTypesForKindExtensionSeed computes the enabled extension types for a given Seed and ControllerRegistrationList.
+// It considers extensions explicitly enabled or disabled in the Seed specification and those automatically enabled
+// based on the ControllerRegistration resources.
+func ComputeEnabledTypesForKindExtensionSeed(seed *gardencorev1beta1.Seed, controllerRegistrationList *gardencorev1beta1.ControllerRegistrationList) sets.Set[string] {
+	return computeEnabledTypesForKindExtension(
+		gardencorev1beta1.ClusterTypeSeed,
+		seed.Spec.Extensions,
+		controllerRegistrationList,
+		nil,
+	)
 }
 
 // ExtensionKindAndTypeForID returns the extension's type and kind based on the given ID.

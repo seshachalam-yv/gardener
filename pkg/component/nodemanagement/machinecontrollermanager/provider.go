@@ -13,8 +13,8 @@ import (
 	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 )
 
@@ -28,7 +28,7 @@ const (
 // implementations when the standard sidecar container is required.
 // The shoot object can be read from the `Cluster` object, e.g., using the GardenContext.GetCluster method in webhooks.
 func ProviderSidecarContainer(shoot *gardencorev1beta1.Shoot, controlPlaneNamespace, providerName, image string) corev1.Container {
-	autonomousShoot := v1beta1helper.IsShootAutonomous(shoot)
+	selfHostedShoot := v1beta1helper.IsShootSelfHosted(shoot.Spec.Provider.Workers)
 
 	c := corev1.Container{
 		Name:            providerSidecarContainerName(providerName),
@@ -36,6 +36,8 @@ func ProviderSidecarContainer(shoot *gardencorev1beta1.Shoot, controlPlaneNamesp
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Args: []string{
 			"--control-kubeconfig=inClusterConfig",
+			"--kube-api-qps=100",
+			"--kube-api-burst=200",
 			"--machine-creation-timeout=20m",
 			"--machine-drain-timeout=2h",
 			"--machine-health-timeout=10m",
@@ -44,7 +46,7 @@ func ProviderSidecarContainer(shoot *gardencorev1beta1.Shoot, controlPlaneNamesp
 			"--machine-safety-orphan-vms-period=30m",
 			"--namespace=" + controlPlaneNamespace,
 			"--port=" + strconv.Itoa(portProviderMetrics),
-			"--target-kubeconfig=" + targetKubeconfig(autonomousShoot, controlPlaneNamespace),
+			"--target-kubeconfig=" + targetKubeconfig(selfHostedShoot, controlPlaneNamespace),
 			"--v=3",
 		},
 		LivenessProbe: &corev1.Probe{
@@ -77,7 +79,7 @@ func ProviderSidecarContainer(shoot *gardencorev1beta1.Shoot, controlPlaneNamesp
 		},
 	}
 
-	if !autonomousShoot {
+	if !selfHostedShoot {
 		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{
 			Name:      "kubeconfig",
 			MountPath: gardenerutils.VolumeMountPathGenericKubeconfig,

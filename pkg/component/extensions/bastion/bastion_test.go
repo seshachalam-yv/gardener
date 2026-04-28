@@ -112,7 +112,7 @@ id gardener || useradd gardener -mU
 mkdir -p /home/gardener/.ssh
 echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDJXpm5HiBLMIX/M7TrES/pEaYNSdc4cBlVyTilWFj8h3yPbOOtWUFmnWSUBEr8y3UE86ZEpC2DvndQJ7BiOlF1OHLOyJwrPgWWDibvannttaz/CL6PY3lFzR4X3xHL/8VjoZuzlUlWLPtZJ8ShdpIURgiS/4IooBD0nSSSJjO2LLP6n+5IPuwg4BWSyPgzn8P7gZW2olX7hpJ1Si2i556EnV/CZz9lOxzMxcCctxXoE/03QZfltQFb6z8dIwud0TL4ZLJ7Up2AtmKXMCh2a161B0tgI5dmyK990J4XyWwuMtX+i4Az4XDAzlBtTWL6JhGpWTwCnLOz1Yy+4CnyarlR" > /home/gardener/.ssh/authorized_keys
 chown gardener:gardener /home/gardener/.ssh/authorized_keys
-systemctl start ssh
+systemctl start sshd || systemctl start ssh
 `))
 		})
 
@@ -198,6 +198,38 @@ systemctl start ssh
 
 					Expect(b.Wait(ctx)).To(Succeed())
 					Expect(b.Connection).To(BeIdenticalTo(conn))
+				})
+
+				It("should retry on transient connection failures and eventually succeed", func() {
+					conn := &sshutils.Connection{}
+					callCount := 0
+					// Simulate three failures (connection refused), then a success
+					b.SSHDial = func(_ context.Context, addr string, _ ...sshutils.Option) (*sshutils.Connection, error) {
+						Expect(addr).To(Equal("1.1.1.1:22"))
+						callCount++
+						if callCount < 3 {
+							return nil, fmt.Errorf("connection refused")
+						}
+						return conn, nil
+					}
+
+					Expect(b.Wait(ctx)).To(Succeed())
+					Expect(b.Connection).To(BeIdenticalTo(conn))
+					Expect(callCount).To(Equal(3))
+				})
+
+				It("should exhaust retry timeout if connection keeps failing", func() {
+					callCount := 0
+					// Never return successful connection, run into timeout
+					b.SSHDial = func(_ context.Context, addr string, _ ...sshutils.Option) (*sshutils.Connection, error) {
+						Expect(addr).To(Equal("1.1.1.1:22"))
+						callCount++
+						return nil, fmt.Errorf("connection refused")
+					}
+
+					Expect(b.Wait(ctx)).To(MatchError(ContainSubstring("connection refused")))
+					// Should have retried multiple times (more than x times)
+					Expect(callCount).To(BeNumerically(">", 10))
 				})
 
 				When("the Bastion has an ingress hostname instead of IP", func() {

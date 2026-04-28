@@ -180,7 +180,7 @@ AuthenticationWebhook
 <td>
 <code>cacheTTL</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#duration-v1-meta">
 Kubernetes meta/v1.Duration
 </a>
 </em>
@@ -285,7 +285,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -359,6 +359,20 @@ CredentialsRotation
 <td>
 <em>(Optional)</em>
 <p>Rotation contains information about the credential rotations.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>encryptionAtRest</code></br>
+<em>
+<a href="#operator.gardener.cloud/v1alpha1.EncryptionAtRest">
+EncryptionAtRest
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>EncryptionAtRest contains information about garden data encryption at rest.</p>
 </td>
 </tr>
 </tbody>
@@ -482,6 +496,7 @@ The first given domain in this list is immutable.</p>
 <p>
 (<em>Appears on:</em>
 <a href="#operator.gardener.cloud/v1alpha1.DNS">DNS</a>, 
+<a href="#operator.gardener.cloud/v1alpha1.GardenerDiscoveryServerConfig">GardenerDiscoveryServerConfig</a>, 
 <a href="#operator.gardener.cloud/v1alpha1.Ingress">Ingress</a>)
 </p>
 <p>
@@ -608,7 +623,7 @@ k8s.io/apimachinery/pkg/runtime.RawExtension
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -673,7 +688,7 @@ string
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -686,7 +701,7 @@ Kubernetes core/v1.LocalObjectReference
 <td>
 <code>pollInterval</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#duration-v1-meta">
 Kubernetes meta/v1.Duration
 </a>
 </em>
@@ -780,7 +795,7 @@ Falls back to the API server&rsquo;s OIDC issuer URL configuration if not set he
 <td>
 <code>sessionLifetime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#duration-v1-meta">
 Kubernetes meta/v1.Duration
 </a>
 </em>
@@ -806,7 +821,7 @@ Kubernetes meta/v1.Duration
 <td>
 <code>secretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -819,7 +834,7 @@ Kubernetes core/v1.LocalObjectReference
 <td>
 <code>certificateAuthoritySecretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -1152,6 +1167,82 @@ Storage
 </tr>
 </tbody>
 </table>
+<h3 id="operator.gardener.cloud/v1alpha1.EncryptionAtRest">EncryptionAtRest
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#operator.gardener.cloud/v1alpha1.Credentials">Credentials</a>)
+</p>
+<p>
+<p>EncryptionAtRest contains information about virtual garden data encryption at rest.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>resources</code></br>
+<em>
+[]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Resources is the list of resources which are currently encrypted in the virtual garden by the virtual kube-apiserver.
+Resources which are encrypted by default will not appear here.
+See <a href="https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config">https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config</a> for more details.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>provider</code></br>
+<em>
+<a href="#operator.gardener.cloud/v1alpha1.EncryptionProviderStatus">
+EncryptionProviderStatus
+</a>
+</em>
+</td>
+<td>
+<p>Provider contains information about virtual garden encryption provider.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="operator.gardener.cloud/v1alpha1.EncryptionProviderStatus">EncryptionProviderStatus
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#operator.gardener.cloud/v1alpha1.EncryptionAtRest">EncryptionAtRest</a>)
+</p>
+<p>
+<p>EncryptionProviderStatus contains information about virtual garden encryption provider.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>type</code></br>
+<em>
+github.com/gardener/gardener/pkg/apis/core/v1beta1.EncryptionProviderType
+</em>
+</td>
+<td>
+<p>Type is the used encryption provider type.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="operator.gardener.cloud/v1alpha1.Extension">Extension
 </h3>
 <p>
@@ -1169,7 +1260,7 @@ Storage
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -1315,7 +1406,7 @@ github.com/gardener/gardener/pkg/apis/core/v1beta1.ControllerDeploymentPolicy
 <td>
 <code>seedSelector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>
@@ -1491,7 +1582,7 @@ k8s.io/apimachinery/pkg/runtime.RawExtension
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -1568,6 +1659,18 @@ VirtualCluster
 </td>
 <td>
 <p>VirtualCluster contains configuration for the virtual cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>resources</code></br>
+<em>
+[]github.com/gardener/gardener/pkg/apis/core/v1beta1.NamedResourceReference
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Resources holds a list of named resource references that can be referred to in extension configs by their names.</p>
 </td>
 </tr>
 </table>
@@ -1701,6 +1804,18 @@ VirtualCluster
 <p>VirtualCluster contains configuration for the virtual cluster.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>resources</code></br>
+<em>
+[]github.com/gardener/gardener/pkg/apis/core/v1beta1.NamedResourceReference
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Resources holds a list of named resource references that can be referred to in extension configs by their names.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="operator.gardener.cloud/v1alpha1.GardenStatus">GardenStatus
@@ -1778,20 +1893,6 @@ Credentials
 <td>
 <em>(Optional)</em>
 <p>Credentials contains information about the virtual garden cluster credentials.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>encryptedResources</code></br>
-<em>
-[]string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>EncryptedResources is the list of resources which are currently encrypted in the virtual garden by the virtual kube-apiserver.
-Resources which are encrypted by default will not appear here.
-See <a href="https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config">https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config</a> for more details.</p>
 </td>
 </tr>
 </tbody>
@@ -1905,7 +2006,25 @@ GardenerDiscoveryServerConfig
 </td>
 <td>
 <em>(Optional)</em>
-<p>DiscoveryServer contains configuration settings for the gardener-discovery-server.</p>
+<p>DiscoveryServer contains configuration settings for the gardener-discovery-server.
+Once enabled, the gardener-discovery-server deployment cannot be removed and its domain cannot be changed.
+Otherwise, workload identity and/or shoot service account tokens referencing the gardener-discovery-server in the
+issuer URL might become unusable.
+This field is optional, but once set, it cannot be removed anymore.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>gardenerResourceManager</code></br>
+<em>
+<a href="#operator.gardener.cloud/v1alpha1.GardenerResourceManagerConfig">
+GardenerResourceManagerConfig
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>ResourceManager contains configuration settings for the gardener-resource-manager.</p>
 </td>
 </tr>
 </tbody>
@@ -2053,7 +2172,7 @@ recommended starting point.</p>
 <td>
 <code>shootAdminKubeconfigMaxExpiration</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#duration-v1-meta">
 Kubernetes meta/v1.Duration
 </a>
 </em>
@@ -2207,7 +2326,7 @@ must be configured.</p>
 <td>
 <code>frontendConfigMapRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -2222,7 +2341,7 @@ configuration.</p>
 <td>
 <code>assetsConfigMapRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -2312,6 +2431,78 @@ DashboardIngress
 <p>
 <p>GardenerDiscoveryServerConfig contains configuration settings for the gardener-discovery-server.</p>
 </p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>domain</code></br>
+<em>
+<a href="#operator.gardener.cloud/v1alpha1.DNSDomain">
+DNSDomain
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Domain overrides the default ingress domain and optionally the DNS provider for the gardener-discovery-server.
+This field is optional, but once the gardener-discovery-server is enabled, its domain cannot be changed anymore.
+Defaults to &ldquo;discovery.<first-runtime-ingress-domain>&rdquo;.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>tlsSecretName</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>TLSSecretName is the name of a secret (in the garden namespace) containing
+a trusted TLS certificate for the domain. If not configured, Gardener falls
+back to a secret labelled with &lsquo;gardener.cloud/role=garden-cert&rsquo;, if in turn not
+configured it generates a self-signed certificate.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="operator.gardener.cloud/v1alpha1.GardenerResourceManagerConfig">GardenerResourceManagerConfig
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#operator.gardener.cloud/v1alpha1.Gardener">Gardener</a>)
+</p>
+<p>
+<p>GardenerResourceManagerConfig contains configuration settings for the gardener-resource-manager.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>additionalTargetNamespaces</code></br>
+<em>
+[]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>AdditionalTargetNamespaces allows specifying custom target namespaces for the gardener-resource-manager instance.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="operator.gardener.cloud/v1alpha1.GardenerSchedulerConfig">GardenerSchedulerConfig
 </h3>
 <p>
@@ -2579,7 +2770,7 @@ github.com/gardener/gardener/pkg/apis/core/v1beta1.KubeControllerManagerConfig
 <td>
 <code>certificateSigningDuration</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#duration-v1-meta">
 Kubernetes meta/v1.Duration
 </a>
 </em>
@@ -2732,7 +2923,7 @@ github.com/gardener/gardener/pkg/apis/core/v1beta1.MaintenanceTimeWindow
 <td>
 <code>config</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#resourcequota-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#resourcequota-v1-core">
 Kubernetes core/v1.ResourceQuota
 </a>
 </em>
@@ -2745,7 +2936,7 @@ Kubernetes core/v1.ResourceQuota
 <td>
 <code>projectSelector</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#labelselector-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#labelselector-v1-meta">
 Kubernetes meta/v1.LabelSelector
 </a>
 </em>
@@ -2835,7 +3026,7 @@ string
 <td>
 <code>unrestrictedSubjects</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#subject-v1-rbac">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#subject-v1-rbac">
 []Kubernetes rbac/v1.Subject
 </a>
 </em>
@@ -2930,7 +3121,20 @@ k8s.io/apimachinery/pkg/api/resource.Quantity
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Size specifies the imposed limit.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>count</code></br>
+<em>
+int64
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Count specifies the maximum number of resources of the given kind. Only cluster-scoped resources are considered.</p>
 </td>
 </tr>
 </tbody>
@@ -3038,6 +3242,20 @@ Volume
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>
+<code>ipFamilies</code></br>
+<em>
+[]github.com/gardener/gardener/pkg/apis/core/v1beta1.IPFamily
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IPFamilies specifies the IP protocol versions to use for the runtime cluster&rsquo;s networking. This field is
+immutable.
+Defaults to [&ldquo;IPv4&rdquo;].</p>
+</td>
+</tr>
 <tr>
 <td>
 <code>nodes</code></br>
@@ -3207,7 +3425,7 @@ according to its value enable/disable topology-aware routing for their Services.
 </p>
 <p>
 <p>SettingVerticalPodAutoscaler controls certain settings for the vertical pod autoscaler components deployed in the
-seed.</p>
+cluster.</p>
 </p>
 <table>
 <thead>
@@ -3230,6 +3448,35 @@ bool
 the operator (and Gardener) heavily rely on a VPA being deployed. You should only disable this if your runtime
 cluster already has another, manually/custom managed VPA deployment. If this is not the case, but you still
 disable it, then reconciliation will fail.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>featureGates</code></br>
+<em>
+map[string]bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>FeatureGates contains information about enabled feature gates.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>maxAllowed</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#resourcelist-v1-core">
+Kubernetes core/v1.ResourceList
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MaxAllowed specifies the global maximum allowed (maximum amount of resources) that vpa-recommender can recommend for a container.
+The VerticalPodAutoscaler-level maximum allowed takes precedence over the global maximum allowed.
+For more information, see <a href="https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/examples.md#specifying-global-maximum-allowed-resources-to-prevent-pods-from-being-unschedulable">https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/examples.md#specifying-global-maximum-allowed-resources-to-prevent-pods-from-being-unschedulable</a>.</p>
+<p>Defaults to nil (no maximum).</p>
 </td>
 </tr>
 </tbody>
@@ -3518,7 +3765,7 @@ github.com/gardener/gardener/pkg/apis/core/v1beta1.CredentialsRotationPhase
 <td>
 <code>lastCompletionTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>
@@ -3533,7 +3780,7 @@ completed.</p>
 <td>
 <code>lastInitiationTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>
@@ -3547,7 +3794,7 @@ Kubernetes meta/v1.Time
 <td>
 <code>lastInitiationFinishedTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>
@@ -3562,7 +3809,7 @@ completed.</p>
 <td>
 <code>lastCompletionTriggeredTime</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#time-v1-meta">
 Kubernetes meta/v1.Time
 </a>
 </em>

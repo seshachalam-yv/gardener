@@ -13,11 +13,10 @@ import (
 	machinecontroller "github.com/gardener/machine-controller-manager/pkg/util/provider/machinecontroller"
 	"k8s.io/utils/ptr"
 
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/nodeagent"
-	"github.com/gardener/gardener/pkg/features"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 )
 
@@ -70,12 +69,7 @@ func Config(
 					},
 				},
 			},
-		}
-	)
-
-	if features.DefaultFeatureGate.Enabled(features.NodeAgentAuthorizer) {
-		nodeInitFiles = append(nodeInitFiles,
-			extensionsv1alpha1.File{
+			{
 				Path:        nodeagentconfigv1alpha1.MachineNameFilePath,
 				Permissions: ptr.To[uint32](0640),
 				Content: extensionsv1alpha1.FileContent{
@@ -84,8 +78,9 @@ func Config(
 					},
 					TransmitUnencoded: ptr.To(true),
 				},
-			})
-	}
+			},
+		}
+	)
 
 	// The gardener-node-init script above will bootstrap the gardener-node-agent. This means that the unit file for
 	// the gardener-node-agent unit will be written and eventually started (whilst gardener-node-init disables and stops
@@ -122,7 +117,7 @@ func generateInitScript(nodeAgentImage string) ([]byte, error) {
 		"image":           nodeAgentImage,
 		"binaryName":      "gardener-node-agent",
 		"binaryDirectory": nodeagentconfigv1alpha1.BinaryDir,
-		"configFile":      nodeagentconfigv1alpha1.ConfigFilePath,
+		"configDir":       nodeagentconfigv1alpha1.BaseDir,
 	}); err != nil {
 		return nil, err
 	}
@@ -148,6 +143,8 @@ RestartSec=5
 StartLimitBurst=0
 EnvironmentFile=/etc/environment
 ExecStart=` + filePath + `
+StandardOutput=journal+console
+StandardError=journal+console
 [Install]
 WantedBy=multi-user.target`),
 		FilePaths: []string{filePath},

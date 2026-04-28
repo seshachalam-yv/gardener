@@ -138,6 +138,11 @@ var _ = Describe("OpenTelemetry Operator", func() {
 					Verbs:     []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 				{
+					APIGroups: []string{"networking.k8s.io"},
+					Resources: []string{"networkpolicies"},
+					Verbs:     []string{"list", "watch"},
+				},
+				{
 					APIGroups: []string{"opentelemetry.io"},
 					Resources: []string{"instrumentations", "opentelemetrycollectors"},
 					Verbs:     []string{"get", "list", "patch", "update", "watch"},
@@ -289,13 +294,16 @@ var _ = Describe("OpenTelemetry Operator", func() {
 										corev1.ResourceMemory: resource.MustParse("64Mi"),
 									},
 								},
+								SecurityContext: &corev1.SecurityContext{
+									AllowPrivilegeEscalation: ptr.To(false),
+								},
 							},
 						},
 					},
 				},
 			},
 		}
-		vpaUpdateMode := vpaautoscalingv1.UpdateModeAuto
+		vpaUpdateMode := vpaautoscalingv1.UpdateModeRecreate
 		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
@@ -318,6 +326,10 @@ var _ = Describe("OpenTelemetry Operator", func() {
 							MinAllowed: corev1.ResourceList{
 								corev1.ResourceMemory: resource.MustParse("64Mi"),
 							},
+						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},

@@ -31,7 +31,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager) error {
 		r.Client = mgr.GetClient()
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor(ControllerName + "-controller")
+		r.Recorder = mgr.GetEventRecorder(ControllerName + "-controller")
 	}
 
 	return builder.
@@ -40,6 +40,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager) error {
 		For(&gardencorev1beta1.NamespacedCloudProfile{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
+			ReconciliationTimeout:   controllerutils.DefaultReconciliationTimeout,
 		}).
 		Watches(
 			&gardencorev1beta1.CloudProfile{},

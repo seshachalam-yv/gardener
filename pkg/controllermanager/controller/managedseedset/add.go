@@ -40,7 +40,7 @@ func (r *Reconciler) AddToManager(ctx context.Context, mgr manager.Manager) erro
 	if r.Actuator == nil {
 		replicaFactory := ReplicaFactoryFunc(NewReplica)
 		replicaGetter := NewReplicaGetter(r.Client, mgr.GetAPIReader(), replicaFactory)
-		r.Actuator = NewActuator(r.Client, replicaGetter, replicaFactory, &r.Config, mgr.GetEventRecorderFor(ControllerName+"-controller"))
+		r.Actuator = NewActuator(r.Client, replicaGetter, replicaFactory, &r.Config, mgr.GetEventRecorder(ControllerName+"-controller"))
 	}
 
 	return builder.
@@ -49,6 +49,7 @@ func (r *Reconciler) AddToManager(ctx context.Context, mgr manager.Manager) erro
 		For(&seedmanagementv1alpha1.ManagedSeedSet{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
+			ReconciliationTimeout:   r.Config.SyncPeriod.Duration,
 		}).
 		Watches(
 			&gardencorev1beta1.Shoot{},

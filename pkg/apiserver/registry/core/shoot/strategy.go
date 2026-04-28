@@ -7,28 +7,33 @@ package shoot
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 
 	"github.com/gardener/gardener/pkg/api"
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
 	"github.com/gardener/gardener/pkg/api/core/shoot"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/api/core/validation"
 	"github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/apis/core/validation"
-	"github.com/gardener/gardener/pkg/features"
+	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
 type shootStrategy struct {
@@ -58,9 +63,7 @@ func (shootStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
 
 	gardenerutils.SyncCloudProfileFields(nil, newShoot)
 
-	if !utilfeature.DefaultFeatureGate.Enabled(features.ShootCredentialsBinding) {
-		newShoot.Spec.CredentialsBindingName = nil
-	}
+	SyncDNSProviderCredentials(newShoot)
 }
 
 func (shootStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
@@ -70,15 +73,23 @@ func (shootStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object
 	newShoot.Status = oldShoot.Status               // can only be changed by shoots/status subresource
 	newShoot.Spec.SeedName = oldShoot.Spec.SeedName // can only be changed by shoots/binding subresource
 
+	if op, ok := newShoot.Annotations[v1beta1constants.GardenerOperation]; ok {
+		newShoot.Annotations[v1beta1constants.GardenerOperation] = cleanUpOperation(op)
+	}
+	if op, ok := newShoot.Annotations[v1beta1constants.GardenerMaintenanceOperation]; ok {
+		newShoot.Annotations[v1beta1constants.GardenerMaintenanceOperation] = cleanUpOperation(op)
+	}
+
+	SyncDNSProviderCredentials(newShoot)
+
 	if mustIncreaseGeneration(oldShoot, newShoot) {
 		newShoot.Generation = oldShoot.Generation + 1
 	}
 
 	gardenerutils.SyncCloudProfileFields(oldShoot, newShoot)
 
-	if oldShoot.Spec.CredentialsBindingName == nil && !utilfeature.DefaultFeatureGate.Enabled(features.ShootCredentialsBinding) {
-		newShoot.Spec.CredentialsBindingName = nil
-	}
+	// Ensure that encrypted provider type is set in `status.credentials.encryptionAtRest.providerType`.
+	SyncEncryptedProviderStatus(newShoot)
 }
 
 func mustIncreaseGeneration(oldShoot, newShoot *core.Shoot) bool {
@@ -102,6 +113,8 @@ func mustIncreaseGeneration(oldShoot, newShoot *core.Shoot) bool {
 		var (
 			mustIncrease                  bool
 			mustRemoveOperationAnnotation bool
+			operations                    = v1beta1helper.GetShootGardenerOperations(newShoot.Annotations)
+			updatedOperations             = slices.Clone(operations)
 		)
 
 		switch lastOperation.State {
@@ -111,49 +124,80 @@ func mustIncreaseGeneration(oldShoot, newShoot *core.Shoot) bool {
 			}
 
 		default:
-			switch newShoot.Annotations[v1beta1constants.GardenerOperation] {
-			case v1beta1constants.GardenerOperationReconcile:
-				mustIncrease, mustRemoveOperationAnnotation = true, true
+			for _, operation := range operations {
+				switch operation {
+				case v1beta1constants.GardenerOperationReconcile:
+					mustIncrease = true
+					updatedOperations = v1beta1helper.RemoveOperation(updatedOperations, operation)
 
-			case v1beta1constants.OperationRotateCredentialsStart,
-				v1beta1constants.OperationRotateCredentialsStartWithoutWorkersRollout,
-				v1beta1constants.OperationRotateCredentialsComplete,
-				v1beta1constants.OperationRotateCAStart,
-				v1beta1constants.OperationRotateCAStartWithoutWorkersRollout,
-				v1beta1constants.OperationRotateCAComplete,
-				v1beta1constants.OperationRotateServiceAccountKeyStart,
-				v1beta1constants.OperationRotateServiceAccountKeyStartWithoutWorkersRollout,
-				v1beta1constants.OperationRotateServiceAccountKeyComplete,
-				v1beta1constants.OperationRotateETCDEncryptionKeyStart,
-				v1beta1constants.OperationRotateETCDEncryptionKeyComplete,
-				v1beta1constants.OperationRotateObservabilityCredentials:
-				// We don't want to remove the annotation so that the gardenlet can pick it up and perform
-				// the rotation. It has to remove the annotation after it is done.
-				mustIncrease, mustRemoveOperationAnnotation = true, false
+				case v1beta1constants.OperationRotateCAStart,
+					v1beta1constants.OperationRotateCAStartWithoutWorkersRollout,
+					v1beta1constants.OperationRotateCAComplete,
+					v1beta1constants.OperationRotateServiceAccountKeyStart,
+					v1beta1constants.OperationRotateServiceAccountKeyStartWithoutWorkersRollout,
+					v1beta1constants.OperationRotateServiceAccountKeyComplete,
+					v1beta1constants.OperationRotateETCDEncryptionKey,
+					v1beta1constants.OperationRotateETCDEncryptionKeyStart,
+					v1beta1constants.OperationRotateETCDEncryptionKeyComplete,
+					v1beta1constants.OperationRotateObservabilityCredentials:
+					// We don't want to remove the annotation so that the gardenlet can pick it up and perform
+					// the rotation. It has to remove the annotation after it is done.
+					mustIncrease = true
+				case v1beta1constants.OperationRotateCredentialsStart:
+					// We remove operations that are covered by rotate-credentials-start
+					mustIncrease = true
+					updatedOperations = v1beta1helper.RemoveOperation(updatedOperations, v1beta1constants.OperationRotateCAStart,
+						v1beta1constants.OperationRotateServiceAccountKeyStart,
+						v1beta1constants.OperationRotateETCDEncryptionKey,
+						v1beta1constants.OperationRotateETCDEncryptionKeyStart,
+						v1beta1constants.OperationRotateObservabilityCredentials,
+						v1beta1constants.ShootOperationRotateSSHKeypair,
+					)
+				case v1beta1constants.OperationRotateCredentialsStartWithoutWorkersRollout:
+					// We remove operations that are covered by rotate-credentials-start-without-workers-rollout
+					mustIncrease = true
+					updatedOperations = v1beta1helper.RemoveOperation(updatedOperations, v1beta1constants.OperationRotateCAStartWithoutWorkersRollout,
+						v1beta1constants.OperationRotateServiceAccountKeyStartWithoutWorkersRollout,
+						v1beta1constants.OperationRotateETCDEncryptionKey,
+						v1beta1constants.OperationRotateETCDEncryptionKeyStart,
+						v1beta1constants.OperationRotateObservabilityCredentials,
+						v1beta1constants.ShootOperationRotateSSHKeypair,
+					)
+				case v1beta1constants.OperationRotateCredentialsComplete:
+					// We remove operations that are covered by rotate-credentials-complete
+					mustIncrease = true
+					updatedOperations = v1beta1helper.RemoveOperation(updatedOperations, v1beta1constants.OperationRotateCAComplete,
+						v1beta1constants.OperationRotateServiceAccountKeyComplete,
+						v1beta1constants.OperationRotateETCDEncryptionKeyComplete,
+					)
 
-			case v1beta1constants.ShootOperationRotateSSHKeypair:
-				if !gardencorehelper.ShootEnablesSSHAccess(newShoot) {
-					// If SSH is not enabled for the Shoot, don't increase generation, just remove the annotation
-					mustIncrease, mustRemoveOperationAnnotation = false, true
-				} else {
-					mustIncrease, mustRemoveOperationAnnotation = true, false
+				case v1beta1constants.ShootOperationRotateSSHKeypair:
+					if !gardencorehelper.ShootEnablesSSHAccess(newShoot) {
+						// If SSH is not enabled for the Shoot, don't increase generation, just remove the annotation
+						updatedOperations = v1beta1helper.RemoveOperation(updatedOperations, operation)
+					} else {
+						mustIncrease = true
+					}
+
+				case v1beta1constants.ShootOperationForceInPlaceUpdate:
+					// The annotation will be removed later by gardenlet once the in-place update is finished.
+					// The generation will be increased if there really is a spec change in the object.
+					mustIncrease, mustRemoveOperationAnnotation = false, false
 				}
 
-			case v1beta1constants.ShootOperationForceInPlaceUpdate:
-				// The annotation will be removed later by gardenlet once the in-place update is finished.
-				// The generation will be increased if there really is a spec change in the object.
-				mustIncrease, mustRemoveOperationAnnotation = false, false
-			}
-
-			if strings.HasPrefix(newShoot.Annotations[v1beta1constants.GardenerOperation], v1beta1constants.OperationRotateRolloutWorkers) {
-				// We don't want to remove the annotation so that the gardenlet can pick it up and perform
-				// the rotation. It has to remove the annotation after it is done.
-				mustIncrease, mustRemoveOperationAnnotation = true, false
+				if strings.HasPrefix(operation, v1beta1constants.OperationRotateRolloutWorkers) ||
+					strings.HasPrefix(operation, v1beta1constants.OperationRolloutWorkers) {
+					// We don't want to remove the annotation so that the gardenlet can pick it up and perform
+					// the rotation/rollout. It has to remove the annotation after it is done.
+					mustIncrease, mustRemoveOperationAnnotation = true, false
+				}
 			}
 		}
 
-		if mustRemoveOperationAnnotation {
+		if mustRemoveOperationAnnotation || len(updatedOperations) == 0 {
 			delete(newShoot.Annotations, v1beta1constants.GardenerOperation)
+		} else if len(operations) != len(updatedOperations) {
+			newShoot.Annotations[v1beta1constants.GardenerOperation] = strings.Join(updatedOperations, v1beta1constants.GardenerOperationsSeparator)
 		}
 		if mustIncrease {
 			return true
@@ -184,8 +228,36 @@ func (shootStrategy) Validate(_ context.Context, obj runtime.Object) field.Error
 
 func (shootStrategy) Canonicalize(obj runtime.Object) {
 	shoot := obj.(*core.Shoot)
+	if shoot.Spec.Kubernetes.ClusterAutoscaler != nil && shoot.Spec.Kubernetes.ClusterAutoscaler.MaxEmptyBulkDelete != nil {
+		shoot.Spec.Kubernetes.ClusterAutoscaler.MaxEmptyBulkDelete = nil
+	}
+	// Field was previously defaulted to false.
+	// We can safely set it to nil when user had explicitly set it to false,
+	// as we treat nil as false in the codebase.
+	if kubeAPIServer := shoot.Spec.Kubernetes.KubeAPIServer; kubeAPIServer != nil &&
+		kubeAPIServer.EnableAnonymousAuthentication != nil &&
+		!*kubeAPIServer.EnableAnonymousAuthentication {
+		kubeAPIServer.EnableAnonymousAuthentication = nil
+	}
+
+	// Addons were previously defaulted to set the Kubernetes dashboard authentication mode.
+	// We can safely set it to nil when user has not explicitly enabled addons.
+	if addons := shoot.Spec.Addons; addons != nil &&
+		addons.KubernetesDashboard != nil && !addons.KubernetesDashboard.Enabled &&
+		addons.NginxIngress == nil {
+		shoot.Spec.Addons = nil
+	}
 
 	gardenerutils.MaintainSeedNameLabels(shoot, shoot.Spec.SeedName, shoot.Status.SeedName)
+	maintainIsSelfHostedLabel(shoot)
+}
+
+func maintainIsSelfHostedLabel(shoot *core.Shoot) {
+	if gardencorehelper.IsShootSelfHosted(shoot.Spec.Provider.Workers) {
+		metav1.SetMetaDataLabel(&shoot.ObjectMeta, v1beta1constants.ShootIsSelfHosted, "true")
+	} else {
+		delete(shoot.Labels, v1beta1constants.ShootIsSelfHosted)
+	}
 }
 
 func (shootStrategy) AllowCreateOnUpdate() bool {
@@ -230,6 +302,22 @@ func (shootStatusStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.
 		(lastOperation.State == core.LastOperationStateSucceeded || lastOperation.State == core.LastOperationStateAborted) {
 		newShoot.Generation = oldShoot.Generation + 1
 	}
+
+	oldETCDEncryptionKeyRotationPhase := gardencorehelper.GetShootETCDEncryptionKeyRotationPhase(oldShoot.Status.Credentials)
+	newETCDEncryptionKeyRotationPhase := gardencorehelper.GetShootETCDEncryptionKeyRotationPhase(newShoot.Status.Credentials)
+	if oldETCDEncryptionKeyRotationPhase != newETCDEncryptionKeyRotationPhase &&
+		newETCDEncryptionKeyRotationPhase == core.RotationPrepared &&
+		gardencorehelper.ShouldETCDEncryptionKeyRotationBeAutoCompleteAfterPrepared(newShoot.Status.Credentials) {
+		newShoot.Generation = oldShoot.Generation + 1
+	}
+
+	// Ensure that encrypted provider type is set in `status.credentials.encryptionAtRest.providerType`.
+	SyncEncryptedProviderStatus(newShoot)
+
+	// Ensure credentialsRef is synced even on /status subresource requests.
+	// Some clients are patching just the status which still results in update events
+	// for those watching the resource.
+	SyncDNSProviderCredentials(newShoot)
 }
 
 func (shootStatusStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
@@ -269,6 +357,10 @@ func (shootBindingStrategy) PrepareForUpdate(_ context.Context, obj, old runtime
 	if !apiequality.Semantic.DeepEqual(oldShoot.Spec, newShoot.Spec) {
 		newShoot.Generation = oldShoot.Generation + 1
 	}
+
+	// Ensure credentialsRef is synced even on /binding subresource requests
+	// as it us updating the shoot spec.
+	SyncDNSProviderCredentials(newShoot)
 }
 
 func (shootBindingStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string {
@@ -339,4 +431,65 @@ func getStatusSeedName(shoot *core.Shoot) string {
 		return ""
 	}
 	return *shoot.Status.SeedName
+}
+
+func cleanUpOperation(operation string) string {
+	operations := utils.SplitAndTrimString(operation, v1beta1constants.GardenerOperationsSeparator)
+	return strings.Join(sets.New(operations...).UnsortedList(), v1beta1constants.GardenerOperationsSeparator)
+}
+
+// SyncDNSProviderCredentials ensures spec.dns.providers[].secretName and spec.dns.providers[].credentialsRef are in sync
+// when possible.
+//
+// TODO(vpnachev): Remove this function once support for Kubernetes 1.34 is dropped.
+func SyncDNSProviderCredentials(shoot *core.Shoot) {
+	if shoot.Spec.DNS == nil {
+		return
+	}
+
+	if versionutils.ConstraintK8sGreaterEqual135.CheckVersion(shoot.Spec.Kubernetes.Version) {
+		return
+	}
+
+	for idx, provider := range shoot.Spec.DNS.Providers {
+		if provider.SecretName != nil && provider.CredentialsRef == nil {
+			shoot.Spec.DNS.Providers[idx].CredentialsRef = &autoscalingv1.CrossVersionObjectReference{
+				APIVersion: "v1",
+				Kind:       "Secret",
+				Name:       *provider.SecretName,
+			}
+			continue
+		}
+
+		if provider.SecretName == nil && provider.CredentialsRef != nil && provider.CredentialsRef.APIVersion == "v1" && provider.CredentialsRef.Kind == "Secret" {
+			shoot.Spec.DNS.Providers[idx].SecretName = &provider.CredentialsRef.Name
+			continue
+		}
+
+		// in all other cases we can do nothing:
+		// - both fields are unset -> we have nothing to sync
+		// - both fields are set -> let the validation check if they are correct
+		// - credentialsRef refer to WorkloadIdentity -> secretRef should stay unset
+	}
+}
+
+// SyncEncryptedProviderStatus ensures the status fields shoot.spec.kubernetes.kubeAPIServer.encryptionConfig.provider.type
+// and shoot.status.credentials.encryptionAtRest.providerType are in sync, when status provider type in not set.
+// TODO(AleksandarSavchev): Remove this function after v1.137 has been released.
+func SyncEncryptedProviderStatus(shoot *core.Shoot) {
+	encryptionProviderType := gardencorehelper.GetEncryptionProviderType(shoot.Spec.Kubernetes.KubeAPIServer)
+	if len(encryptionProviderType) == 0 {
+		return
+	}
+
+	if shoot.Status.Credentials == nil {
+		shoot.Status.Credentials = &core.ShootCredentials{}
+	}
+	if shoot.Status.Credentials.EncryptionAtRest == nil {
+		shoot.Status.Credentials.EncryptionAtRest = &core.EncryptionAtRest{}
+	}
+
+	if len(shoot.Status.Credentials.EncryptionAtRest.Provider.Type) == 0 {
+		shoot.Status.Credentials.EncryptionAtRest.Provider.Type = encryptionProviderType
+	}
 }

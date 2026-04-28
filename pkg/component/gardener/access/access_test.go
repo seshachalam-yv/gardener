@@ -43,7 +43,7 @@ var _ = Describe("Access", func() {
 		ctx       = context.Background()
 		namespace = "shoot--foo--bar"
 
-		clusterRoleBinding = &rbacv1.ClusterRoleBinding{
+		gardenerSystemClusterRoleBinding = &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "gardener.cloud:system:gardener",
 			},
@@ -64,6 +64,82 @@ var _ = Describe("Access", func() {
 					Namespace: "kube-system",
 				},
 			},
+		}
+
+		systemViewersClusterRoleBinding = &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "gardener.cloud:system:viewers",
+				Annotations: map[string]string{
+					"resources.gardener.cloud/delete-on-invalid-update": "true",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     "gardener.cloud:system:read-only",
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Group",
+				Name:     "gardener.cloud:system:viewers",
+			}},
+		}
+
+		projectViewersClusterRoleBinding = &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "gardener.cloud:project:viewers",
+				Annotations: map[string]string{
+					"resources.gardener.cloud/delete-on-invalid-update": "true",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     "gardener.cloud:system:read-only",
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Group",
+				Name:     "gardener.cloud:project:viewers",
+			}},
+		}
+
+		systemAdminClusterRoleBinding = &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "gardener.cloud:system:admins",
+				Annotations: map[string]string{
+					"resources.gardener.cloud/delete-on-invalid-update": "true",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Group",
+				Name:     "gardener.cloud:system:admins",
+			}},
+		}
+
+		projectAdminClusterRoleBinding = &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "gardener.cloud:project:admins",
+				Annotations: map[string]string{
+					"resources.gardener.cloud/delete-on-invalid-update": "true",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+			},
+			Subjects: []rbacv1.Subject{{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Group",
+				Name:     "gardener.cloud:project:admins",
+			}},
 		}
 
 		gardenerSecretName         = "gardener"
@@ -92,6 +168,7 @@ var _ = Describe("Access", func() {
 			ServerOutOfCluster:    serverOutOfCluster,
 			ServerInCluster:       serverInCluster,
 			ManagedResourceLabels: map[string]string{"foo": "bar"},
+			IsGardenCluster:       false,
 		})
 
 		expectedGardenerSecret = &corev1.Secret{
@@ -121,7 +198,6 @@ contexts:
   name: ` + namespace + `
 current-context: ` + namespace + `
 kind: Config
-preferences: {}
 users:
 - name: ` + namespace + `
   user: {}
@@ -155,7 +231,6 @@ contexts:
   name: ` + namespace + `
 current-context: ` + namespace + `
 kind: Config
-preferences: {}
 users:
 - name: ` + namespace + `
   user: {}
@@ -202,7 +277,13 @@ users:
 			expectedManagedResource.Spec.SecretRefs = []corev1.LocalObjectReference{{Name: reconciledManagedResource.Spec.SecretRefs[0].Name}}
 			utilruntime.Must(references.InjectAnnotations(expectedManagedResource))
 			Expect(reconciledManagedResource).To(DeepEqual(expectedManagedResource))
-			Expect(reconciledManagedResource).To(consistOf(clusterRoleBinding))
+			Expect(reconciledManagedResource).To(consistOf(
+				gardenerSystemClusterRoleBinding,
+				systemViewersClusterRoleBinding,
+				projectViewersClusterRoleBinding,
+				systemAdminClusterRoleBinding,
+				projectAdminClusterRoleBinding,
+			))
 
 			reconciledGardenerSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: gardenerSecretName, Namespace: namespace}}
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(reconciledGardenerSecret), reconciledGardenerSecret)).To(Succeed())
@@ -241,6 +322,26 @@ users:
 			reconciledGardenerInternalSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: gardenerInternalSecretName, Namespace: namespace}}
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(reconciledGardenerInternalSecret), reconciledGardenerInternalSecret)).To(Succeed())
 			Expect(reconciledGardenerInternalSecret).To(DeepEqual(expectedGardenerInternalSecret))
+		})
+
+		It("should not deploy shootAccess resource when configured so", func() {
+			access = New(fakeClient, namespace, sm, Values{
+				ServerOutOfCluster:    serverOutOfCluster,
+				ServerInCluster:       serverInCluster,
+				ManagedResourceLabels: map[string]string{"foo": "bar"},
+				IsGardenCluster:       true,
+			})
+			Expect(access.Deploy(ctx)).To(Succeed())
+
+			reconciledManagedResource := &resourcesv1alpha1.ManagedResource{ObjectMeta: metav1.ObjectMeta{Name: managedResourceName, Namespace: namespace}}
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(reconciledManagedResource), reconciledManagedResource)).To(Succeed())
+			Expect(reconciledManagedResource).To(consistOf(gardenerSystemClusterRoleBinding))
+			Expect(reconciledManagedResource).ToNot(consistOf(
+				systemViewersClusterRoleBinding,
+				projectViewersClusterRoleBinding,
+				systemAdminClusterRoleBinding,
+				projectAdminClusterRoleBinding,
+			))
 		})
 	})
 

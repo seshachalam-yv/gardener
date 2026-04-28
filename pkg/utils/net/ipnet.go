@@ -24,11 +24,11 @@ func JoinByComma(cidrs []net.IPNet) string {
 
 // Join concatenates the CIDRs of the given networks to create a single string with a custom separator character.
 func Join(cidrs []net.IPNet, sep string) string {
-	result := ""
+	var result strings.Builder
 	for _, cidr := range cidrs {
-		result += cidr.String() + sep
+		result.WriteString(cidr.String() + sep)
 	}
-	return strings.TrimSuffix(result, sep)
+	return strings.TrimSuffix(result.String(), sep)
 }
 
 // CheckDualStackForKubeComponents checks if the given list of CIDRs does not include more than one element of the same IP family.
@@ -80,4 +80,19 @@ func GetByIPFamily(cidrs []net.IPNet, ipFamily string) []net.IPNet {
 		}
 	}
 	return result
+}
+
+// Overlap checks if two IP networks overlap.
+func Overlap(a, b net.IPNet) bool {
+	return a.Contains(b.IP) || b.Contains(a.IP)
+}
+
+// OverLapAny checks if any of the given IP networks overlap with the first parameter.
+func OverLapAny(nw net.IPNet, otherNws ...net.IPNet) bool {
+	for _, otherNw := range otherNws {
+		if Overlap(nw, otherNw) {
+			return true
+		}
+	}
+	return false
 }

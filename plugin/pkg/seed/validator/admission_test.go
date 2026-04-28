@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/admission"
+	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/pkg/apis/core"
@@ -106,6 +107,118 @@ var _ = Describe("validator", func() {
 				})
 			})
 
+			Context("Internal Domain", func() {
+				BeforeEach(func() {
+					oldSeed = seedBase.DeepCopy()
+					newSeed = seedBase.DeepCopy()
+
+					oldSeed.Spec.DNS.Internal = &core.SeedDNSProviderConfig{
+						Domain: "foo.bar",
+					}
+					newSeed.Spec.DNS.Internal = &core.SeedDNSProviderConfig{
+						Domain: "bar.foo",
+					}
+				})
+
+				It("should allow internal domain change when there are no shoots", func() {
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+				})
+
+				It("should forbid internal domain change when there are shoots", func() {
+					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(&shoot)).To(Succeed())
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(BeForbiddenError())
+				})
+			})
+
+			Context("Default Domains", func() {
+				BeforeEach(func() {
+					oldSeed = seedBase.DeepCopy()
+					newSeed = seedBase.DeepCopy()
+
+					oldSeed.Spec.DNS.Defaults = []core.SeedDNSProviderConfig{
+						{
+							Type:   "aws-route53",
+							Domain: "example.com",
+						},
+						{
+							Type:   "gcp-clouddns",
+							Domain: "test.com",
+						},
+					}
+					newSeed.Spec.DNS.Defaults = []core.SeedDNSProviderConfig{
+						{
+							Type:   "aws-route53",
+							Domain: "example.com",
+						},
+					}
+				})
+
+				It("should allow default domains addition when there are no shoots", func() {
+					newSeed.Spec.DNS.Defaults = append(newSeed.Spec.DNS.Defaults, core.SeedDNSProviderConfig{
+						Type:   "azure-dns",
+						Domain: "new.com",
+					})
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+				})
+
+				It("should allow default domains addition when there are shoots", func() {
+					newSeed.Spec.DNS.Defaults = append(newSeed.Spec.DNS.Defaults, core.SeedDNSProviderConfig{
+						Type:   "azure-dns",
+						Domain: "new.com",
+					})
+					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(&shoot)).To(Succeed())
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+				})
+
+				It("should allow default domains removal when there are no shoots", func() {
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+				})
+
+				It("should allow default domains removal when there are shoots but the removed domain is not used", func() {
+					shootWithDifferentDomain := shoot.DeepCopy()
+					shootWithDifferentDomain.Spec.DNS = &gardencorev1beta1.DNS{
+						Domain: ptr.To("my-shoot.unused.com"),
+					}
+					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(shootWithDifferentDomain)).To(Succeed())
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+				})
+
+				It("should forbid default domains removal when there are shoots using the removed domain", func() {
+					shootUsingRemovedDomain := shoot.DeepCopy()
+					shootUsingRemovedDomain.Spec.DNS = &gardencorev1beta1.DNS{
+						Domain: ptr.To("my-shoot.test.com"),
+					}
+					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(shootUsingRemovedDomain)).To(Succeed())
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(BeForbiddenError())
+				})
+
+				It("should allow default domains modification when domain change does not affect shoots", func() {
+					newSeed.Spec.DNS.Defaults[0].Type = "cloudflare"
+					shootWithDifferentDomain := shoot.DeepCopy()
+					shootWithDifferentDomain.Spec.DNS = &gardencorev1beta1.DNS{
+						Domain: ptr.To("my-shoot.other.com"),
+					}
+					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(shootWithDifferentDomain)).To(Succeed())
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+				})
+			})
+
 			Context("Backup provider with WorkloadIdentity credentials", func() {
 				BeforeEach(func() {
 					oldSeed = seedBase.DeepCopy()
@@ -147,6 +260,35 @@ var _ = Describe("validator", func() {
 					err := admissionHandler.Validate(context.TODO(), attrs, nil)
 					Expect(err).To(BeForbiddenError())
 					Expect(err).To(MatchError(ContainSubstring("seed using backup of type \"anotherProvider\" cannot use WorkloadIdentity of type \"provider\"")))
+				})
+			})
+
+			Context("LabelSelfHostedShootCluster label", func() {
+				BeforeEach(func() {
+					oldSeed = seedBase.DeepCopy()
+					newSeed = seedBase.DeepCopy()
+				})
+
+				It("should allow adding the label", func() {
+					metav1.SetMetaDataLabel(&newSeed.ObjectMeta, "seed.gardener.cloud/self-hosted-shoot-cluster", "true")
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+				})
+
+				It("should forbid removing the label once set", func() {
+					metav1.SetMetaDataLabel(&oldSeed.ObjectMeta, "seed.gardener.cloud/self-hosted-shoot-cluster", "true")
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(BeForbiddenError())
+				})
+
+				It("should allow keeping the label", func() {
+					metav1.SetMetaDataLabel(&oldSeed.ObjectMeta, "seed.gardener.cloud/self-hosted-shoot-cluster", "true")
+					metav1.SetMetaDataLabel(&newSeed.ObjectMeta, "seed.gardener.cloud/self-hosted-shoot-cluster", "true")
+					attrs := admission.NewAttributesRecord(newSeed, oldSeed, core.Kind("Seed").WithVersion("version"), "", seed.Name, core.Resource("seeds").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
 				})
 			})
 		})
@@ -271,19 +413,20 @@ var _ = Describe("validator", func() {
 	})
 
 	Describe("#ValidateInitialization", func() {
-		It("should return error if no ShootLister or SeedLister is set", func() {
+		It("should return error if no ShootLister is set", func() {
 			dr, _ := New()
 			dr.SetSecurityInformerFactory(gardensecurityinformers.NewSharedInformerFactory(nil, 0))
 
 			err := dr.ValidateInitialization()
 
 			Expect(err).To(HaveOccurred())
-			Expect(err).To(MatchError("missing seed lister"))
+			Expect(err).To(MatchError("missing shoot lister"))
 		})
 
 		It("should return error if no WorkloadIdentityLister is set", func() {
 			dr, _ := New()
 			dr.SetCoreInformerFactory(gardencoreinformers.NewSharedInformerFactory(nil, 0))
+			dr.SetKubeInformerFactory(kubeinformers.NewSharedInformerFactory(nil, 0))
 
 			err := dr.ValidateInitialization()
 
@@ -291,14 +434,26 @@ var _ = Describe("validator", func() {
 			Expect(err).To(MatchError("missing WorkloadIdentity lister"))
 		})
 
-		It("should not return error if ShootLister, SeedLister, and WorkloadIdentityLister are set", func() {
+		It("should not return error if all listers are set", func() {
+			dr, _ := New()
+			dr.SetCoreInformerFactory(gardencoreinformers.NewSharedInformerFactory(nil, 0))
+			dr.SetKubeInformerFactory(kubeinformers.NewSharedInformerFactory(nil, 0))
+			dr.SetSecurityInformerFactory(gardensecurityinformers.NewSharedInformerFactory(nil, 0))
+
+			err := dr.ValidateInitialization()
+
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("should return error if no SecretLister is set", func() {
 			dr, _ := New()
 			dr.SetCoreInformerFactory(gardencoreinformers.NewSharedInformerFactory(nil, 0))
 			dr.SetSecurityInformerFactory(gardensecurityinformers.NewSharedInformerFactory(nil, 0))
 
 			err := dr.ValidateInitialization()
 
-			Expect(err).ToNot(HaveOccurred())
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("missing secret lister"))
 		})
 	})
 

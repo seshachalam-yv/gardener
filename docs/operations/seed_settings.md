@@ -72,6 +72,13 @@ In most cases, the cloud-controller-manager (responsible for managing these load
 
 By setting the `.spec.settings.loadBalancerServices.annotations` field the Gardener administrator can specify a list of annotations, which will be injected into the `Service`s of type `LoadBalancer`.
 
+### Load Balancer Class
+
+By default, Gardener creates `Services` without the `spec.loadBalancerClass` field set, meaning that the default load balancer implementation of the underlying cloud infrastructure is used (implemented by the `Service` controller of cloud-controller-manager).
+If a non-default load balancer implementation should be used for load balancer services in the seed cluster, the `spec.settings.loadBalancerServices.loadBalancerClass` field can be configured accordingly to set the `spec.loadBalancerClass` on the created `Service` objects.
+Note that changing the `loadBalancerClass` of existing load balancer services is denied by Kubernetes, i.e., this setting can only be applied automatically to newly created load balancer services.
+If an existing load balancer service should use a different load balancer class, the migration needs to be performed manually by the operator.
+
 ### External Traffic Policy
 
 Setting the [external traffic policy](https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip) to `Local` can be beneficial as it
@@ -104,6 +111,41 @@ For disruption-free migration to proxy protocol, set `.spec.settings.loadBalance
 
 When switching back from use of proxy protocol to no use of it, use the inverse order, i.e. disable proxy protocol first on the load balancer before disabling `.spec.settings.loadBalancerServices.proxyProtocol.allow`.
 
+### Zonal Ingress
+
+By default, Gardener deploys Istio ingress gateways in each availability zone of a seed. This reduces cross-zonal traffic for single-zone shoot control planes.  
+If cross-zonal traffic costs are not a concern and minimizing the number of load balancers is preferred to save resources, zonal Istio ingress gateways can be disabled.
+
+The behavior is controlled by the `.spec.settings.loadBalancerServices.zonalIngress.enabled` field, which defaults to `true`.
+
+#### Impact of Disabling Zonal Ingress
+
+When zonal ingress is disabled:
+
+- A single default Istio ingress gateway is deployed, spanning all availability zones
+- All shoot control plane traffic (single-zone and multi-zone) is routed through the default gateway
+- Cross-zonal traffic may increase, since single-zone shoots no longer use zonal gateways
+- Fewer load balancers are created, potentially reducing infrastructure costs
+
+#### Migration Guide
+
+To disable zonal ingress gateways, follow these steps:
+
+1. Set `.spec.settings.loadBalancerServices.zonalIngress.enabled=false` in the `Seed` specification
+2. Wait for all shoots to reconcile (during reconciliation, single-zone shoots will update their `Gateway` resources to use the default gateway)
+3. Once all shoots have reconciled, zonal ingress gateways are automatically cleaned up
+
+During migration, zonal ingress gateways remain deployed as long as any shoot `Gateway` resource still selects them. This ensures minimal downtime for shoot control planes during the transition.
+
+> [!CAUTION]
+> When disabling zonal ingress gateways, expect temporary unavailability of shoot control planes due to DNS propagation delays.
+> During migration, DNS entries are updated to point to the default gateway, but clients may continue using cached DNS
+> entries pointing to the zonal gateways for up to the configured DNS TTL. Additionally, existing long-running connections
+> will be interrupted when the Gateway resources are updated to no longer use the zonal ingress gateways.
+> This downtime should be scheduled during a maintenance window.
+
+For more about Istio's multi-zone behavior, see the [Istio documentation](./istio.md#handling-multiple-availability-zones-with-istio).
+
 ### Zone-Specific Settings
 
 In case a seed cluster is configured to use multiple zones via `.spec.provider.zones`, it may be necessary to configure the load balancers in individual zones in different way, e.g., by utilizing
@@ -123,6 +165,7 @@ By setting the `.spec.settings.verticalPodAutoscaler.enabled=false`, you can dis
 ⚠️ In any case, there must be a VPA available for your seed cluster. Using a seed without VPA is not supported.
 
 ### VPA Pitfall: Excessive Resource Requests Making Pod Unschedulable
+
 VPA is unaware of node capacity, and can increase the resource requests of a pod beyond the capacity of any single node.
 Such pod is likely to become permanently unschedulable. That problem can be partly mitigated by using the
 `VerticalPodAutoscaler.Spec.ResourcePolicy.ContainerPolicies[].MaxAllowed` field to constrain pod resource requests to
@@ -139,3 +182,86 @@ use MaxAllowed aligned with the allocatable resources of the largest worker.
 ## Topology-Aware Traffic Routing
 
 Refer to the [Topology-Aware Traffic Routing documentation](./topology_aware_routing.md) as this document contains the documentation for the topology-aware routing Seed setting.
+
+## Zone Selection
+
+> [!NOTE]
+> Zone selection only has an effect on **non-HA shoots** and HA shoots with **failure tolerance type `node`**.
+> These are the cases where the control plane runs in a single availability zone.
+> HA shoots with failure tolerance type `zone` spread the control plane across multiple zones by definition, so there is no single zone to pin and zone selection has no effect on them.
+
+By default, Gardener randomly selects an availability zone from `.spec.provider.zones[]` in the `Seed` when creating the shoot control plane namespace in the seed cluster.
+This works well for most use cases, but operators with stretched seeds (multi-AZ) and single-zone shoots may want the control plane pods to run in the same availability zone as the shoot's worker nodes, minimizing cross-zonal traffic and latency.
+
+The `.spec.settings.zoneSelection` field allows seed operators to configure this behavior.
+When zone selection is enabled, Gardener can derive the control plane zone from the shoot's worker pool zones instead of selecting randomly.
+
+> [!NOTE]
+> Zone assignment only happens during shoot creation or when the shoot is being restored on a new seed.
+> Adding or changing worker zones retrospectively won't change the zone of the control plane.
+
+### Modes
+
+Two modes are supported:
+
+#### `Prefer`
+
+Gardener attempts to match the shoot's collected worker zones to the zones available in the seed.
+If a non-empty intersection is found, those matching zones are used for the control plane namespace.
+If no intersection exists (e.g., due to a zone name mismatch across providers), Gardener falls back to the default random zone selection.
+The Gardener Scheduler prefers seeds in `Prefer` mode whose zones overlap with the shoot's worker zones, but falls back to all candidates if no such seed exists.
+This mode will never fail scheduling — it is safe to enable broadly.
+
+**Single-zone shoot** (worker in `eu-central-1a`, seed has `[eu-central-1a, eu-central-1b, eu-central-1c]`):
+→ Control plane namespace is pinned to `eu-central-1a`.
+
+**Multi-zone shoot** (workers in `[eu-central-1a, eu-central-1b]`, seed has `[eu-central-1a, eu-central-1b, eu-central-1c]`):
+→ One zone is picked randomly from the intersection (`eu-central-1a` or `eu-central-1b`).
+
+**No overlap** (workers in `[us-east-1a]`, seed has `[eu-central-1a, eu-central-1b]`):
+→ Falls back to random zone selection; scheduling still succeeds.
+
+#### `Enforce`
+
+Gardener requires at least one of the shoot's collected worker zones to be present in the seed's zone list.
+If the intersection is non-empty, one of the matching zones is used for the control plane namespace.
+If no intersection exists, the control plane reconciliation fails with an error.
+Additionally, the Gardener Scheduler filters out seeds in `Enforce` mode that have no zone overlap with the shoot's worker zones, preventing assignment of incompatible shoots to those seeds.
+
+**Single-zone shoot** (worker in `eu-central-1a`, seed has `[eu-central-1a, eu-central-1b]`):
+→ Control plane namespace is pinned to `eu-central-1a`.
+
+**Multi-zone shoot** (workers in `[eu-central-1a, eu-central-1b]`, seed has `[eu-central-1a, eu-central-1b, eu-central-1c]`):
+→ One zone is picked randomly from the intersection (`eu-central-1a` or `eu-central-1b`).
+
+**No overlap** (workers in `[eu-central-1a]`, seed has `[eu-central-1b, eu-central-1c]`):
+→ The scheduler excludes this seed; if no compatible seed is found, scheduling fails with an error.
+
+## Temporarily Disabling Shoot Reconciliations
+
+There may be emergency situations where you need to temporarily stop the reconciliation of `Shoot` clusters in a `Seed` cluster,
+for example, to prevent faulty updates from propagating further or to avoid gardenlet performing unintended actions.
+
+> [!CAUTION]
+> This mechanism should only be used in exceptional cases and not as part of regular operations,
+> as it can have significant implications for cluster health and update consistency.
+
+To temporarily disable reconciliations, add the annotation `shoot.gardener.cloud/emergency-stop-reconciliations=true` to the `Seed` resource.
+
+While this annotation is present:
+
+- The `Shoot` controller will not reconcile any `Shoot` clusters in the affected `Seed`.
+- New `Shoot` clusters will not be scheduled to this `Seed`.
+- The `Seed` will expose the `SeedDisabledShootReconciliations` condition.
+
+> [!NOTE]  
+> When you remove this annotation, reconciliation will resume, but `Shoot` clusters will only be reconciled
+> during their next scheduled reconciliation window.
+> They are not reconciled immediately.
+> This is important if you expect all clusters to be updated right away after re-enabling reconciliations.
+
+To annotate all `Seed` resources at once, run:
+
+```bash
+kubectl annotate seed --all shoot.gardener.cloud/emergency-stop-reconciliations=true
+```

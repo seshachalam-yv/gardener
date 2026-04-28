@@ -12,6 +12,7 @@ import (
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -27,18 +28,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
+	gardenlethelper "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	apiextensions "github.com/gardener/gardener/pkg/api/extensions"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
 	"github.com/gardener/gardener/pkg/extensions"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	gardenlethelper "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1/helper"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
@@ -109,7 +111,12 @@ func NewHealth(
 		gardenletConfiguration: gardenletConfig,
 		controllerRegistrationToLastHeartbeatTime: map[string]*metav1.MicroTime{},
 		conditionThresholds:                       conditionThresholds,
-		healthChecker:                             healthchecker.NewHealthChecker(seedClientSet.Client(), clock, conditionThresholds, shoot.GetInfo().Status.LastOperation),
+		healthChecker: healthchecker.NewHealthChecker(
+			log,
+			seedClientSet.Client(),
+			clock,
+			healthchecker.WithConditionThresholds(conditionThresholds),
+			healthchecker.WithLastOperation(shoot.GetInfo().Status.LastOperation)),
 	}
 }
 
@@ -147,11 +154,18 @@ func (h *Health) Check(
 			newControlPlane, err := h.checkControlPlane(ctx, conditions.controlPlaneHealthy, extensionConditionsControlPlaneHealthy, managedResourceList.Items, healthCheckOutdatedThreshold)
 			conditions.controlPlaneHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.controlPlaneHealthy, newControlPlane, err)
 			return nil
-		}, func(ctx context.Context) error {
-			newObservabilityComponents, err := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, extensionConditionsObservabilityComponentsHealthy, managedResourceList.Items, healthCheckOutdatedThreshold)
+		},
+	}
+
+	prometheusList := &monitoringv1.PrometheusList{}
+	if err := h.seedClient.Client().List(ctx, prometheusList, client.InNamespace(h.shoot.ControlPlaneNamespace)); err != nil {
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
+	} else {
+		taskFns = append(taskFns, func(ctx context.Context) error {
+			newObservabilityComponents, err := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, extensionConditionsObservabilityComponentsHealthy, managedResourceList.Items, prometheusList, healthCheckOutdatedThreshold)
 			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponents, err)
 			return nil
-		},
+		})
 	}
 
 	// Health checks with dependencies to the Kube-Apiserver.
@@ -401,6 +415,10 @@ func (h *Health) checkControlPlane(
 	*gardencorev1beta1.Condition,
 	error,
 ) {
+	if exitCondition := h.healthChecker.CheckExtensionCondition(condition, extensionConditions, healthCheckOutdatedThreshold); exitCondition != nil {
+		return exitCondition, nil
+	}
+
 	requiredControlPlaneDeployments, err := ComputeRequiredControlPlaneDeployments(h.shoot.GetInfo())
 	if err != nil {
 		return nil, err
@@ -414,7 +432,7 @@ func (h *Health) checkControlPlane(
 		if scaledDownDeploymentNames, err := CheckIfDependencyWatchdogProberScaledDownControllers(ctx, h.seedClient.Client(), h.shoot.ControlPlaneNamespace); err != nil {
 			return ptr.To(v1beta1helper.FailedCondition(h.clock, h.shoot.GetInfo().Status.LastOperation, h.conditionThresholds, condition, "ControllersScaledDownCheckError", err.Error())), nil
 		} else if len(scaledDownDeploymentNames) > 0 {
-			return ptr.To(v1beta1helper.FailedCondition(h.clock, h.shoot.GetInfo().Status.LastOperation, h.conditionThresholds, condition, "ControllersScaledDown", fmt.Sprintf("The following deployments have been scaled down to 0 replicas (perhaps by dependency-watchdog-prober): %s", strings.Join(scaledDownDeploymentNames, ", ")))), nil
+			return ptr.To(v1beta1helper.FailedCondition(h.clock, h.shoot.GetInfo().Status.LastOperation, h.conditionThresholds, condition, "ControllersScaledDown", fmt.Sprintf("The following deployments have been scaled down to 0 replicas by dependency-watchdog-prober: %s", strings.Join(scaledDownDeploymentNames, ", ")))), nil
 		}
 	}
 
@@ -422,10 +440,6 @@ func (h *Health) checkControlPlane(
 		return managedResource.Spec.Class != nil &&
 			sets.New("", string(gardencorev1beta1.ShootControlPlaneHealthy)).Has(managedResource.Labels[v1beta1constants.LabelCareConditionType])
 	}, gardenlethelper.GetManagedResourceProgressingThreshold(h.gardenletConfiguration)); exitCondition != nil {
-		return exitCondition, nil
-	}
-
-	if exitCondition := h.healthChecker.CheckExtensionCondition(condition, extensionConditions, healthCheckOutdatedThreshold); exitCondition != nil {
 		return exitCondition, nil
 	}
 
@@ -457,7 +471,7 @@ func CheckIfDependencyWatchdogProberScaledDownControllers(ctx context.Context, s
 			return nil, fmt.Errorf("failed reading Deployment %s for scale-down check: %w", deployment.Name, err)
 		}
 
-		if ptr.Deref(deployment.Spec.Replicas, 0) == 0 {
+		if _, ok := deployment.Annotations["dependency-watchdog.gardener.cloud/meltdown-protection-active"]; ok {
 			scaledDownDeploymentNames = append(scaledDownDeploymentNames, deployment.Name)
 		}
 	}
@@ -473,11 +487,16 @@ func (h *Health) checkObservabilityComponents(
 	condition gardencorev1beta1.Condition,
 	extensionConditions []healthchecker.ExtensionCondition,
 	managedResources []resourcesv1alpha1.ManagedResource,
+	prometheuses *monitoringv1.PrometheusList,
 	healthCheckOutdatedThreshold *metav1.Duration,
 ) (
 	*gardencorev1beta1.Condition,
 	error,
 ) {
+	if exitCondition := h.healthChecker.CheckExtensionCondition(condition, extensionConditions, healthCheckOutdatedThreshold); exitCondition != nil {
+		return exitCondition, nil
+	}
+
 	if h.shoot.Purpose != gardencorev1beta1.ShootPurposeTesting && gardenlethelper.IsMonitoringEnabled(h.gardenletConfiguration) {
 		if exitCondition, err := h.healthChecker.CheckMonitoringControlPlane(
 			ctx,
@@ -507,8 +526,10 @@ func (h *Health) checkObservabilityComponents(
 		return exitCondition, nil
 	}
 
-	if exitCondition := h.healthChecker.CheckExtensionCondition(condition, extensionConditions, healthCheckOutdatedThreshold); exitCondition != nil {
-		return exitCondition, nil
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, nil); exitCondition != nil {
+			return exitCondition, nil
+		}
 	}
 
 	c := v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy.")
@@ -527,14 +548,14 @@ func (h *Health) checkSystemComponents(
 	*gardencorev1beta1.Condition,
 	error,
 ) {
+	if exitCondition := h.healthChecker.CheckExtensionCondition(condition, extensionConditions, healthCheckOutdatedThreshold); exitCondition != nil {
+		return exitCondition, nil
+	}
+
 	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
 		return managedResource.Spec.Class == nil ||
 			managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.ShootSystemComponentsHealthy)
 	}, gardenlethelper.GetManagedResourceProgressingThreshold(h.gardenletConfiguration)); exitCondition != nil {
-		return exitCondition, nil
-	}
-
-	if exitCondition := h.healthChecker.CheckExtensionCondition(condition, extensionConditions, healthCheckOutdatedThreshold); exitCondition != nil {
 		return exitCondition, nil
 	}
 
@@ -575,6 +596,7 @@ func (h *Health) checkWorkers(
 	if exitCondition := h.healthChecker.CheckExtensionCondition(condition, extensionConditions, healthCheckOutdatedThreshold); exitCondition != nil {
 		return exitCondition, nil
 	}
+
 	if exitCondition, err := h.CheckClusterNodes(ctx, shootClient, condition); err != nil || exitCondition != nil {
 		return exitCondition, err
 	}
@@ -917,12 +939,7 @@ func ComputeRequiredControlPlaneDeployments(shoot *gardencorev1beta1.Shoot) (set
 		requiredControlPlaneDeployments.Insert(v1beta1constants.DeploymentNameKubeScheduler)
 		requiredControlPlaneDeployments.Insert(v1beta1constants.DeploymentNameMachineControllerManager)
 
-		shootWantsClusterAutoscaler, err := v1beta1helper.ShootWantsClusterAutoscaler(shoot)
-		if err != nil {
-			return nil, err
-		}
-
-		if shootWantsClusterAutoscaler {
+		if v1beta1helper.ShootWantsClusterAutoscaler(shoot) {
 			requiredControlPlaneDeployments.Insert(v1beta1constants.DeploymentNameClusterAutoscaler)
 		}
 

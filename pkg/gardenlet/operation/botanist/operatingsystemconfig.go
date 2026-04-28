@@ -13,12 +13,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/component-base/version"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gardener/gardener/imagevector"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/nodeagent"
@@ -36,7 +37,27 @@ const SecretLabelKeyManagedResource = "managed-resource"
 
 // DefaultOperatingSystemConfig creates the default deployer for the OperatingSystemConfig custom resource.
 func (b *Botanist) DefaultOperatingSystemConfig() (operatingsystemconfig.Interface, error) {
-	oscImages, err := imagevectorutils.FindImages(imagevector.Containers(), []string{imagevector.ContainerImageNamePauseContainer, imagevector.ContainerImageNameValitail}, imagevectorutils.RuntimeVersion(b.ShootVersion()), imagevectorutils.TargetVersion(b.ShootVersion()))
+	values, err := b.OperatingSystemConfigValues()
+	if err != nil {
+		return nil, fmt.Errorf("failed creating operating system config values: %w", err)
+	}
+
+	return operatingsystemconfig.New(
+		b.Logger,
+		b.SeedClientSet.Client(),
+		b.SecretsManager,
+		values,
+		operatingsystemconfig.DefaultInterval,
+		operatingsystemconfig.DefaultSevereThreshold,
+		operatingsystemconfig.DefaultTimeout,
+	), nil
+}
+
+// OperatingSystemConfigValues computes the values for the OperatingSystemConfig custom resource.
+// It can be used both in the DefaultOperatingSystemConfig and in the ControlPlaneBootstrapOperatingSystemConfig.
+// Reusing the same values in both places ensures that the computed OperatingSystemConfig hashes are the same.
+func (b *Botanist) OperatingSystemConfigValues() (*operatingsystemconfig.Values, error) {
+	oscImages, err := imagevectorutils.FindImages(imagevector.Containers(), []string{imagevector.ContainerImageNamePauseContainer, imagevector.ContainerImageNameValitail, imagevector.ContainerImageNameOpentelemetryCollector}, imagevectorutils.RuntimeVersion(b.ShootVersion()), imagevectorutils.TargetVersion(b.ShootVersion()))
 	if err != nil {
 		return nil, err
 	}
@@ -53,36 +74,39 @@ func (b *Botanist) DefaultOperatingSystemConfig() (operatingsystemconfig.Interfa
 	oscImages[imagevector.ContainerImageNameGardenerNodeAgent].WithOptionalTag(version.Get().GitVersion)
 
 	valitailEnabled, valiIngressHost := false, ""
+	openTelemetryCollectorLogShipperEnabled, openTelemetryIngressHost := false, ""
 	if b.isShootNodeLoggingEnabled() {
 		valitailEnabled, valiIngressHost = true, b.ComputeValiHost()
+		openTelemetryCollectorLogShipperEnabled, openTelemetryIngressHost = true, b.ComputeOpenTelemetryCollectorHost()
 	}
 
-	return operatingsystemconfig.New(
-		b.Logger,
-		b.SeedClientSet.Client(),
-		b.SecretsManager,
-		&operatingsystemconfig.Values{
-			Namespace:         b.Shoot.ControlPlaneNamespace,
-			KubernetesVersion: b.Shoot.KubernetesVersion,
-			Workers:           b.Shoot.GetInfo().Spec.Provider.Workers,
-			OriginalValues: operatingsystemconfig.OriginalValues{
-				ClusterDomain:          gardencorev1beta1.DefaultDomain,
-				Images:                 oscImages,
-				KubeletConfig:          b.Shoot.GetInfo().Spec.Kubernetes.Kubelet,
-				KubeProxyEnabled:       v1beta1helper.KubeProxyEnabled(b.Shoot.GetInfo().Spec.Kubernetes.KubeProxy),
-				MachineTypes:           b.Shoot.CloudProfile.Spec.MachineTypes,
-				SSHAccessEnabled:       v1beta1helper.ShootEnablesSSHAccess(b.Shoot.GetInfo()),
-				ValitailEnabled:        valitailEnabled,
-				ValiIngressHostName:    valiIngressHost,
-				NodeLocalDNSEnabled:    v1beta1helper.IsNodeLocalDNSEnabled(b.Shoot.GetInfo().Spec.SystemComponents),
-				NodeMonitorGracePeriod: *b.Shoot.GetInfo().Spec.Kubernetes.KubeControllerManager.NodeMonitorGracePeriod,
-				PrimaryIPFamily:        b.Shoot.GetInfo().Spec.Networking.IPFamilies[0],
-			},
+	var region *string
+	if !b.Shoot.HasManagedInfrastructure() {
+		region = ptr.To(b.Shoot.GetInfo().Spec.Region)
+	}
+
+	return &operatingsystemconfig.Values{
+		Namespace:         b.Shoot.ControlPlaneNamespace,
+		KubernetesVersion: b.Shoot.KubernetesVersion,
+		Workers:           b.Shoot.GetInfo().Spec.Provider.Workers,
+		OriginalValues: operatingsystemconfig.OriginalValues{
+			ClusterDomain:                           gardencorev1beta1.DefaultDomain,
+			Images:                                  oscImages,
+			KubeletConfig:                           b.Shoot.GetInfo().Spec.Kubernetes.Kubelet,
+			KubeProxyEnabled:                        v1beta1helper.KubeProxyEnabled(b.Shoot.GetInfo().Spec.Kubernetes.KubeProxy),
+			MachineTypes:                            b.Shoot.CloudProfile.Spec.MachineTypes,
+			SSHAccessEnabled:                        v1beta1helper.ShootEnablesSSHAccess(b.Shoot.GetInfo()),
+			ValitailEnabled:                         valitailEnabled,
+			ValiIngressHostName:                     valiIngressHost,
+			OpenTelemetryCollectorLogShipperEnabled: openTelemetryCollectorLogShipperEnabled,
+			OpenTelemetryIngressHostName:            openTelemetryIngressHost,
+			NodeLocalDNSEnabled:                     v1beta1helper.IsNodeLocalDNSEnabled(b.Shoot.GetInfo().Spec.SystemComponents),
+			NodeMonitorGracePeriod:                  *b.Shoot.GetInfo().Spec.Kubernetes.KubeControllerManager.NodeMonitorGracePeriod,
+			PrimaryIPFamily:                         b.Shoot.GetInfo().Spec.Networking.IPFamilies[0],
+			KubeProxyConfig:                         b.Shoot.GetInfo().Spec.Kubernetes.KubeProxy,
+			Region:                                  region,
 		},
-		operatingsystemconfig.DefaultInterval,
-		operatingsystemconfig.DefaultSevereThreshold,
-		operatingsystemconfig.DefaultTimeout,
-	), nil
+	}, nil
 }
 
 // DeployOperatingSystemConfig deploys the OperatingSystemConfig custom resource and triggers the restore operation in
@@ -123,7 +147,15 @@ func (b *Botanist) DeployOperatingSystemConfig(ctx context.Context) error {
 	for _, ip := range b.Shoot.Networks.CoreDNS {
 		clusterDNSAddresses = append(clusterDNSAddresses, ip.String())
 	}
-	if b.Shoot.NodeLocalDNSEnabled && b.Shoot.IPVSEnabled() {
+
+	// During dual-stack migration, until kube-dns is migrated to  dual-stack, we only use the primary addresses.
+	nodesCondition := v1beta1helper.GetCondition(shoot.Status.Constraints, gardencorev1beta1.ShootDualStackNodesMigrationReady)
+	dnsCondition := v1beta1helper.GetCondition(shoot.Status.Constraints, gardencorev1beta1.ShootDNSServiceMigrationReady)
+	if (dnsCondition != nil && dnsCondition.Status != gardencorev1beta1.ConditionTrue) || (nodesCondition != nil) {
+		clusterDNSAddresses = clusterDNSAddresses[:1]
+	}
+
+	if b.Shoot.NodeLocalDNSEnabled && b.Shoot.ProxyMode() == gardencorev1beta1.ProxyModeIPVS {
 		// If IPVS is enabled then instruct the kubelet to create pods resolving DNS to the `nodelocaldns` network
 		// interface link-local ip address. For more information checkout the usage documentation under
 		// https://kubernetes.io/docs/tasks/administer-cluster/nodelocaldns/.
@@ -178,7 +210,6 @@ func (b *Botanist) DeployManagedResourceForGardenerNodeAgent(ctx context.Context
 		managedResourceSecretNamesWanted = sets.New[string]()
 		managedResourceSecretNameToData  = make(map[string]map[string][]byte, managedResourceSecretsCount)
 
-		secretNames                           []string
 		workerNameToOperatingSystemConfigMaps = b.Shoot.Components.Extensions.OperatingSystemConfig.WorkerPoolNameToOperatingSystemConfigsMap()
 
 		fns = make([]flow.TaskFn, 0, managedResourceSecretsCount)
@@ -191,16 +222,15 @@ func (b *Botanist) DeployManagedResourceForGardenerNodeAgent(ctx context.Context
 			return fmt.Errorf("did not find osc data for worker pool %q", worker.Name)
 		}
 
-		secretName, data, err := b.generateOperatingSystemConfigSecretForWorker(ctx, worker, oscData.Original)
+		data, err := b.generateOperatingSystemConfigSecretForWorker(ctx, worker, oscData.Original)
 		if err != nil {
 			return err
 		}
 
-		secretNames = append(secretNames, secretName)
 		managedResourceSecretNameToData["shoot-gardener-node-agent-"+worker.Name] = data
 	}
 
-	rbacResourcesData, err := NodeAgentRBACResourcesDataFn(secretNames)
+	rbacResourcesData, err := NodeAgentRBACResourcesDataFn()
 	if err != nil {
 		return err
 	}
@@ -257,21 +287,20 @@ func (b *Botanist) generateOperatingSystemConfigSecretForWorker(
 	worker gardencorev1beta1.Worker,
 	oscDataOriginal operatingsystemconfig.Data,
 ) (
-	string,
 	map[string][]byte,
 	error,
 ) {
-	oscSecret, err := NodeAgentOSCSecretFn(ctx, b.SeedClientSet.Client(), oscDataOriginal.Object, oscDataOriginal.GardenerNodeAgentSecretName, worker.Name)
+	oscSecret, err := NodeAgentOSCSecretFn(ctx, b.SeedClientSet.Client(), oscDataOriginal.Object, oscDataOriginal.GardenerNodeAgentSecretName, worker.Name, true)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed computing the OperatingSystemConfig secret for gardener-node-agent for pool %q: %w", worker.Name, err)
+		return nil, fmt.Errorf("failed computing the OperatingSystemConfig secret for gardener-node-agent for pool %q: %w", worker.Name, err)
 	}
 
 	resources, err := managedresources.
 		NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer).
 		AddAllAndSerialize(oscSecret)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed adding gardener-node-agent secret for pool %q to the registry and serializing it: %w", worker.Name, err)
+		return nil, fmt.Errorf("failed adding gardener-node-agent secret for pool %q to the registry and serializing it: %w", worker.Name, err)
 	}
 
-	return oscSecret.Name, resources, nil
+	return resources, nil
 }

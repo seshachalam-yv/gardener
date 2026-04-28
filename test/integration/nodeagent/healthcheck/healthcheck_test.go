@@ -6,14 +6,12 @@ package healthcheck_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"time"
 
-	"github.com/containerd/containerd"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +28,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	fakecontainerdclient "github.com/gardener/gardener/pkg/nodeagent/containerd/fake"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/healthcheck"
 	fakedbus "github.com/gardener/gardener/pkg/nodeagent/dbus/fake"
 	gardenerutils "github.com/gardener/gardener/pkg/utils"
@@ -42,7 +41,7 @@ var _ = Describe("Healthcheck controller tests", func() {
 		node               *corev1.Node
 		fakeDBus           *fakedbus.DBus
 		interfaceAddresses []string
-		containerdClient   *fakeContainerdClient
+		containerdClient   *fakecontainerdclient.Client
 		kubeletHealthcheck *healthcheck.KubeletHealthChecker
 		ts                 *httptest.Server
 	)
@@ -73,17 +72,16 @@ var _ = Describe("Healthcheck controller tests", func() {
 			}
 			return result, nil
 		}
-		containerdClient = &fakeContainerdClient{
-			returnError: false,
-		}
+		containerdClient = fakecontainerdclient.NewClient()
+
 		nodeName = testRunID
 
 		kubeletHealthcheck = healthcheck.NewKubeletHealthChecker(
-			mgr.GetClient(), clock, fakeDBus, mgr.GetEventRecorderFor(healthcheck.ControllerName), getAddresses,
+			mgr.GetClient(), clock, fakeDBus, mgr.GetEventRecorder(healthcheck.ControllerName), getAddresses,
 		)
 
 		containerdHealthcheck := healthcheck.NewContainerdHealthChecker(
-			mgr.GetClient(), containerdClient, clock, fakeDBus, mgr.GetEventRecorderFor(healthcheck.ControllerName),
+			mgr.GetClient(), containerdClient, clock, fakeDBus, mgr.GetEventRecorder(healthcheck.ControllerName),
 		)
 
 		By("Register controller")
@@ -143,7 +141,7 @@ var _ = Describe("Healthcheck controller tests", func() {
 	It("Containerd health should be false", func() {
 		By("Start fake kubelet healthz endpoint")
 		kubeletHealthcheck.SetKubeletHealthEndpoint(ts.URL)
-		containerdClient.returnError = true
+		containerdClient.SetReturnError(true)
 		clock.Step(80 * time.Second)
 		Eventually(func() []fakedbus.SystemdAction {
 			return fakeDBus.Actions
@@ -201,79 +199,4 @@ var _ = Describe("Healthcheck controller tests", func() {
 			return node.Status.Addresses
 		}).Should(ConsistOf(corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "1.2.3.4"}))
 	})
-
-	It("Kubelet toggles between Ready and NotReady to fast and triggers a reboot", func() {
-		By("Start fake kubelet healthz endpoint")
-		kubeletHealthcheck.SetKubeletHealthEndpoint(ts.URL)
-
-		By("Patch Node Status add NodeAddress")
-		node.Status.Addresses = []corev1.NodeAddress{
-			{
-				Type:    corev1.NodeInternalIP,
-				Address: "1.2.3.4",
-			},
-		}
-		Expect(testClient.Status().Update(ctx, node)).To(Succeed())
-		Eventually(func() bool {
-			return kubeletHealthcheck.HasLastInternalIP()
-		}).Should(BeTrue())
-
-		for i := 1; i <= 4; i++ {
-			clock.Step(2 * time.Second)
-			By("Patch Node Status to Ready")
-			setNodeCondition(ctx, node, corev1.ConditionTrue)
-			Eventually(func() bool {
-				return kubeletHealthcheck.NodeReady
-			}).Should(BeTrue())
-			Eventually(func() int {
-				return len(kubeletHealthcheck.KubeletReadinessToggles)
-			}).Should(Equal(i))
-
-			clock.Step(2 * time.Second)
-			By("Patch Node Status to NotReady")
-			setNodeCondition(ctx, node, corev1.ConditionFalse)
-			Eventually(func() bool {
-				return kubeletHealthcheck.NodeReady
-			}).Should(BeFalse())
-			Eventually(func() int {
-				return len(kubeletHealthcheck.KubeletReadinessToggles)
-			}).Should(Equal(i))
-		}
-
-		clock.Step(2 * time.Second)
-		By("Patch Node Status to Ready")
-		setNodeCondition(ctx, node, corev1.ConditionTrue)
-		Eventually(func() bool {
-			return kubeletHealthcheck.NodeReady
-		}).Should(BeTrue())
-		Eventually(func() int {
-			return len(kubeletHealthcheck.KubeletReadinessToggles)
-		}).Should(Equal(5))
-
-		clock.Step(80 * time.Second)
-		Eventually(func() []fakedbus.SystemdAction {
-			return fakeDBus.Actions
-		}).Should(ConsistOf(fakedbus.SystemdAction{Action: fakedbus.ActionReboot}))
-	})
 })
-
-type fakeContainerdClient struct {
-	returnError bool
-}
-
-func (f *fakeContainerdClient) Version(_ context.Context) (containerd.Version, error) {
-	if f.returnError {
-		return containerd.Version{}, errors.New("calling fake containerd socket error")
-	}
-	return containerd.Version{Version: "fake version"}, nil
-}
-
-func setNodeCondition(ctx context.Context, node *corev1.Node, condition corev1.ConditionStatus) {
-	node.Status.Conditions = []corev1.NodeCondition{
-		{
-			Type:   corev1.NodeReady,
-			Status: condition,
-		},
-	}
-	Expect(testClient.Status().Update(ctx, node)).To(Succeed())
-}

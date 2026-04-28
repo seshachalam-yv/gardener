@@ -16,13 +16,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/yaml"
 
+	"github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	"github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
@@ -100,7 +105,9 @@ var _ = Describe("ControllerInstallation controller tests", func() {
 		}).Should(Succeed())
 
 		By("Create ControllerInstallation")
-		controllerInstallation.Spec.SeedRef = corev1.ObjectReference{Name: seed.Name}
+		if controllerInstallation.Spec.SeedRef == nil {
+			controllerInstallation.Spec.SeedRef = &corev1.ObjectReference{Name: seed.Name}
+		}
 		controllerInstallation.Spec.RegistrationRef = corev1.ObjectReference{Name: controllerRegistration.Name}
 		controllerInstallation.Spec.DeploymentRef = &corev1.ObjectReference{Name: controllerDeployment.Name}
 		Expect(testClient.Create(ctx, controllerInstallation)).To(Succeed())
@@ -164,7 +171,7 @@ var _ = Describe("ControllerInstallation controller tests", func() {
 				OCIRepository: oci,
 			}
 			fakeRegistry.AddArtifact(oci, chartWithGardenKubeconfig)
-			fakeRegistry.SetExpectedPullSecretNamespace(gardenerutils.ComputeGardenNamespace(seed.Name))
+			fakeRegistry.SetExpectedSecretNamespace(gardenerutils.ComputeGardenNamespace(seed.Name))
 		})
 
 		It("should deploy the chart", func() {
@@ -308,6 +315,8 @@ var _ = Describe("ControllerInstallation controller tests", func() {
       dnsrecord.extensions.gardener.cloud/` + seed.Spec.DNS.Provider.Type + `: "true"
       name.seed.gardener.cloud/` + seed.Name + `: "true"
       provider.extensions.gardener.cloud/` + seed.Spec.Provider.Type + `: "true"
+      seed.gardener.cloud/provider: ` + seed.Spec.Provider.Type + `
+      seed.gardener.cloud/region: ` + seed.Spec.Provider.Region + `
     name: ` + seed.Name + `
     networks:
       ipFamilies:
@@ -320,10 +329,20 @@ var _ = Describe("ControllerInstallation controller tests", func() {
     region: ` + seed.Spec.Provider.Region + `
     spec:
       dns:
+        internal:
+          credentialsRef:
+            apiVersion: v1
+            kind: Secret
+            name: ` + seed.Spec.DNS.Internal.CredentialsRef.Name + `
+            namespace: ` + seed.Spec.DNS.Internal.CredentialsRef.Namespace + `
+          domain: ` + seed.Spec.DNS.Internal.Domain + `
+          type: ` + seed.Spec.DNS.Internal.Type + `
         provider:
-          secretRef:
-            name: ` + seed.Spec.DNS.Provider.SecretRef.Name + `
-            namespace: ` + seed.Spec.DNS.Provider.SecretRef.Namespace + `
+          credentialsRef:
+            apiVersion: v1
+            kind: Secret
+            name: ` + seed.Spec.DNS.Provider.CredentialsRef.Name + `
+            namespace: ` + seed.Spec.DNS.Provider.CredentialsRef.Namespace + `
           type: ` + seed.Spec.DNS.Provider.Type + `
       ingress:
         controller:
@@ -353,6 +372,9 @@ var _ = Describe("ControllerInstallation controller tests", func() {
           - resources:
               cpu: "2"
               memory: 6Gi
+        loadBalancerServices:
+          zonalIngress:
+            enabled: true
         scheduling:
           visible: true
         topologyAwareRouting:
@@ -510,21 +532,135 @@ var _ = Describe("ControllerInstallation controller tests", func() {
 			})
 		})
 
-		When("seed is marked as autonomous shoot clusters", func() {
+		When("reconciler is configured for a self-hosted shoot", func() {
+			var (
+				projectNamespace               *corev1.Namespace
+				selfHostedControllerDeployment *gardencorev1.ControllerDeployment
+				selfHostedControllerInstall    *gardencorev1beta1.ControllerInstallation
+			)
+
 			BeforeEach(func() {
-				By("Mark Seed as autonomous shoot cluster")
-				patch := client.MergeFrom(seed.DeepCopy())
-				metav1.SetMetaDataLabel(&seed.ObjectMeta, "seed.gardener.cloud/autonomous-shoot-cluster", "true")
-				Expect(testClient.Patch(ctx, seed, patch)).To(Succeed())
+				projectNamespace = &corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "garden-",
+					},
+				}
+				Expect(testClient.Create(ctx, projectNamespace)).To(Succeed())
+				DeferCleanup(func() {
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, projectNamespace))).To(Succeed())
+				})
+
+				selfHostedControllerDeployment = &gardencorev1.ControllerDeployment{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "deploy-sh-",
+						// Intentionally no testID label so the test manager does not watch this object.
+					},
+					Helm: &gardencorev1.HelmControllerDeployment{
+						RawChart: chartWithGardenKubeconfig,
+					},
+					InjectGardenKubeconfig: ptr.To(true),
+				}
+				Expect(testClient.Create(ctx, selfHostedControllerDeployment)).To(Succeed())
+				DeferCleanup(func() {
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, selfHostedControllerDeployment))).To(Succeed())
+				})
+
+				selfHostedControllerInstall = &gardencorev1beta1.ControllerInstallation{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "install-sh-",
+						// Intentionally no testID label so the test manager does not watch this object.
+					},
+				}
+			})
+
+			JustBeforeEach(func() {
+				selfHostedControllerInstall.Spec.SeedRef = &corev1.ObjectReference{Name: seed.Name}
+				selfHostedControllerInstall.Spec.RegistrationRef = corev1.ObjectReference{Name: controllerRegistration.Name}
+				selfHostedControllerInstall.Spec.DeploymentRef = &corev1.ObjectReference{Name: selfHostedControllerDeployment.Name}
+				Expect(testClient.Create(ctx, selfHostedControllerInstall)).To(Succeed())
+				log.Info("Created self-hosted ControllerInstallation", "controllerInstallation", client.ObjectKeyFromObject(selfHostedControllerInstall))
 
 				DeferCleanup(func() {
-					patch := client.MergeFrom(seed.DeepCopy())
-					delete(seed.Labels, "seed.gardener.cloud/autonomous-shoot-cluster")
-					Expect(testClient.Patch(ctx, seed, patch)).To(Succeed())
+					By("Remove finalizer from self-hosted ControllerInstallation to allow deletion")
+					patch := client.MergeFrom(selfHostedControllerInstall.DeepCopy())
+					selfHostedControllerInstall.Finalizers = nil
+					Expect(client.IgnoreNotFound(testClient.Patch(ctx, selfHostedControllerInstall, patch))).To(Succeed())
+
+					By("Delete self-hosted ControllerInstallation")
+					Expect(client.IgnoreNotFound(testClient.Delete(ctx, selfHostedControllerInstall))).To(Succeed())
 				})
 			})
 
-			It("should set the autonomousShootCluster value in the chart", func() {
+			It("should create the garden access secret with the self-hosted shoot SA name and namespace annotation", func() {
+				r := &controllerinstallation.Reconciler{
+					GardenClient:          testClient,
+					GardenConfig:          restConfig,
+					SeedClientSet:         testClientSet,
+					HelmRegistry:          fakeRegistry,
+					Clock:                 clock.RealClock{},
+					Config:                gardenletconfigv1alpha1.GardenletConfiguration{Controllers: &gardenletconfigv1alpha1.GardenletControllerConfiguration{ControllerInstallation: &gardenletconfigv1alpha1.ControllerInstallationControllerConfiguration{ConcurrentSyncs: ptr.To(5)}}},
+					Identity:              identity,
+					GardenClusterIdentity: gardenClusterIdentity,
+					GardenNamespace:       v1beta1constants.GardenNamespace,
+					SelfHostedShootMeta: &types.NamespacedName{
+						Namespace: projectNamespace.Name,
+						Name:      "my-shoot",
+					},
+				}
+
+				By("Reconcile the self-hosted ControllerInstallation")
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: selfHostedControllerInstall.Name}})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Ensure garden access secret has self-hosted shoot SA name and namespace annotation")
+				secret := &corev1.Secret{}
+				extensionNamespace := "extension-" + selfHostedControllerInstall.Name
+				Expect(testClient.Get(ctx, client.ObjectKey{Namespace: extensionNamespace, Name: "garden-access-extension"}, secret)).To(Succeed())
+				Expect(secret.Annotations).To(And(
+					HaveKeyWithValue("serviceaccount.resources.gardener.cloud/name", v1beta1constants.ExtensionShootServiceAccountPrefix+"my-shoot--"+selfHostedControllerInstall.Name),
+					HaveKeyWithValue("serviceaccount.resources.gardener.cloud/namespace", projectNamespace.Name),
+				))
+			})
+		})
+
+		When("seed is marked as self-hosted shoot clusters", func() {
+			BeforeEach(func() {
+				// Use a dedicated seed with the label pre-set so the suite-global seed remains unaffected.
+				// The label cannot be removed once set (enforced by GAPI validation), so a throwaway seed
+				// is the only way to cleanly isolate this test.
+				selfHostedSeed := seed.DeepCopy()
+				selfHostedSeed.Name = ""
+				selfHostedSeed.ResourceVersion = ""
+				selfHostedSeed.Labels = map[string]string{
+					testID: testRunID,
+					"seed.gardener.cloud/self-hosted-shoot-cluster": "true",
+				}
+
+				By("Create self-hosted seed")
+				Expect(testClient.Create(ctx, selfHostedSeed)).To(Succeed())
+
+				By("Patch self-hosted seed status")
+				statusPatch := client.MergeFrom(selfHostedSeed.DeepCopy())
+				selfHostedSeed.Status.ClusterIdentity = ptr.To(seedClusterIdentity)
+				Expect(testClient.Status().Patch(ctx, selfHostedSeed, statusPatch)).To(Succeed())
+
+				By("Create self-hosted seed namespace")
+				selfHostedSeedNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "seed-" + selfHostedSeed.Name}}
+				Expect(testClient.Create(ctx, selfHostedSeedNamespace)).To(Succeed())
+
+				DeferCleanup(func() {
+					By("Delete self-hosted seed")
+					Expect(testClient.Delete(ctx, selfHostedSeed)).To(Or(Succeed(), BeNotFoundError()))
+
+					By("Delete self-hosted seed namespace")
+					Expect(testClient.Delete(ctx, selfHostedSeedNamespace)).To(Or(Succeed(), BeNotFoundError()))
+				})
+
+				// Wire the ControllerInstallation (created in JustBeforeEach) to the self-hosted seed.
+				controllerInstallation.Spec.SeedRef = &corev1.ObjectReference{Name: selfHostedSeed.Name}
+			})
+
+			It("should set the selfHostedShootCluster value in the chart", func() {
 				values := make(map[string]any)
 				Eventually(func(g Gomega) {
 					managedResource := &resourcesv1alpha1.ManagedResource{}
@@ -541,7 +677,7 @@ var _ = Describe("ControllerInstallation controller tests", func() {
 				valuesBytes, err := yaml.Marshal(values)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(string(valuesBytes)).To(ContainSubstring("autonomousShootCluster: true"))
+				Expect(string(valuesBytes)).To(ContainSubstring("selfHostedShootCluster: true"))
 			})
 		})
 

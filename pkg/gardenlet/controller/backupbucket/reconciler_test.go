@@ -14,19 +14,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/backupbucket"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
@@ -118,7 +118,7 @@ var _ = Describe("Controller", func() {
 		reconciler = &Reconciler{
 			GardenClient: gardenClient,
 			SeedClient:   seedClient,
-			Recorder:     &record.FakeRecorder{},
+			Recorder:     &events.FakeRecorder{},
 			Config: gardenletconfigv1alpha1.BackupBucketControllerConfiguration{
 				ConcurrentSyncs: ptr.To(5),
 			},
@@ -226,6 +226,9 @@ var _ = Describe("Controller", func() {
 			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(extensionSecret), extensionSecret)).To(Succeed())
 			Expect(extensionSecret.Data).To(Equal(gardenSecret.Data))
 
+			Expect(gardenClient.Get(ctx, client.ObjectKeyFromObject(gardenSecret), gardenSecret)).To(Succeed())
+			Expect(gardenSecret.Finalizers).To(Equal([]string{"core.gardener.cloud/backupbucket"}))
+
 			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(extensionBackupBucket), extensionBackupBucket)).To(Succeed())
 			Expect(extensionBackupBucket.Spec).To(Equal(extensionsv1alpha1.BackupBucketSpec{
 				DefaultSpec: extensionsv1alpha1.DefaultSpec{
@@ -313,6 +316,22 @@ var _ = Describe("Controller", func() {
 			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(extensionBackupBucket), extensionBackupBucket)).To(Succeed())
 			Expect(extensionBackupBucket.Annotations).To(HaveKey(v1beta1constants.GardenerOperation))
 		})
+
+		It("should clean the unknown annotations and labels from the extension secret on reconciliation", func() {
+			testKeyValue := map[string]string{"key1": "value1", "key2:": "value2"}
+			extensionSecret.Annotations = testKeyValue // Do not set the timestamp annotation to trigger reconciliation
+			extensionSecret.Labels = testKeyValue
+			Expect(seedClient.Create(ctx, extensionSecret)).To(Succeed())
+			Expect(seedClient.Create(ctx, extensionBackupBucket)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(extensionSecret), extensionSecret)).To(Succeed())
+			Expect(extensionSecret.Annotations).To(Equal(map[string]string{v1beta1constants.GardenerTimestamp: fakeClock.Now().UTC().Format(time.RFC3339Nano)}))
+			Expect(extensionSecret.Labels).To(BeEmpty())
+		})
 	})
 
 	Describe("#WorkloadIdentity Credentials", func() {
@@ -356,6 +375,9 @@ var _ = Describe("Controller", func() {
 			Expect(extensionSecret.Annotations).To(HaveKeyWithValue("workloadidentity.security.gardener.cloud/namespace", workloadIdentity.Namespace))
 			Expect(extensionSecret.Annotations).To(HaveKey("gardener.cloud/timestamp"))
 			Expect(extensionSecret.Type).To(BeEquivalentTo("Opaque"))
+
+			Expect(gardenClient.Get(ctx, client.ObjectKeyFromObject(workloadIdentity), workloadIdentity)).To(Succeed())
+			Expect(workloadIdentity.Finalizers).To(Equal([]string{"core.gardener.cloud/backupbucket"}))
 
 			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(extensionBackupBucket), extensionBackupBucket)).To(Succeed())
 			Expect(extensionBackupBucket.Spec).To(Equal(extensionsv1alpha1.BackupBucketSpec{

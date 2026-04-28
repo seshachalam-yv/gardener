@@ -23,7 +23,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/sets"
 	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,6 +53,11 @@ const (
 
 	containerName = "coredns"
 	serviceName   = "kube-dns" // this is due to legacy reasons
+
+	autoscalerContainerName = "autoscaler"
+
+	// CustomConfigMapName is the name of the custom CoreDNS ConfigMap.
+	CustomConfigMapName = "coredns-custom"
 
 	portNameMetrics = "metrics"
 	portMetrics     = 9153
@@ -229,7 +233,7 @@ func (c *coreDNS) computeResourcesData() (map[string][]byte, error) {
 		protocolTCP         = corev1.ProtocolTCP
 		protocolUDP         = corev1.ProtocolUDP
 
-		vpaUpdateMode    = vpaautoscalingv1.UpdateModeAuto
+		vpaUpdateMode    = vpaautoscalingv1.UpdateModeRecreate
 		controlledValues = vpaautoscalingv1.ContainerControlledValuesRequestsOnly
 
 		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
@@ -319,7 +323,7 @@ import custom/*.server
 
 		configMapCustom = &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        "coredns-custom",
+				Name:        CustomConfigMapName,
 				Namespace:   metav1.NamespaceSystem,
 				Annotations: map[string]string{resourcesv1alpha1.Ignore: "true"},
 			},
@@ -501,14 +505,11 @@ import custom/*.server
 									corev1.ResourceCPU:    resource.MustParse("50m"),
 									corev1.ResourceMemory: resource.MustParse("15Mi"),
 								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceMemory: resource.MustParse("1500Mi"),
-								},
 							},
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: ptr.To(false),
 								Capabilities: &corev1.Capabilities{
-									Add:  []corev1.Capability{"NET_BIND_SERVICE"}, // TODO(marc1404): When updating coredns to v1.13.x check if the NET_BIND_SERVICE capability can be removed.
+									Add:  []corev1.Capability{"NET_BIND_SERVICE"},
 									Drop: []corev1.Capability{"all"},
 								},
 								ReadOnlyRootFilesystem: ptr.To(true),
@@ -640,7 +641,7 @@ import custom/*.server
 							},
 						},
 						Containers: []corev1.Container{{
-							Name:            "autoscaler",
+							Name:            autoscalerContainerName,
 							Image:           c.values.ClusterProportionalAutoscalerImage,
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							Command: []string{
@@ -688,11 +689,15 @@ import custom/*.server
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 						{
-							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							ContainerName: autoscalerContainerName,
 							MinAllowed: corev1.ResourceList{
 								corev1.ResourceMemory: resource.MustParse("10Mi"),
 							},
 							ControlledValues: &controlledValues,
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},
@@ -857,8 +862,7 @@ func getSearchPathRewrites(clusterDomain string, commonSuffixes []string) string
 
 // GetIPFamilyPolicy returns the IPFamilyPolicy for the CoreDNS service based on the provided IP families and cluster IPs.
 func GetIPFamilyPolicy(ipFamilies []gardencorev1beta1.IPFamily, clusterIPs []net.IP) corev1.IPFamilyPolicy {
-	ipFamiliesSet := sets.New[gardencorev1beta1.IPFamily](ipFamilies...)
-	if ipFamiliesSet.Has(gardencorev1beta1.IPFamilyIPv4) && ipFamiliesSet.Has(gardencorev1beta1.IPFamilyIPv6) && hasIPv4andIPv6Address(clusterIPs) {
+	if gardencorev1beta1.IsDualStack(ipFamilies) && hasIPv4andIPv6Address(clusterIPs) {
 		return corev1.IPFamilyPolicyPreferDualStack
 	}
 	return corev1.IPFamilyPolicySingleStack

@@ -18,15 +18,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -38,7 +39,7 @@ var fromPolicyRegexp = regexp.MustCompile(resourcesv1alpha1.NetworkPolicyFromPol
 type Reconciler struct {
 	TargetClient client.Client
 	Config       resourcemanagerconfigv1alpha1.NetworkPolicyControllerConfig
-	Recorder     record.EventRecorder
+	Recorder     events.EventRecorder
 
 	selectors []labels.Selector
 }
@@ -46,9 +47,6 @@ type Reconciler struct {
 // Reconcile performs the main reconciliation logic.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
 
 	networkPolicyList := &metav1.PartialObjectMetadataList{}
 	networkPolicyList.SetGroupVersionKind(networkingv1.SchemeGroupVersion.WithKind("NetworkPolicyList"))
@@ -158,6 +156,18 @@ func (r *Reconciler) fetchRelevantNamespaceNames(ctx context.Context, service *c
 }
 
 func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logger, service *corev1.Service, namespaceNames sets.Set[string]) ([]flow.TaskFn, []string, error) {
+	// If the namespace of the Service is terminating, we don't want to create or maintain any policies. The Service
+	// itself is expected to disappear soon (namespace controller cleans up all resources on namespace deletion), so
+	// whatever we would do here will become obsolete very soon.
+	if !namespaceNames.Has(service.Namespace) {
+		return nil, nil, nil
+	}
+
+	podLabelKeysByNamespace, err := r.podNetworkPolicyLabelKeysByNamespace(ctx, namespaceNames)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var (
 		taskFns               []flow.TaskFn
 		desiredObjectMetaKeys []string
@@ -177,12 +187,11 @@ func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logg
 				{objectMetaFunc: ingressObjectMetaFunc, reconcileFunc: r.reconcileIngressPolicy},
 				{objectMetaFunc: egressObjectMetaFunc, reconcileFunc: r.reconcileEgressPolicy},
 			} {
-				reconcileFn := fns.reconcileFunc
 				objectMeta := fns.objectMetaFunc(policyID, service.Namespace, namespaceName)
 				desiredObjectMetaKeys = append(desiredObjectMetaKeys, key(objectMeta))
 
 				taskFns = append(taskFns, func(ctx context.Context) error {
-					return reconcileFn(ctx, log, service, port, objectMeta, namespaceName, podLabelSelector)
+					return fns.reconcileFunc(ctx, log, service, port, objectMeta, namespaceName, podLabelSelector)
 				})
 			}
 		}
@@ -196,23 +205,32 @@ func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logg
 				podLabelSelector = customPodLabelSelector
 			}
 
-			for _, n := range namespaceNames.UnsortedList() {
-				namespaceName := n
+			for _, namespaceName := range namespaceNames.UnsortedList() {
 				matchLabels := matchLabelsForServiceAndNamespace(podLabelSelector, service, namespaceName)
+				effectiveLabels, _ := shortenPodSelectorKeysIfTooLong(metav1.LabelSelector{MatchLabels: matchLabels})
+
+				// Check whether any pod in this namespace carries the effective label key — using the
+				// pre-fetched per-namespace label key set instead of listing pods again for every
+				// (namespace, port) combination.
+				labelKeys := podLabelKeysByNamespace[namespaceName]
+				hasPods := false
+				for k := range effectiveLabels.MatchLabels {
+					if labelKeys.Has(k) {
+						hasPods = true
+						break
+					}
+				}
+
+				if !hasPods {
+					continue
+				}
+
 				addTasksForPort(port, policyID, namespaceName, metav1.LabelSelector{MatchLabels: matchLabels}, ingressPolicyObjectMetaFor, egressPolicyObjectMetaFor)
 			}
 		}
 	)
 
-	// If the namespace of the Service is terminating, we don't want to create or maintain any policies. The Service
-	// itself is expected to disappear soon (namespace controller cleans up all resources on namespace deletion), so
-	// whatever we would do here will become obsolete very soon.
-	if !namespaceNames.Has(service.Namespace) {
-		return nil, nil, nil
-	}
-
-	for _, p := range service.Spec.Ports {
-		port := p
+	for _, port := range service.Spec.Ports {
 		addTasksForRelevantNamespacesAndPort(networkingv1.NetworkPolicyPort{Protocol: &port.Protocol, Port: &port.TargetPort}, "")
 	}
 
@@ -249,8 +267,7 @@ func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logg
 		return nil, nil, err
 	}
 
-	for _, p := range portsExposedViaIngresses {
-		port := p
+	for _, port := range portsExposedViaIngresses {
 		policyID := policyIDFor(service.Name, port)
 		addTasksForPort(port, policyID, r.Config.IngressControllerSelector.Namespace, r.Config.IngressControllerSelector.PodSelector, ingressPolicyObjectMetaWhenExposedViaIngressFor, egressPolicyObjectMetaWhenExposedViaIngressFor)
 	}
@@ -259,17 +276,11 @@ func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logg
 }
 
 func (r *Reconciler) deleteStalePolicies(networkPolicyList *metav1.PartialObjectMetadataList, desiredObjectMetaKeys []string) []flow.TaskFn {
-	objectMetaKeysForDesiredPolicies := make(map[string]struct{}, len(desiredObjectMetaKeys))
-	for _, objectMetaKey := range desiredObjectMetaKeys {
-		objectMetaKeysForDesiredPolicies[objectMetaKey] = struct{}{}
-	}
-
+	objectMetaKeysForDesiredPolicies := sets.New(desiredObjectMetaKeys...)
 	var taskFns []flow.TaskFn
 
-	for _, n := range networkPolicyList.Items {
-		networkPolicy := n
-
-		if _, ok := objectMetaKeysForDesiredPolicies[key(networkPolicy.ObjectMeta)]; !ok {
+	for _, networkPolicy := range networkPolicyList.Items {
+		if !objectMetaKeysForDesiredPolicies.Has(key(networkPolicy.ObjectMeta)) {
 			taskFns = append(taskFns, func(ctx context.Context) error {
 				return kubernetesutils.DeleteObject(ctx, r.TargetClient, &networkPolicy)
 			})
@@ -355,7 +366,7 @@ func (r *Reconciler) reconcilePolicy(
 
 	if mutated {
 		log.V(1).Info("Usual pod label selector contained at least one key exceeding 63 characters - it had to be mutated", "usualPodLabelSelector", podLabelSelector, "mutatedPodLabelSelector", effectivePodLabelSelector)
-		r.Recorder.Eventf(service, corev1.EventTypeWarning, "PodLabelSelectorKey(s)TooLong", "Usual pod label selector has at least one key exceeding 63 characters and had to be mutated - consider shortening the namespace name or the service name (%+v was mutated to %+v)", podLabelSelector, effectivePodLabelSelector)
+		r.Recorder.Eventf(service, nil, corev1.EventTypeWarning, "PodLabelSelectorKey(s)TooLong", gardencorev1beta1.EventActionReconcile, "Usual pod label selector has at least one key exceeding 63 characters and had to be mutated - consider shortening the namespace name or the service name (%+v was mutated to %+v)", podLabelSelector, effectivePodLabelSelector)
 	}
 
 	return err
@@ -538,4 +549,32 @@ func egressNamespaceSelectorFor(serviceNamespace, namespaceName string) *metav1.
 
 func key(meta metav1.ObjectMeta) string {
 	return meta.Namespace + "/" + meta.Name
+}
+
+// podNetworkPolicyLabelKeysByNamespace lists pods in each namespace once and collects the network policy label keys
+// (prefix "networking.resources.gardener.cloud/to-" with value "allowed") into a set per namespace. This avoids
+// repeated informer scans when checking multiple ports per namespace.
+func (r *Reconciler) podNetworkPolicyLabelKeysByNamespace(ctx context.Context, namespaceNames sets.Set[string]) (map[string]sets.Set[string], error) {
+	result := make(map[string]sets.Set[string], namespaceNames.Len())
+
+	for _, ns := range namespaceNames.UnsortedList() {
+		podList := &metav1.PartialObjectMetadataList{}
+		podList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("PodList"))
+		if err := r.TargetClient.List(ctx, podList, client.InNamespace(ns)); err != nil {
+			return nil, fmt.Errorf("failed listing pods in namespace %s: %w", ns, err)
+		}
+
+		labelKeys := sets.New[string]()
+		for _, pod := range podList.Items {
+			for k, v := range pod.Labels {
+				if v == v1beta1constants.LabelNetworkPolicyAllowed && strings.HasPrefix(k, resourcesv1alpha1.NetworkPolicyLabelKeyPrefix+"to-") {
+					labelKeys.Insert(k)
+				}
+			}
+		}
+
+		result[ns] = labelKeys
+	}
+
+	return result, nil
 }

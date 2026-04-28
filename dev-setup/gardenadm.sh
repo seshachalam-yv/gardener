@@ -9,8 +9,8 @@ set -o pipefail
 COMMAND="${1:-up}"
 VALID_COMMANDS=("up" "down")
 
-SCENARIO="${SCENARIO:-high-touch}"
-VALID_SCENARIOS=("high-touch" "medium-touch" "connect")
+SCENARIO="${SCENARIO:-unmanaged-infra}"
+VALID_SCENARIOS=("unmanaged-infra" "managed-infra" "connect")
 
 valid_scenario=false
 for scenario in "${VALID_SCENARIOS[@]}"; do
@@ -28,7 +28,7 @@ case "$COMMAND" in
   up)
     if [[ "$SCENARIO" != "connect" ]]; then
       # Prepare resources and generate manifests.
-      # The manifests are copied to the high-touch machine pods or can be passed to the `--config-dir` flag of `gardenadm bootstrap`.
+      # The manifests are copied to the unmanaged-infra machine pods or can be passed to the `--config-dir` flag of `gardenadm bootstrap`.
       skaffold build \
         -p "$SCENARIO" \
         -m gardenadm,provider-local-node,provider-local \
@@ -42,21 +42,43 @@ case "$COMMAND" in
         --build-artifacts \
         -
 
-      if [[ "$SCENARIO" == "high-touch" ]]; then
+      if [[ "$SCENARIO" == "unmanaged-infra" ]]; then
         skaffold run \
-          -n gardenadm-high-touch \
+          -n gardenadm-unmanaged-infra \
           -m provider-local-node,machine
       fi
+
+      # Export global resources for `gardenadm connect` scenario in case they will be needed later
+      mkdir -p "$(dirname "$0")/gardenadm/resources/generated/connect"
+      # We don't need to export Controller{Registration,Deployment}s since they already get registered by
+      # gardener-operator.
+      yq '. | select(.kind == "Project" or .kind == "Namespace" or .kind == "CloudProfile")' \
+        < "$(dirname "$0")/gardenadm/resources/generated/$SCENARIO/manifests.yaml" \
+        > "$(dirname "$0")/gardenadm/resources/generated/connect/manifests.yaml"
     else
+      if [[ ! -f "$(dirname "$0")/gardenadm/resources/generated/connect/manifests.yaml" ]]; then
+        echo "Error: Must run 'make gardenadm-up' first." >&2
+        exit 1
+      fi
+
       make operator-up garden-up \
         -f "$(dirname "$0")/../Makefile" \
         KUBECONFIG="$KUBECONFIG"
+
+      echo "Creating global resources in the virtual garden cluster as preparation for running 'gardenadm connect'..."
+      kubectl --kubeconfig="$VIRTUAL_GARDEN_KUBECONFIG" apply -f "$(dirname "$0")/gardenadm/resources/generated/connect/manifests.yaml"
     fi
     ;;
 
   down)
-    skaffold delete \
-      -n "gardenadm-$SCENARIO"
+    if [[ "$SCENARIO" != "connect" ]]; then
+      skaffold delete \
+        -n "gardenadm-$SCENARIO"
+    else
+      make garden-down operator-down \
+        -f "$(dirname "$0")/../Makefile" \
+        KUBECONFIG="$KUBECONFIG"
+    fi
     ;;
 
   *)

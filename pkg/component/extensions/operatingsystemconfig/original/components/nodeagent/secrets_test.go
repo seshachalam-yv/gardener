@@ -102,14 +102,14 @@ var _ = Describe("Secrets", func() {
 		})
 
 		It("should generate the expected secret", func() {
-			secret, err := OperatingSystemConfigSecret(ctx, fakeClient, osc, secretName, workerPoolName)
+			secret, err := OperatingSystemConfigSecret(ctx, fakeClient, osc, secretName, workerPoolName, true)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(secret).To(Equal(&corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
 					Namespace: "kube-system",
 					Annotations: map[string]string{
-						"checksum/data-script": "a3efca387130b4a0291595c1608d80cad758ca95f71901f1fc91b0d74847c0ff",
+						"checksum/data-script": "e92163ba634e290c2e13de35a778007114e201e168c0a27149d05ab5592e4d36",
 					},
 					Labels: map[string]string{
 						"gardener.cloud/role":        "operating-system-config",
@@ -118,8 +118,7 @@ var _ = Describe("Secrets", func() {
 				},
 				Data: map[string][]byte{"osc.yaml": []byte(`apiVersion: extensions.gardener.cloud/v1alpha1
 kind: OperatingSystemConfig
-metadata:
-  creationTimestamp: null
+metadata: {}
 spec:
   criConfig:
     containerd:
@@ -147,6 +146,16 @@ status:
 			}))
 		})
 
+		It("should preserve secretRef when resolveSecretRefs is false", func() {
+			secret, err := OperatingSystemConfigSecret(ctx, fakeClient, osc, secretName, workerPoolName, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			oscYAML := string(secret.Data["osc.yaml"])
+			Expect(oscYAML).To(ContainSubstring("secretRef:"))
+			Expect(oscYAML).NotTo(ContainSubstring("inline:"))
+			Expect(secret.Annotations).To(HaveKeyWithValue("checksum/data-script", utils.ComputeSHA256Hex(secret.Data["osc.yaml"])))
+		})
+
 		It("should return an error because a referenced secret cannot be found", func() {
 			osc.Spec.Files = append(osc.Spec.Files, extensionsv1alpha1.File{
 				Path: "/non/existing/path",
@@ -158,7 +167,7 @@ status:
 				},
 			})
 
-			secret, err := OperatingSystemConfigSecret(ctx, fakeClient, osc, secretName, workerPoolName)
+			secret, err := OperatingSystemConfigSecret(ctx, fakeClient, osc, secretName, workerPoolName, true)
 			Expect(err).To(MatchError(ContainSubstring(`cannot resolve secret ref from osc: secrets "non-existing" not found`)))
 			Expect(secret).To(BeNil())
 		})

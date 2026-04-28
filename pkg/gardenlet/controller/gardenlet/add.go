@@ -5,6 +5,7 @@
 package gardenlet
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -20,6 +21,7 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controller/gardenletdeployer"
 	predicateutils "github.com/gardener/gardener/pkg/controllerutils/predicate"
+	"github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	"github.com/gardener/gardener/pkg/utils/oci"
 )
 
@@ -42,13 +44,17 @@ func (r *Reconciler) AddToManager(
 		r.SeedClientSet = seedClientSet
 	}
 	if r.Recorder == nil {
-		r.Recorder = gardenCluster.GetEventRecorderFor(ControllerName + "-controller")
+		r.Recorder = gardenCluster.GetEventRecorder(ControllerName + "-controller")
 	}
 	if r.Clock == nil {
 		r.Clock = clock.RealClock{}
 	}
 	if r.GardenNamespace == "" {
-		r.GardenNamespace = v1beta1constants.GardenNamespace
+		if gardenlet.IsResponsibleForSelfHostedShoot() {
+			r.GardenNamespace = metav1.NamespaceSystem
+		} else {
+			r.GardenNamespace = v1beta1constants.GardenNamespace
+		}
 	}
 	if r.HelmRegistry == nil {
 		r.HelmRegistry = oci.NewHelmRegistry(r.GardenClient)
@@ -64,13 +70,14 @@ func (r *Reconciler) AddToManager(
 			// There can only be one Gardenlet object relevant for an instance of gardenlet, so it's enough to have one
 			// worker only.
 			MaxConcurrentReconciles: 1,
+			ReconciliationTimeout:   r.Config.Controllers.Gardenlet.SyncPeriod.Duration,
 		}).
-		WatchesRawSource(
-			source.Kind[client.Object](gardenCluster.GetCache(),
-				&seedmanagementv1alpha1.Gardenlet{},
-				&handler.EnqueueRequestForObject{},
-				predicate.GenerationChangedPredicate{},
-				predicateutils.ForEventTypes(predicateutils.Create, predicateutils.Update)),
-		).
+		WatchesRawSource(source.Kind[client.Object](
+			gardenCluster.GetCache(),
+			&seedmanagementv1alpha1.Gardenlet{},
+			&handler.EnqueueRequestForObject{},
+			predicate.GenerationChangedPredicate{},
+			predicateutils.ForEventTypes(predicateutils.Create, predicateutils.Update),
+		)).
 		Complete(r)
 }

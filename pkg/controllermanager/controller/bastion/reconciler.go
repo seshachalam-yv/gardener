@@ -15,10 +15,9 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
-	"github.com/gardener/gardener/pkg/controllerutils"
 )
 
 // Reconciler reconciles Bastions.
@@ -31,9 +30,6 @@ type Reconciler struct {
 // Reconcile reacts to updates on Bastion resources and cleans up expired Bastions.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
 
 	bastion := &operationsv1alpha1.Bastion{}
 	if err := r.Client.Get(ctx, request.NamespacedName, bastion); err != nil {

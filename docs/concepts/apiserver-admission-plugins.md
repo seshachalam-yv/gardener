@@ -10,16 +10,35 @@ If you want to get an overview of the what and why of admission plugins then [th
 
 This document lists all existing admission plugins with a short explanation of what it is responsible for.
 
+<!-- Keep the list of admission plugins in (case-sensitive) lexicographical order. -->
+
 ## `BackupBucketValidator`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `BackupBuckets`s.
 When the backup bucket is using `WorkloadIdentity` as backup credentials, the plugin ensures the backup bucket and the workload identity have the same provider type, i.e. `backupBucket.spec.provider.type` and `workloadIdentity.spec.targetSystem.type` have the same value.
 
+## `Bastion`
+
+**Type**: Mutating. **Enabled by default**: Yes.
+
+This admission controller reacts on `CREATE` and `UPDATE` operations for `Bastion`s.
+
+It validates that the `Shoot` referenced in the `Bastion`:
+- is not in deletion.
+- is assigned to a `Seed`.
+- does not disable SSH access for the worker Nodes.
+
+It mutates the `Bastion` in the following way:
+- it sets`.spec.seedName` to the `Shoot` `.spec.seedName`.
+- it sets `.spec.providerType` to the `Shoot` `.spec.provider.type`.
+- it sets the `gardener.cloud/created-by=<username>` annotation for `CREATE` operations.
+- it adds an owner reference to the `Shoot` to ensure the `Bastion` is deleted when the `Shoot` is deleted.
+
 ## `ClusterOpenIDConnectPreset`, `OpenIDConnectPreset`
 
-_(both enabled by default)_
+**Type**: Mutating (for both). **Enabled by default**: Yes (for both).
 
 These admission controllers react on `CREATE` operations for `Shoot`s.
 If the `Shoot` does not specify any OIDC configuration (`.spec.kubernetes.kubeAPIServer.oidcConfig=nil`), then it tries to find a matching `ClusterOpenIDConnectPreset` or `OpenIDConnectPreset`, respectively.
@@ -28,7 +47,7 @@ In this case, the admission controller will default the OIDC configuration in th
 
 ## `ControllerRegistrationResources`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `ControllerRegistration`s.
 It validates that there exists only one `ControllerRegistration` in the system that is primarily responsible for a given kind/type resource combination.
@@ -36,7 +55,7 @@ This prevents misconfiguration by the Gardener administrator/operator.
 
 ## `CustomVerbAuthorizer`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `Project`s and `NamespacedCloudProfile`s.
 
@@ -46,9 +65,11 @@ Usually, regular project members are not bound to this custom verb, allowing the
 For `NamespacedCloudProfile`s, the modification of specific fields also require the user to be bound to an RBAC role with custom verbs.
 Please see [this document](../usage/project/namespaced-cloud-profiles.md#field-modification-restrictions) for more information.
 
+For `Shoot`s, the `mark-self-hosted` verb is required to set the `spec.provider.workers[].controlPlane` field (which marks a `Shoot` as "self-hosted shoot").
+
 ## `DeletionConfirmation`
 
-_(enabled by default)_
+**Type**: Validating and Mutating. **Enabled by default**: Yes.
 
 This admission controller reacts on `DELETE` operations for `Project`s, `Shoot`s, and `ShootState`s.
 It validates that the respective resource is annotated with a deletion confirmation annotation, namely `confirmation.gardener.cloud/deletion=true`.
@@ -60,44 +81,77 @@ Find all information about it [in this document](../usage/project/projects.md#fo
 Furthermore, this admission controller reacts on `CREATE` or `UPDATE` operations for `Shoot`s.
 It makes sure that the `deletion.gardener.cloud/confirmed-by` annotation is properly maintained in case the `Shoot` deletion is confirmed with above mentioned annotation.
 
-## `ExposureClass`
+## `ExtensionLabels`
 
-_(enabled by default)_
+**Type**: Mutating. **Enabled by default**: Yes.
 
-This admission controller reacts on `Create` operations for `Shoot`s.
-It mutates `Shoot` resources which have an `ExposureClass` referenced by merging both their `shootSelectors` and/or `tolerations` into the `Shoot` resource.
+This admission controller reacts on `CREATE` and `UPDATE` operations for `BackupBucket`s, `BackupEntry`s, `CloudProfile`s, `NamespacedCloudProfile`s, `Seed`s, `SecretBinding`s, `CredentialsBinding`s, `WorkloadIdentity`s and `Shoot`s. For all the various extension types in the specifications of these objects, it adds a corresponding label in the resource. This would allow extension admission webhooks to filter out the resources they are responsible for and ignore all others. This label is of the form `<extension-type>.extensions.gardener.cloud/<extension-name> : "true"`. For example, an extension label for provider extension type `aws`, looks like `provider.extensions.gardener.cloud/aws : "true"`.
 
 ## `ExtensionValidator`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `BackupEntry`s, `BackupBucket`s, `Seed`s, and `Shoot`s.
 For all the various extension types in the specifications of these objects, it validates whether there exists a `ControllerRegistration` in the system that is primarily responsible for the stated extension type(s).
 This prevents misconfigurations that would otherwise allow users to create such resources with extension types that don't exist in the cluster, effectively leading to failing reconciliation loops.
 
-## `ExtensionLabels`
-
-_(enabled by default)_
-
-This admission controller reacts on `CREATE` and `UPDATE` operations for `BackupBucket`s, `BackupEntry`s, `CloudProfile`s, `NamespacedCloudProfile`s, `Seed`s, `SecretBinding`s, `CredentialsBinding`s, `WorkloadIdentity`s and `Shoot`s. For all the various extension types in the specifications of these objects, it adds a corresponding label in the resource. This would allow extension admission webhooks to filter out the resources they are responsible for and ignore all others. This label is of the form `<extension-type>.extensions.gardener.cloud/<extension-name> : "true"`. For example, an extension label for provider extension type `aws`, looks like `provider.extensions.gardener.cloud/aws : "true"`.
-
 ## `FinalizerRemoval`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `UPDATE` operations for `CredentialsBinding`s, `SecretBinding`s, `Shoot`s. 
 It ensures that the finalizers of these resources are not removed by users, as long as the affected resource is still in use.
 For `CredentialsBinding`s and `SecretBinding`s this means, that the `gardener` finalizer can only be removed if the binding is not referenced by any `Shoot`.
 In case of `Shoot`s, the `gardener` finalizer can only be removed if the last operation of the `Shoot` indicates a successful deletion. 
 
-## `ProjectValidator`
+## `ManagedSeed`
 
-_(enabled by default)_
+**Type**: Validating and Mutating. **Enabled by default**: Yes.
+
+This admission controller reacts on `CREATE` and `UPDATE` operations for `ManagedSeeds`s.
+It validates certain configuration values in the specification against the referred `Shoot`, for example Seed provider, network ranges, DNS domain, etc.
+Similar to `ShootValidator`, it performs validations that cannot be handled by the static API validation due to their dynamic nature.
+Additionally, it performs certain defaulting tasks, making sure that configuration values that are not specified are defaulted to the values of the referred `Shoot`, for example Seed provider, network ranges, DNS domain, etc.
+
+## `ManagedSeedShoot`
+
+**Type**: Validating. **Enabled by default**: Yes.
+
+This admission controller reacts on `DELETE` operations for `ManagedSeed`s.
+It rejects the deletion if there are `Shoot`s that are scheduled onto the `Seed` that is registered by the `ManagedSeed`.
+
+## `MutatingAdmissionPolicy`
+
+**Type**: Mutating. **Enabled by default**: No.
+
+This admission controller is defined in the generic API server library (`k8s.io/apiserver`). See the [Mutating Admission Policy page](https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy).
+
+## `MutatingAdmissionWebhook`
+
+**Type**: Mutating. **Enabled by default**: Yes.
+
+This admission controller is defined in the generic API server library (`k8s.io/apiserver`). See the [MutatingAdmissionWebhook section](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#mutatingadmissionwebhook).
+
+## `NamespaceLifecycle`
+
+**Type**: Validating. **Enabled by default**: Yes.
+
+This admission controller is defined in the generic API server library (`k8s.io/apiserver`). See the [NamespaceLifecycle section](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#namespacelifecycle).
+
+## `NamespacedCloudProfileValidator`
+
+**Type**: Validating. **Enabled by default**: Yes.
+
+This admission controller reacts on `CREATE` and `UPDATE` operations for `NamespacedCloudProfile`s.
+It primarily validates if the referenced parent `CloudProfile` exists in the system. In addition, the admission controller ensures that the `NamespacedCloudProfile` only configures new machine types, and does not overwrite those from the parent `CloudProfile`.
+
+## `ProjectMutator`
+
+**Type**: Mutating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `Project`s.
-It prevents creating `Project`s with a non-empty `.spec.namespace` if the value in `.spec.namespace` does not start with `garden-`.
 
-In addition, the project specification is initialized during creation:
+When the project specification is initialized during creation:
 - `.spec.createdBy` is set to the user creating the project.
 - `.spec.owner` defaults to the value of `.spec.createdBy` if it is not specified.
 
@@ -105,14 +159,16 @@ During subsequent updates, it ensures that the project owner is included in the 
 
 ## `ResourceQuota`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
+
+This admission controller is defined in the generic API server library (`k8s.io/apiserver`). See the [ResourceQuota section](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#resourcequota).
 
 This admission controller enables [object count ResourceQuotas](https://kubernetes.io/docs/concepts/policy/resource-quotas/#object-count-quota) for Gardener resources, e.g. `Shoots`, `SecretBindings`, `Projects`, etc.
 > :warning: In addition to this admission plugin, the [ResourceQuota controller](https://github.com/kubernetes/kubernetes/blob/release-1.2/docs/design/admission_control_resource_quota.md#resource-quota-controller) must be enabled for the Kube-Controller-Manager of your Garden cluster.
 
 ## `ResourceReferenceManager`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `CloudProfile`s, `Project`s, `SecretBinding`s, `Seed`s, and `Shoot`s.
 Generally, it checks whether referred resources stated in the specifications of these objects exist in the system (e.g., if a referenced `Secret` exists).
@@ -120,36 +176,72 @@ Generally, it checks whether referred resources stated in the specifications of 
 However, it also has some special behaviours for certain resources:
 * `CloudProfile`s: It rejects removing Kubernetes or machine image versions if there is at least one `Shoot` that refers to them.
 
+## `SeedMutator`
+
+**Type**: Mutating. **Enabled by default**: Yes.
+
+This admission controller reacts on `CREATE` and `UPDATE` operations for `Seed`s.
+It maintains the `name.seed.gardener.cloud/<name>` labels for it.
+More specifically, it adds the `name.seed.gardener.cloud/<name>=true` label where `<name>` is
+- the name of the `Seed` resource (a `Seed` named `foo` will get label `name.seed.gardener.cloud/foo=true`).
+- the name of the parent `Seed` resource in case it is a `ManagedSeed` (a `Seed` named `foo` that is created by a `ManagedSeed` which references a `Shoot` running a `Seed` called `bar` will get label `name.seed.gardener.cloud/bar=true`).
+
 ## `SeedValidator`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE`, `UPDATE`, and `DELETE` operations for `Seed`s.
 Rejects the deletion if `Shoot`(s) reference the seed cluster.
 While the seed is still used by `Shoot`(s), the plugin disallows removal of entries from the `seed.spec.provider.zones` field.
 When the seed is using `WorkloadIdentity` as backup credentials, the plugin ensures the seed backup and the workload identity have the same provider type, i.e. `seed.spec.backup.provider` and `workloadIdentity.spec.targetSystem.type` have the same value.
 
-## `SeedMutator`
-
-_(enabled by default)_
-
-This admission controller reacts on `CREATE` and `UPDATE` operations for `Seed`s.
-It maintains the `name.seed.gardener.cloud/<name>` labels for it.
-More specifically, it adds that the `name.seed.gardener.cloud/<name>=true` label where `<name>` is
-- the name of the `Seed` resource (a `Seed` named `foo` will get label `name.seed.gardener.cloud/foo=true`).
-- the name of the parent `Seed` resource in case it is a `ManagedSeed` (a `Seed` named `foo` that is created by a `ManagedSeed` which references a `Shoot` running a `Seed` called `bar` will get label `name.seed.gardener.cloud/bar=true`).
-
 ## `ShootDNS`
 
-_(enabled by default)_
+**Type**: Validating and Mutating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `Shoot`s.
 It tries to assign a default domain to the `Shoot`.
 It also validates the DNS configuration (`.spec.dns`) for shoots.
 
+## `ShootDNSRewriting`
+
+**Type**: Mutating. **Enabled by default**: No.
+
+This admission controller reacts on `CREATE` operations for `Shoot`s.
+If enabled, it adds a set of common suffixes configured in its admission plugin configuration to the `Shoot` (`spec.systemComponents.coreDNS.rewriting.commonSuffixes`) (for more information, see [DNS Search Path Optimization](../usage/networking/dns-search-path-optimization.md)).
+Already existing `Shoot`s will not be affected by this admission plugin.
+
+## `ShootExposureClass`
+
+**Type**: Mutating. **Enabled by default**: Yes.
+
+This admission controller reacts on `Create` operations for `Shoot`s.
+It mutates `Shoot` resources which have an `ExposureClass` referenced by merging both their `shootSelectors` and/or `tolerations` into the `Shoot` resource.
+
+## `ShootManagedSeed`
+
+**Type**: Validating. **Enabled by default**: Yes.
+
+This admission controller reacts on `UPDATE` and `DELETE` operations for `Shoot`s.
+It validates certain configuration values in the specification that are specific to `ManagedSeed`s (e.g. the nginx-addon of the Shoot has to be disabled, the Shoot VPA has to be enabled).
+It rejects the deletion if the `Shoot` is referred to by a `ManagedSeed`.
+
+## `ShootMutator`
+
+**Type**: Mutating. **Enabled by default**: Yes.
+
+This admission controller reacts on `CREATE` and `UPDATE` operations for `Shoot`s.
+
+It mutates the `Shoot` in the following way:
+- It sets the `gardener.cloud/created-by=<username>` annotation for newly created `Shoot` resources.
+- It maintains annotations used for Shoot lifecycle operations such as `shoot.gardener.cloud/tasks` and `maintenance.shoot.gardener.cloud/needs-retry-operation`.
+- It defaults Shoot `.spec.networking.pods` and `.spec.networking.services` fields in case they are not provided and the Seed specifies the `.spec.networks.shootDefaults` field.
+- It defaults the Shoot Kubernetes version (`.spec.kubernetes.version` and `.spec.provider.workers[].kubernetes.version`).
+- It defaults the Shoot machine image version (`.spec.provider.workers[].machine.image.{name,version}`).
+
 ## `ShootNodeLocalDNSEnabledByDefault`
 
-_(disabled by default)_
+**Type**: Mutating. **Enabled by default**: No.
 
 This admission controller reacts on `CREATE` operations for `Shoot`s.
 If enabled, it will enable node local dns within the shoot cluster (for more information, see [NodeLocalDNS Configuration](../usage/networking/node-local-dns.md)) by setting `spec.systemComponents.nodeLocalDNS.enabled=true` for newly created Shoots.
@@ -158,7 +250,7 @@ will not be affected by this admission plugin.
 
 ## `ShootQuotaValidator`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `Shoot`s.
 It validates the resource consumption declared in the specification against applicable `Quota` resources.
@@ -167,7 +259,7 @@ Applicable `Quota`s are referred in the `SecretBinding` that is used by the `Sho
 
 ## `ShootResourceReservation`
 
-_(enabled by default)_
+**Type**: Mutating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `Shoot`s.
 It injects the `Kubernetes.Kubelet.KubeReserved` setting for kubelet either as global setting for a shoot or on a per worker pool basis.
@@ -180,9 +272,17 @@ If a shoot contains global resource reservations, then no per worker pool resour
 By default, `useGKEFormula: true` applies to all Shoots.
 Operators can provide an optional label selector via the `selector` field to limit which Shoots get worker specific resource reservations injected.
 
+## `ShootTolerationRestriction`
+
+**Type**: Validating and Mutating. **Enabled by default**: Yes.
+
+This admission controller reacts on `CREATE` and `UPDATE` operations for `Shoot`s.
+It validates the `.spec.tolerations` used in `Shoot`s against the whitelist of its `Project`, or against the whitelist configured in the admission controller's configuration, respectively.
+Additionally, it defaults the `.spec.tolerations` in `Shoot`s with those configured in its `Project`, and those configured in the admission controller's configuration, respectively.
+
 ## `ShootVPAEnabledByDefault`
 
-_(disabled by default)_
+**Type**: Mutating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` operations for `Shoot`s.
 If enabled, it will enable the managed `VerticalPodAutoscaler` components (for more information, see [Vertical Pod Auto-Scaling](../usage/autoscaling/shoot_autoscaling.md#vertical-pod-auto-scaling))
@@ -190,58 +290,22 @@ by setting `spec.kubernetes.verticalPodAutoscaler.enabled=true` for newly create
 Already existing Shoots and new Shoots that explicitly disable VPA (`spec.kubernetes.verticalPodAutoscaler.enabled=false`)
 will not be affected by this admission plugin.
 
-## `ShootTolerationRestriction`
-
-_(enabled by default)_
-
-This admission controller reacts on `CREATE` and `UPDATE` operations for `Shoot`s.
-It validates the `.spec.tolerations` used in `Shoot`s against the whitelist of its `Project`, or against the whitelist configured in the admission controller's configuration, respectively.
-Additionally, it defaults the `.spec.tolerations` in `Shoot`s with those configured in its `Project`, and those configured in the admission controller's configuration, respectively.
-
 ## `ShootValidator`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE`, `UPDATE` and `DELETE` operations for `Shoot`s.
 It validates certain configurations in the specification against the referred `CloudProfile` (e.g., machine images, machine types, used Kubernetes version, ...).
 Generally, it performs validations that cannot be handled by the static API validation due to their dynamic nature (e.g., when something needs to be checked against referred resources).
-Additionally, it takes over certain defaulting tasks (e.g., default machine image for worker pools, default Kubernetes version) and setting the `gardener.cloud/created-by=<username>` annotation for newly created `Shoot` resources.
 
-## `ShootManagedSeed`
+## `ValidatingAdmissionPolicy`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
-This admission controller reacts on `UPDATE` and `DELETE` operations for `Shoot`s.
-It validates certain configuration values in the specification that are specific to `ManagedSeed`s (e.g. the nginx-addon of the Shoot has to be disabled, the Shoot VPA has to be enabled).
-It rejects the deletion if the `Shoot` is referred to by a `ManagedSeed`.
+This admission controller is defined in the generic API server library (`k8s.io/apiserver`). See the [ValidatingAdmissionPolicy section](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#validatingadmissionpolicy).
 
-## `ManagedSeedValidator`
+## `ValidatingAdmissionWebhook`
 
-_(enabled by default)_
+**Type**: Validating. **Enabled by default**: Yes.
 
-This admission controller reacts on `CREATE` and `UPDATE` operations for `ManagedSeeds`s.
-It validates certain configuration values in the specification against the referred `Shoot`, for example Seed provider, network ranges, DNS domain, etc.
-Similar to `ShootValidator`, it performs validations that cannot be handled by the static API validation due to their dynamic nature.
-Additionally, it performs certain defaulting tasks, making sure that configuration values that are not specified are defaulted to the values of the referred `Shoot`, for example Seed provider, network ranges, DNS domain, etc.
-
-## `ManagedSeedShoot`
-
-_(enabled by default)_
-
-This admission controller reacts on `DELETE` operations for `ManagedSeed`s.
-It rejects the deletion if there are `Shoot`s that are scheduled onto the `Seed` that is registered by the `ManagedSeed`.
-
-## `ShootDNSRewriting`
-
-_(disabled by default)_
-
-This admission controller reacts on `CREATE` operations for `Shoot`s.
-If enabled, it adds a set of common suffixes configured in its admission plugin configuration to the `Shoot` (`spec.systemComponents.coreDNS.rewriting.commonSuffixes`) (for more information, see [DNS Search Path Optimization](../usage/networking/dns-search-path-optimization.md)).
-Already existing `Shoot`s will not be affected by this admission plugin.
-
-## `NamespacedCloudProfileValidator`
-
-_(enabled by default)_
-
-This admission controller reacts on `CREATE` and `UPDATE` operations for `NamespacedCloudProfile`s.
-It primarily validates if the referenced parent `CloudProfile` exists in the system. In addition, the admission controller ensures that the `NamespacedCloudProfile` only configures new machine types, and does not overwrite those from the parent `CloudProfile`.
+This admission controller is defined in the generic API server library (`k8s.io/apiserver`). See the [ValidatingAdmissionWebhook section](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#validatingadmissionwebhook).

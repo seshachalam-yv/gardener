@@ -8,28 +8,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
 
 	"github.com/go-logr/logr"
-	"golang.org/x/exp/maps"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/yaml"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	schedulerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/scheduler/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
-	"github.com/gardener/gardener/pkg/controllerutils"
-	schedulerconfigv1alpha1 "github.com/gardener/gardener/pkg/scheduler/apis/config/v1alpha1"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	cidrvalidation "github.com/gardener/gardener/pkg/utils/validation/cidr"
 )
@@ -39,15 +39,12 @@ type Reconciler struct {
 	Client          client.Client
 	Config          *schedulerconfigv1alpha1.ShootSchedulerConfiguration
 	GardenNamespace string
-	Recorder        record.EventRecorder
+	Recorder        events.EventRecorder
 }
 
 // Reconcile schedules shoots to seeds.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
-
-	ctx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
 
 	shoot := &gardencorev1beta1.Shoot{}
 	if err := r.Client.Get(ctx, request.NamespacedName, shoot); err != nil {
@@ -89,13 +86,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		"strategy", r.Config.Strategy,
 	)
 
-	r.reportEvent(shoot, corev1.EventTypeNormal, gardencorev1beta1.ShootEventSchedulingSuccessful, "Scheduled to seed '%s'", seed.Name)
+	r.reportEvent(shoot, corev1.EventTypeNormal, gardencorev1beta1.ShootEventSchedulingSuccessful, gardencorev1beta1.EventActionReconcile, "Scheduled to seed %q", seed.Name)
 	return reconcile.Result{}, nil
 }
 
 func (r *Reconciler) reportFailedScheduling(ctx context.Context, log logr.Logger, shoot *gardencorev1beta1.Shoot, err error) {
+	// Conflict errors are likely to occur during scheduling but will be retried by the controller.
+	// Skip reporting the event and updating the status, the error will still be logged.
+	if apierrors.IsConflict(err) {
+		return
+	}
+
 	description := "Failed to schedule Shoot: " + err.Error()
-	r.reportEvent(shoot, corev1.EventTypeWarning, gardencorev1beta1.ShootEventSchedulingFailed, description)
+	r.reportEvent(shoot, corev1.EventTypeWarning, gardencorev1beta1.ShootEventSchedulingFailed, gardencorev1beta1.EventActionReconcile, description)
 
 	patch := client.MergeFrom(shoot.DeepCopy())
 	if shoot.Status.LastOperation == nil {
@@ -110,8 +113,8 @@ func (r *Reconciler) reportFailedScheduling(ctx context.Context, log logr.Logger
 	}
 }
 
-func (r *Reconciler) reportEvent(shoot *gardencorev1beta1.Shoot, eventType string, eventReason, messageFmt string, args ...any) {
-	r.Recorder.Eventf(shoot, eventType, eventReason, messageFmt, args...)
+func (r *Reconciler) reportEvent(shoot *gardencorev1beta1.Shoot, eventType string, eventReason, action, messageFmt string, args ...any) {
+	r.Recorder.Eventf(shoot, nil, eventType, eventReason, action, messageFmt, args...)
 }
 
 // DetermineSeed returns an appropriate Seed cluster (or nil).
@@ -142,6 +145,10 @@ func (r *Reconciler) DetermineSeed(
 	if err != nil {
 		return nil, err
 	}
+	project, err := gardenerutils.ProjectForNamespaceFromReader(ctx, r.Client, shoot.Namespace)
+	if err != nil {
+		return nil, err
+	}
 
 	filteredSeeds, err := filterUsableSeeds(seedList.Items)
 	if err != nil {
@@ -163,7 +170,19 @@ func (r *Reconciler) DetermineSeed(
 	if err != nil {
 		return nil, err
 	}
+	filteredSeeds, err = filterSeedsForZoneSelection(filteredSeeds, shoot)
+	if err != nil {
+		return nil, err
+	}
 	filteredSeeds, err = filterSeedsForAccessRestrictions(filteredSeeds, shoot)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsMatchingDomain(filteredSeeds, shoot, project.Name)
+	if err != nil {
+		return nil, err
+	}
+	filteredSeeds, err = filterSeedsWithDisabledShootReconciliations(filteredSeeds)
 	if err != nil {
 		return nil, err
 	}
@@ -186,8 +205,8 @@ func (r *Reconciler) getRegionConfigMap(ctx context.Context, log logr.Logger, cl
 
 	var regionConfig *corev1.ConfigMap
 	for _, regionConf := range regionConfigList.Items {
-		profileNames := strings.Split(regionConf.Annotations[v1beta1constants.AnnotationSchedulingCloudProfiles], ",")
-		for _, name := range profileNames {
+		profileNames := strings.SplitSeq(regionConf.Annotations[v1beta1constants.AnnotationSchedulingCloudProfiles], ",")
+		for name := range profileNames {
 			if name != cloudProfile.Name {
 				continue
 			}
@@ -284,6 +303,66 @@ func filterSeedsForZonalShootControlPlanes(seedList []gardencorev1beta1.Seed, sh
 	return seedList, nil
 }
 
+// filterSeedsForZoneSelection filters seeds based on zone selection mode.
+// Seeds with `Enforce` mode are excluded when they have no zone overlap with the shoot's worker pools.
+// Seeds with `Prefer` mode that have matching zones are preferred over those without, but all are kept as fallback.
+// Zone selection only applies to non-HA shoots and HA shoots with failure tolerance type `node`.
+// For shoots with failure tolerance type `zone`, the control plane is spread across all zones anyway.
+func filterSeedsForZoneSelection(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) ([]gardencorev1beta1.Seed, error) {
+	if v1beta1helper.IsMultiZonalShootControlPlane(shoot) {
+		return seedList, nil
+	}
+
+	var (
+		shootZones    = allShootZones(shoot.Spec.Provider.Workers)
+		matchingSeeds []gardencorev1beta1.Seed
+	)
+
+	// First pass: exclude `Enforce` seeds that have no zone overlap with the shoot's worker pools.
+	for _, seed := range seedList {
+		if v1beta1helper.SeedSettingZoneSelectionMode(seed.Spec.Settings) != gardencorev1beta1.ZoneSelectionModeEnforce {
+			matchingSeeds = append(matchingSeeds, seed)
+			continue
+		}
+		if len(shootZones) == 0 || sets.New(seed.Spec.Provider.Zones...).HasAny(shootZones...) {
+			matchingSeeds = append(matchingSeeds, seed)
+		}
+	}
+
+	if len(matchingSeeds) == 0 {
+		return nil, fmt.Errorf("none of the %d seeds has any zone overlap with the shoot's worker pool zones (zone selection mode: %s)", len(seedList), gardencorev1beta1.ZoneSelectionModeEnforce)
+	}
+
+	// Second pass: prefer `Prefer` seeds with matching zones. If any match, exclude `Prefer` seeds without overlap.
+	if len(shootZones) > 0 {
+		var preferredSeeds []gardencorev1beta1.Seed
+
+		for _, seed := range matchingSeeds {
+			if v1beta1helper.SeedSettingZoneSelectionMode(seed.Spec.Settings) != gardencorev1beta1.ZoneSelectionModePrefer {
+				preferredSeeds = append(preferredSeeds, seed)
+				continue
+			}
+			if sets.New(seed.Spec.Provider.Zones...).HasAny(shootZones...) {
+				preferredSeeds = append(preferredSeeds, seed)
+			}
+		}
+
+		if len(preferredSeeds) > 0 {
+			return preferredSeeds, nil
+		}
+	}
+
+	return matchingSeeds, nil
+}
+
+func allShootZones(workerPools []gardencorev1beta1.Worker) []string {
+	zones := sets.New[string]()
+	for _, pool := range workerPools {
+		zones.Insert(pool.Zones...)
+	}
+	return zones.UnsortedList()
+}
+
 // filterSeedsForAccessRestrictions filters seeds which do not support the access restrictions configured in the shoot.
 func filterSeedsForAccessRestrictions(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot) ([]gardencorev1beta1.Seed, error) {
 	var seedsSupportingAccessRestrictions []gardencorev1beta1.Seed
@@ -297,6 +376,61 @@ func filterSeedsForAccessRestrictions(seedList []gardencorev1beta1.Seed, shoot *
 		return nil, fmt.Errorf("none of the %d seeds supports the access restrictions configured in the shoot specification", len(seedList))
 	}
 	return seedsSupportingAccessRestrictions, nil
+}
+
+// filterSeedsWithDisabledShootReconciliations filters seeds which have annotation set to temporarily disable shoot reconciliations.
+func filterSeedsWithDisabledShootReconciliations(seedList []gardencorev1beta1.Seed) ([]gardencorev1beta1.Seed, error) {
+	var seedsWithEnabledReconciliations []gardencorev1beta1.Seed
+	for _, seed := range seedList {
+		if !v1beta1helper.HasShootReconciliationsDisabledAnnotation(&seed) {
+			seedsWithEnabledReconciliations = append(seedsWithEnabledReconciliations, seed)
+		}
+	}
+
+	if len(seedsWithEnabledReconciliations) == 0 {
+		return nil, fmt.Errorf("none of the %d seeds have enabled shoot reconciliations currently", len(seedList))
+	}
+	return seedsWithEnabledReconciliations, nil
+}
+
+// filterSeedsMatchingDomain filters seeds that can support the shoot's domain configuration.
+// If the shoot uses a default domain, only seeds that have that domain configured in their DNS defaults are selected.
+// If the shoot uses a custom domain, all seeds are accepted.
+func filterSeedsMatchingDomain(seedList []gardencorev1beta1.Seed, shoot *gardencorev1beta1.Shoot, projectName string) ([]gardencorev1beta1.Seed, error) {
+	// If the shoot doesn't have a domain specified, all seeds are eligible
+	if shoot.Spec.DNS == nil || shoot.Spec.DNS.Domain == nil {
+		return seedList, nil
+	}
+
+	var (
+		shootDomain              = *shoot.Spec.DNS.Domain
+		supportingSeeds          []gardencorev1beta1.Seed
+		hasMatchedGardenerDomain bool
+	)
+
+	for _, seed := range seedList {
+		for _, defaultDomain := range seed.Spec.DNS.Defaults {
+			// if the domain matches a seed domain then we only accept it, if it is in a <name>.<project>.<domain> format
+			if strings.HasSuffix(shootDomain, "."+defaultDomain.Domain) {
+				hasMatchedGardenerDomain = true
+				if shootDomain == fmt.Sprintf("%s.%s.%s", shoot.Name, projectName, defaultDomain.Domain) {
+					supportingSeeds = append(supportingSeeds, seed)
+					break
+				}
+			}
+		}
+	}
+
+	if hasMatchedGardenerDomain {
+		if len(supportingSeeds) == 0 {
+			return nil, fmt.Errorf("none of the %d seeds support the domain %q configured in the shoot specification", len(seedList), shootDomain)
+		}
+		return supportingSeeds, nil
+	}
+
+	// we have not matched a gardener managed domain
+	// all seeds are eligible
+	return seedList, nil
 }
 
 func applyStrategy(log logr.Logger, shoot *gardencorev1beta1.Shoot, seedList []gardencorev1beta1.Seed, strategy schedulerconfigv1alpha1.CandidateDeterminationStrategy, regionConfig *corev1.ConfigMap) ([]gardencorev1beta1.Seed, error) {
@@ -505,7 +639,6 @@ func networksAreDisjointed(seed *gardencorev1beta1.Seed, shoot *gardencorev1beta
 
 		errorMessages []string
 		workerless    = v1beta1helper.IsWorkerless(shoot)
-		haVPN         = v1beta1helper.IsHAVPNEnabled(shoot)
 	)
 
 	if seed.Spec.Networks.ShootDefaults != nil {
@@ -533,7 +666,6 @@ func networksAreDisjointed(seed *gardencorev1beta1.Seed, shoot *gardencorev1beta
 		seed.Spec.Networks.Nodes,
 		seed.Spec.Networks.Pods,
 		seed.Spec.Networks.Services,
-		!haVPN,
 	) {
 		errorMessages = append(errorMessages, e.ErrorBody())
 	}
@@ -548,7 +680,6 @@ func networksAreDisjointed(seed *gardencorev1beta1.Seed, shoot *gardencorev1beta
 			seed.Spec.Networks.Pods,
 			seed.Spec.Networks.Services,
 			workerless,
-			!haVPN,
 		) {
 			errorMessages = append(errorMessages, e.ErrorBody())
 		}
@@ -558,11 +689,8 @@ func networksAreDisjointed(seed *gardencorev1beta1.Seed, shoot *gardencorev1beta
 }
 
 func errorMapToString(seedNameToErr map[string]error) string {
-	sortedSeeds := maps.Keys(seedNameToErr)
-	slices.Sort(sortedSeeds)
-
 	res := "{"
-	for _, seed := range sortedSeeds {
+	for _, seed := range slices.Sorted(maps.Keys(seedNameToErr)) {
 		res += fmt.Sprintf("%s => %s, ", seed, seedNameToErr[seed].Error())
 	}
 	res = strings.TrimSuffix(res, ", ") + "}"
@@ -574,7 +702,7 @@ func verifySeedReadiness(seed *gardencorev1beta1.Seed) bool {
 		return false
 	}
 
-	if cond := v1beta1helper.GetCondition(seed.Status.Conditions, gardencorev1beta1.SeedGardenletReady); cond == nil || cond.Status != gardencorev1beta1.ConditionTrue {
+	if cond := v1beta1helper.GetCondition(seed.Status.Conditions, gardencorev1beta1.GardenletReady); cond == nil || cond.Status != gardencorev1beta1.ConditionTrue {
 		return false
 	}
 

@@ -5,8 +5,6 @@
 package aggregate
 
 import (
-	_ "embed"
-
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -39,9 +37,11 @@ func CentralServiceMonitors() []*monitoringv1.ServiceMonitor {
 							`{__name__="prometheus_tsdb_storage_blocks_bytes"}`,
 							`{__name__="kubeproxy_network_latency:quantile"}`,
 							`{__name__="kubeproxy_sync_proxy:quantile"}`,
+							`{__name__="kube_customresource_verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu",container="kube-apiserver"}`,
+							`{__name__="container_cpu_usage_seconds_total",container="kube-apiserver"}`,
 						},
 					},
-					Port: prometheus.ServicePortName,
+					Port: prometheus.ServicePorts().Web.Name,
 					RelabelConfigs: []monitoringv1.RelabelConfig{
 						// This service monitor is targeting the prometheis in multiple namespaces. Without explicitly
 						// overriding the job label, prometheus-operator would choose job=prometheus-web (service name).

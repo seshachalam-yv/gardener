@@ -10,7 +10,7 @@ usage() {
   echo "Usage:"
   echo "> compute-k8s-controllers.sh [ -h | <old version> <new version> ]"
   echo
-  echo ">> For example: compute-k8s-controllers.sh 1.26 1.27"
+  echo ">> For example: compute-k8s-controllers.sh 1.32 1.33"
 
   exit 0
 }
@@ -57,6 +57,7 @@ declare -A path_map=(
   ["persistentvolume-binder-controller"]="pkg/controller/volume/persistentvolume/pv_controller_base.go"
   ["persistentvolume-expander-controller"]="pkg/controller/volume/expand/expand_controller.go"
   ["pod-garbage-collector-controller"]="pkg/controller/podgc/gc_controller.go"
+  ["podcertificaterequest-cleaner-controller"]="pkg/controller/certificates/cleaner/pcrcleaner.go"
   ["persistentvolume-protection-controller"]="pkg/controller/volume/pvprotection/pv_protection_controller.go"
   ["persistentvolumeclaim-protection-controller"]="pkg/controller/volume/pvcprotection/pvc_protection_controller.go"
   ["replicaset-controller"]="pkg/controller/replicaset/replica_set.go"
@@ -82,11 +83,6 @@ declare -A path_map=(
 )
 
 for version in "${versions[@]}"; do
-  if [ "$version" \< "1.28" ]; then
-    echo "Versions less than 1.28 are not supported."
-    exit 1
-  fi
-
   rm -rf "${out_dir}/kubernetes-${version}"
   rm -f "${out_dir}/k8s-controllers-${version}.txt"
 

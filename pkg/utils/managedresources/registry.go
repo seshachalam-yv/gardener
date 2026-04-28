@@ -9,12 +9,13 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
 
 	"github.com/andybalholm/brotli"
-	"golang.org/x/exp/maps"
+	"go.yaml.in/yaml/v4"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -25,7 +26,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
-	forkedyaml "github.com/gardener/gardener/third_party/gopkg.in/yaml.v2"
 )
 
 // Registry stores objects and their serialized form. It allows to compute a map of all registered objects that can be
@@ -103,22 +103,21 @@ func (r *Registry) Add(objs ...client.Object) error {
 			return err
 		}
 
-		// We use a copy of the upstream package as a workaround
-		// to incosistent/unstable ordering in yaml.v2 when encoding maps
-		// Can be removed once k8s.io/apimachinery/pkg/runtime/serializer/json migrates to yaml.v3
-		// or the issue is resolved upstream in yaml.v2
-		// Please see https://github.com/go-yaml/yaml/pull/736
 		if r.isYAMLSerializer {
 			var anyObj any
-			if err := forkedyaml.Unmarshal(serializationYAML, &anyObj); err != nil {
+			if err := yaml.Unmarshal(serializationYAML, &anyObj); err != nil {
 				return err
 			}
 
-			serBytes, err := forkedyaml.Marshal(anyObj)
-			if err != nil {
+			buf := bytes.Buffer{}
+			encoder := yaml.NewEncoder(&buf)
+			encoder.SetIndent(2)
+			encoder.CompactSeqIndent()
+
+			if err := encoder.Encode(anyObj); err != nil {
 				return err
 			}
-			serializationYAML = serBytes
+			serializationYAML = buf.Bytes()
 		}
 
 		r.nameToObject[filename] = &object{
@@ -140,8 +139,7 @@ func (r *Registry) AddSerialized(filename string, serializationYAML []byte) {
 // The map holds a single key `data.yaml.br` with a value containing all objects,
 // concatenated and compressed by the Brotli algorithm.
 func (r *Registry) SerializedObjects() (map[string][]byte, error) {
-	objectKeys := maps.Keys(r.nameToObject)
-	slices.Sort(objectKeys)
+	objectKeys := slices.Sorted(maps.Keys(r.nameToObject))
 
 	var (
 		buf bytes.Buffer
@@ -186,8 +184,7 @@ func (r *Registry) AddAllAndSerialize(objects ...client.Object) (map[string][]by
 
 // RegisteredObjects returns a slice of registered objects.
 func (r *Registry) RegisteredObjects() []client.Object {
-	objectKeys := maps.Keys(r.nameToObject)
-	slices.Sort(objectKeys)
+	objectKeys := slices.Sorted(maps.Keys(r.nameToObject))
 
 	out := make([]client.Object, 0, len(r.nameToObject))
 	for _, objectKey := range objectKeys {

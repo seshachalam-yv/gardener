@@ -42,16 +42,29 @@ func defaultGarden(backupSecret *corev1.Secret, specifyBackupBucket bool) *opera
 			Name: name,
 		},
 		Spec: operatorv1alpha1.GardenSpec{
+			DNS: &operatorv1alpha1.DNSManagement{
+				Providers: []operatorv1alpha1.DNSProvider{{
+					Name: "primary",
+					Type: "local",
+					SecretRef: corev1.LocalObjectReference{
+						Name: "garden-dns-local",
+					},
+				}},
+			},
 			Extensions: []operatorv1alpha1.GardenExtension{{
 				Type: "local-ext-shoot",
 			}},
 			RuntimeCluster: operatorv1alpha1.RuntimeCluster{
 				Networking: operatorv1alpha1.RuntimeNetworking{
+					// Subnet for automatic pod IP assignment (calico default IPPool) in the kind cluster.
 					Pods:     []string{"10.1.0.0/16"},
 					Services: []string{"10.2.0.0/16"},
 				},
 				Ingress: operatorv1alpha1.Ingress{
-					Domains: []operatorv1alpha1.DNSDomain{{Name: "ingress.runtime-garden.local.gardener.cloud"}},
+					Domains: []operatorv1alpha1.DNSDomain{{
+						Name:     "ingress.runtime-garden.local.gardener.cloud",
+						Provider: ptr.To("primary"),
+					}},
 					Controller: gardencorev1beta1.IngressController{
 						Kind: "nginx",
 					},
@@ -74,7 +87,10 @@ func defaultGarden(backupSecret *corev1.Secret, specifyBackupBucket bool) *opera
 					HighAvailability: &operatorv1alpha1.HighAvailability{},
 				},
 				DNS: operatorv1alpha1.DNS{
-					Domains: []operatorv1alpha1.DNSDomain{{Name: "virtual-garden.local.gardener.cloud"}},
+					Domains: []operatorv1alpha1.DNSDomain{{
+						Name:     "virtual-garden.local.gardener.cloud",
+						Provider: ptr.To("primary"),
+					}},
 				},
 				ETCD: &operatorv1alpha1.ETCD{
 					Main: &operatorv1alpha1.ETCDMain{
@@ -95,9 +111,15 @@ func defaultGarden(backupSecret *corev1.Secret, specifyBackupBucket bool) *opera
 							Container: operatorv1alpha1.DashboardTerminalContainer{Image: "busybox:latest"},
 						},
 					},
+					DiscoveryServer: &operatorv1alpha1.GardenerDiscoveryServerConfig{
+						Domain: &operatorv1alpha1.DNSDomain{
+							Name:     "discovery.local.gardener.cloud",
+							Provider: ptr.To("primary"),
+						},
+					},
 				},
 				Kubernetes: operatorv1alpha1.Kubernetes{
-					Version: "1.31.5",
+					Version: "1.34.2",
 				},
 				Maintenance: operatorv1alpha1.Maintenance{
 					TimeWindow: gardencorev1beta1.MaintenanceTimeWindow{

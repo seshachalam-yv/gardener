@@ -16,14 +16,7 @@ import (
 	"github.com/go-logr/logr"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/spf13/cobra"
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/utils/clock"
@@ -48,16 +41,15 @@ import (
 	localbastion "github.com/gardener/gardener/pkg/provider-local/controller/bastion"
 	localcontrolplane "github.com/gardener/gardener/pkg/provider-local/controller/controlplane"
 	localdnsrecord "github.com/gardener/gardener/pkg/provider-local/controller/dnsrecord"
+	localextensionseedcontroller "github.com/gardener/gardener/pkg/provider-local/controller/extension/seed"
 	localextensionshootcontroller "github.com/gardener/gardener/pkg/provider-local/controller/extension/shoot"
 	localhealthcheck "github.com/gardener/gardener/pkg/provider-local/controller/healthcheck"
 	localinfrastructure "github.com/gardener/gardener/pkg/provider-local/controller/infrastructure"
-	localingress "github.com/gardener/gardener/pkg/provider-local/controller/ingress"
 	localoperatingsystemconfig "github.com/gardener/gardener/pkg/provider-local/controller/operatingsystemconfig"
 	localservice "github.com/gardener/gardener/pkg/provider-local/controller/service"
 	localworker "github.com/gardener/gardener/pkg/provider-local/controller/worker"
 	"github.com/gardener/gardener/pkg/provider-local/local"
 	prometheuswebhook "github.com/gardener/gardener/pkg/provider-local/webhook/prometheus"
-	"github.com/gardener/gardener/pkg/utils/retry"
 )
 
 var hostIP string
@@ -111,8 +103,8 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			MaxConcurrentReconciles: 1,
 		}
 
-		// options for the ingress controller
-		ingressCtrlOpts = &localingress.ControllerOptions{
+		// options for the extension controllers
+		extensionCtrlOpts = &extensionscmdcontroller.ControllerOptions{
 			MaxConcurrentReconciles: 5,
 		}
 
@@ -164,6 +156,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			local.Name,
 			genericactuator.ShootWebhooksResourceName,
 			genericactuator.ShootWebhookNamespaceSelector(local.Type),
+			generalOpts,
 			webhookServerOptions,
 			webhookSwitches,
 		)
@@ -175,9 +168,9 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			extensionscmdcontroller.PrefixOption("bastion-", bastionCtrlOpts),
 			extensionscmdcontroller.PrefixOption("controlplane-", controlPlaneCtrlOpts),
 			extensionscmdcontroller.PrefixOption("dnsrecord-", dnsRecordCtrlOpts),
+			extensionscmdcontroller.PrefixOption("extension-", extensionCtrlOpts),
 			extensionscmdcontroller.PrefixOption("infrastructure-", infraCtrlOpts),
 			extensionscmdcontroller.PrefixOption("worker-", workerCtrlOpts),
-			extensionscmdcontroller.PrefixOption("ingress-", ingressCtrlOpts),
 			extensionscmdcontroller.PrefixOption("service-", serviceCtrlOpts),
 			extensionscmdcontroller.PrefixOption("backupbucket-", localBackupBucketOptions),
 			extensionscmdcontroller.PrefixOption("operatingsystemconfig-", operatingSystemConfigCtrlOpts),
@@ -273,28 +266,30 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			bastionCtrlOpts.Completed().Apply(&localbastion.DefaultAddOptions.Controller)
 			controlPlaneCtrlOpts.Completed().Apply(&localcontrolplane.DefaultAddOptions.Controller)
 			dnsRecordCtrlOpts.Completed().Apply(&localdnsrecord.DefaultAddOptions)
+			extensionCtrlOpts.Completed().Apply(&localextensionseedcontroller.DefaultAddOptions.Controller)
+			extensionCtrlOpts.Completed().Apply(&localextensionshootcontroller.DefaultAddOptions.Controller)
 			healthCheckCtrlOpts.Completed().Apply(&localhealthcheck.DefaultAddOptions.Controller)
 			infraCtrlOpts.Completed().Apply(&localinfrastructure.DefaultAddOptions.Controller)
 			operatingSystemConfigCtrlOpts.Completed().Apply(&localoperatingsystemconfig.DefaultAddOptions.Controller)
-			ingressCtrlOpts.Completed().Apply(&localingress.DefaultAddOptions)
 			serviceCtrlOpts.Completed().Apply(&localservice.DefaultAddOptions)
 			workerCtrlOpts.Completed().Apply(&localworker.DefaultAddOptions.Controller)
 			localworker.DefaultAddOptions.GardenCluster = gardenCluster
-			localworker.DefaultAddOptions.AutonomousShootCluster = generalOpts.Completed().AutonomousShootCluster
+			localworker.DefaultAddOptions.SelfHostedShootCluster = generalOpts.Completed().SelfHostedShootCluster
 			localBackupBucketOptions.Completed().Apply(&localbackupbucket.DefaultAddOptions)
 			localBackupBucketOptions.Completed().Apply(&localbackupentry.DefaultAddOptions)
 			heartbeatCtrlOptions.Completed().Apply(&heartbeat.DefaultAddOptions)
 			prometheusWebhookOptions.Completed().Apply(&prometheuswebhook.DefaultAddOptions)
 
-			reconcileOpts.Completed().Apply(&localbackupbucket.DefaultAddOptions.IgnoreOperationAnnotation, &localbackupbucket.DefaultAddOptions.ExtensionClass)
-			reconcileOpts.Completed().Apply(&localbastion.DefaultAddOptions.IgnoreOperationAnnotation, &localbastion.DefaultAddOptions.ExtensionClass)
-			reconcileOpts.Completed().Apply(&localcontrolplane.DefaultAddOptions.IgnoreOperationAnnotation, &localcontrolplane.DefaultAddOptions.ExtensionClass)
-			reconcileOpts.Completed().Apply(&localdnsrecord.DefaultAddOptions.IgnoreOperationAnnotation, &localdnsrecord.DefaultAddOptions.ExtensionClass)
-			reconcileOpts.Completed().Apply(&localinfrastructure.DefaultAddOptions.IgnoreOperationAnnotation, &localinfrastructure.DefaultAddOptions.ExtensionClass)
-			reconcileOpts.Completed().Apply(&localoperatingsystemconfig.DefaultAddOptions.IgnoreOperationAnnotation, &localoperatingsystemconfig.DefaultAddOptions.ExtensionClass)
-			reconcileOpts.Completed().Apply(&localworker.DefaultAddOptions.IgnoreOperationAnnotation, &localworker.DefaultAddOptions.ExtensionClass)
-			reconcileOpts.Completed().Apply(nil, &localhealthcheck.DefaultAddOptions.ExtensionClass)
-			reconcileOpts.Completed().Apply(&localextensionshootcontroller.DefaultAddOptions.IgnoreOperationAnnotation, &localextensionshootcontroller.DefaultAddOptions.ExtensionClass)
+			reconcileOpts.Completed().Apply(&localbackupbucket.DefaultAddOptions.IgnoreOperationAnnotation, &localbackupbucket.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(&localbastion.DefaultAddOptions.IgnoreOperationAnnotation, &localbastion.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(&localcontrolplane.DefaultAddOptions.IgnoreOperationAnnotation, &localcontrolplane.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(&localextensionseedcontroller.DefaultAddOptions.IgnoreOperationAnnotation, &localextensionseedcontroller.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(&localextensionshootcontroller.DefaultAddOptions.IgnoreOperationAnnotation, &localextensionshootcontroller.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(&localdnsrecord.DefaultAddOptions.IgnoreOperationAnnotation, &localdnsrecord.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(&localinfrastructure.DefaultAddOptions.IgnoreOperationAnnotation, &localinfrastructure.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(&localoperatingsystemconfig.DefaultAddOptions.IgnoreOperationAnnotation, &localoperatingsystemconfig.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(&localworker.DefaultAddOptions.IgnoreOperationAnnotation, &localworker.DefaultAddOptions.ExtensionClasses)
+			reconcileOpts.Completed().Apply(nil, &localhealthcheck.DefaultAddOptions.ExtensionClasses)
 
 			if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
 				return fmt.Errorf("could not add healthcheck: %w", err)
@@ -309,19 +304,12 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 				return fmt.Errorf("could not add readycheck of webhook to manager: %w", err)
 			}
 
-			atomicShootWebhookConfig, err := webhookOptions.Completed().AddToManager(ctx, mgr, nil, generalOpts.Completed().AutonomousShootCluster)
+			atomicShootWebhookConfig, err := webhookOptions.Completed().AddToManager(ctx, mgr, nil)
 			if err != nil {
 				return fmt.Errorf("could not add webhooks to manager: %w", err)
 			}
 			localcontrolplane.DefaultAddOptions.ShootWebhookConfig = atomicShootWebhookConfig
 			localcontrolplane.DefaultAddOptions.WebhookServerNamespace = webhookOptions.Server.Namespace
-
-			// Send empty patches on start-up to trigger webhooks
-			if !webhookSwitches.Completed().Disabled {
-				if err := mgr.Add(&webhookTriggerer{client: mgr.GetClient()}); err != nil {
-					return fmt.Errorf("error adding runnable for triggering DNS config webhook: %w", err)
-				}
-			}
 
 			if err := controllerSwitches.Completed().AddToManager(ctx, mgr); err != nil {
 				return fmt.Errorf("could not add controllers to manager: %w", err)
@@ -364,62 +352,4 @@ func verifyGardenAccess(ctx context.Context, log logr.Logger, c client.Client, s
 
 	log.Info("Garden access successfully verified")
 	return nil
-}
-
-type webhookTriggerer struct {
-	client client.Client
-}
-
-func (w *webhookTriggerer) NeedLeaderElection() bool {
-	return true
-}
-
-func (w *webhookTriggerer) Start(ctx context.Context) error {
-	// Wait for the reconciler to populate the webhook CA into the configurations before triggering the webhooks.
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	if err := retry.Until(timeoutCtx, time.Second, func(ctx context.Context) (bool, error) {
-		webhookConfig := &admissionregistrationv1.MutatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: "gardener-extension-" + local.Name}}
-		if err := w.client.Get(ctx, client.ObjectKeyFromObject(webhookConfig), webhookConfig); err != nil {
-			if !apierrors.IsNotFound(err) {
-				return retry.SevereError(err)
-			}
-			return retry.MinorError(fmt.Errorf("webhook was not yet created"))
-		}
-
-		for _, webhook := range webhookConfig.Webhooks {
-			// We can return when we find the first webhook w/o CA bundle since the reconciler would populate it into
-			// all webhooks at the same time.
-			if len(webhook.ClientConfig.CABundle) == 0 {
-				return retry.MinorError(fmt.Errorf("CA bundle was not yet populated to all webhooks"))
-			}
-		}
-
-		return retry.Ok()
-	}); err != nil {
-		return err
-	}
-
-	if err := w.trigger(ctx, w.client, nil, w.client.Status(), &corev1.NodeList{}); err != nil {
-		return err
-	}
-
-	return w.trigger(ctx, w.client, w.client, nil, &appsv1.DeploymentList{}, client.MatchingLabels{"app": "dependency-watchdog-prober"})
-}
-
-func (w *webhookTriggerer) trigger(ctx context.Context, reader client.Reader, writer client.Writer, statusWriter client.StatusWriter, objectList client.ObjectList, opts ...client.ListOption) error {
-	if err := reader.List(ctx, objectList, opts...); err != nil {
-		return err
-	}
-
-	return meta.EachListItem(objectList, func(obj runtime.Object) error {
-		switch object := obj.(type) {
-		case *appsv1.Deployment:
-			return writer.Patch(ctx, object, client.RawPatch(types.StrategicMergePatchType, []byte("{}")))
-		case *corev1.Node:
-			return statusWriter.Patch(ctx, object, client.RawPatch(types.StrategicMergePatchType, []byte("{}")))
-		}
-		return nil
-	})
 }

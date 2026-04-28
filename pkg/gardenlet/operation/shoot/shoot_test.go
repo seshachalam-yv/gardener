@@ -5,16 +5,22 @@
 package shoot_test
 
 import (
+	"context"
 	"net"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	. "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+	"github.com/gardener/gardener/pkg/utils/gardener"
 )
 
 var _ = Describe("shoot", func() {
@@ -162,15 +168,15 @@ var _ = Describe("shoot", func() {
 			)
 		})
 
-		Describe("#IPVSEnabled", func() {
+		Describe("#ProxyMode", func() {
 			It("should return false when KubeProxy is null", func() {
 				shoot.GetInfo().Spec.Kubernetes.KubeProxy = nil
-				Expect(shoot.IPVSEnabled()).To(BeFalse())
+				Expect(shoot.ProxyMode()).To(Equal(gardencorev1beta1.ProxyModeIPTables))
 			})
 
 			It("should return false when KubeProxy.Mode is null", func() {
 				shoot.GetInfo().Spec.Kubernetes.KubeProxy = &gardencorev1beta1.KubeProxyConfig{}
-				Expect(shoot.IPVSEnabled()).To(BeFalse())
+				Expect(shoot.ProxyMode()).To(Equal(gardencorev1beta1.ProxyModeIPTables))
 			})
 
 			It("should return false when KubeProxy.Mode is not IPVS", func() {
@@ -178,7 +184,7 @@ var _ = Describe("shoot", func() {
 				shoot.GetInfo().Spec.Kubernetes.KubeProxy = &gardencorev1beta1.KubeProxyConfig{
 					Mode: &mode,
 				}
-				Expect(shoot.IPVSEnabled()).To(BeFalse())
+				Expect(shoot.ProxyMode()).To(Equal(gardencorev1beta1.ProxyModeIPTables))
 			})
 
 			It("should return true when KubeProxy.Mode is IPVS", func() {
@@ -186,12 +192,12 @@ var _ = Describe("shoot", func() {
 				shoot.GetInfo().Spec.Kubernetes.KubeProxy = &gardencorev1beta1.KubeProxyConfig{
 					Mode: &mode,
 				}
-				Expect(shoot.IPVSEnabled()).To(BeTrue())
+				Expect(shoot.ProxyMode()).To(Equal(gardencorev1beta1.ProxyModeIPVS))
 			})
 		})
 
 		Describe("#ComputeInClusterAPIServerAddress", func() {
-			When("shoot is not autonomous", func() {
+			When("shoot is not self-hosted", func() {
 				controlPlaneNamespace := "foo"
 				s := &Shoot{ControlPlaneNamespace: controlPlaneNamespace}
 
@@ -204,7 +210,7 @@ var _ = Describe("shoot", func() {
 				})
 			})
 
-			When("shoot is autonomous", func() {
+			When("shoot is self-hosted", func() {
 				s := &Shoot{ControlPlaneNamespace: "kube-system"}
 
 				It("should return kubernetes.default.svc", func() {
@@ -219,7 +225,7 @@ var _ = Describe("shoot", func() {
 				unmanaged := "unmanaged"
 				internalDomain := "foo"
 				s := &Shoot{
-					InternalClusterDomain: internalDomain,
+					InternalClusterDomain: ptr.To(internalDomain),
 				}
 				s.SetInfo(&gardencorev1beta1.Shoot{
 					Spec: gardencorev1beta1.ShootSpec{
@@ -237,7 +243,7 @@ var _ = Describe("shoot", func() {
 			It("should return the internal domain as requested (shoot's external domain is not unmanaged)", func() {
 				internalDomain := "foo"
 				s := &Shoot{
-					InternalClusterDomain: internalDomain,
+					InternalClusterDomain: ptr.To(internalDomain),
 				}
 				s.SetInfo(&gardencorev1beta1.Shoot{})
 
@@ -247,7 +253,7 @@ var _ = Describe("shoot", func() {
 			It("should return the internal domain when shoot's external domain is not set (even if not requested)", func() {
 				internalDomain := "foo"
 				s := &Shoot{
-					InternalClusterDomain: internalDomain,
+					InternalClusterDomain: ptr.To(internalDomain),
 				}
 				s.SetInfo(&gardencorev1beta1.Shoot{})
 
@@ -265,7 +271,7 @@ var _ = Describe("shoot", func() {
 			})
 		})
 
-		Describe("#IsAutonomous", func() {
+		Describe("#IsSelfHosted", func() {
 			It("should return true", func() {
 				shoot.SetInfo(&gardencorev1beta1.Shoot{
 					Spec: gardencorev1beta1.ShootSpec{
@@ -277,7 +283,7 @@ var _ = Describe("shoot", func() {
 						},
 					},
 				})
-				Expect(shoot.IsAutonomous()).To(BeTrue())
+				Expect(shoot.IsSelfHosted()).To(BeTrue())
 			})
 
 			It("should return false", func() {
@@ -290,7 +296,7 @@ var _ = Describe("shoot", func() {
 						},
 					},
 				})
-				Expect(shoot.IsAutonomous()).To(BeFalse())
+				Expect(shoot.IsSelfHosted()).To(BeFalse())
 			})
 		})
 
@@ -301,6 +307,129 @@ var _ = Describe("shoot", func() {
 
 			It("should return false", func() {
 				Expect((&Shoot{ControlPlaneNamespace: "shoot--foo--bar"}).RunsControlPlane()).To(BeFalse())
+			})
+		})
+
+		Describe("#HasManagedInfrastructure", func() {
+			It("should return false when both CredentialsBindingName and SecretBindingName are nil", func() {
+				shoot.SetInfo(&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{CredentialsBindingName: nil, SecretBindingName: nil}})
+				Expect(shoot.HasManagedInfrastructure()).To(BeFalse())
+			})
+
+			It("should return true when CredentialsBindingName is set", func() {
+				shoot.SetInfo(&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{CredentialsBindingName: ptr.To("binding")}})
+				Expect(shoot.HasManagedInfrastructure()).To(BeTrue())
+			})
+
+			It("should return true when SecretBindingName is set", func() {
+				shoot.SetInfo(&gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{SecretBindingName: ptr.To("binding")}})
+				Expect(shoot.HasManagedInfrastructure()).To(BeTrue())
+			})
+		})
+
+		Describe("#SortByIPFamilies", func() {
+			var (
+				ipv4CIDR1 = net.IPNet{IP: net.ParseIP("10.0.0.0"), Mask: net.CIDRMask(24, 32)}
+				ipv4CIDR2 = net.IPNet{IP: net.ParseIP("192.168.1.0"), Mask: net.CIDRMask(24, 32)}
+				ipv6CIDR1 = net.IPNet{IP: net.ParseIP("2001:db8::"), Mask: net.CIDRMask(64, 128)}
+				ipv6CIDR2 = net.IPNet{IP: net.ParseIP("fd00::"), Mask: net.CIDRMask(48, 128)}
+			)
+
+			It("should sort CIDRs for single-stack IPv4 with IPv4 first", func() {
+				cidrs := []net.IPNet{ipv6CIDR1, ipv4CIDR1, ipv4CIDR2}
+				result := SortByIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4}, cidrs)
+				expected := []net.IPNet{ipv4CIDR1, ipv4CIDR2, ipv6CIDR1}
+				Expect(result).To(Equal(expected))
+			})
+
+			It("should sort CIDRs for single-stack IPv6 with IPv6 first", func() {
+				cidrs := []net.IPNet{ipv4CIDR1, ipv6CIDR1, ipv6CIDR2}
+				result := SortByIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6}, cidrs)
+				expected := []net.IPNet{ipv6CIDR1, ipv6CIDR2, ipv4CIDR1}
+				Expect(result).To(Equal(expected))
+			})
+
+			It("should sort CIDRs for dual-stack IPv4,IPv6", func() {
+				cidrs := []net.IPNet{ipv6CIDR1, ipv4CIDR1, ipv6CIDR2, ipv4CIDR2}
+				result := SortByIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4, gardencorev1beta1.IPFamilyIPv6}, cidrs)
+				expected := []net.IPNet{ipv4CIDR1, ipv4CIDR2, ipv6CIDR1, ipv6CIDR2}
+				Expect(result).To(Equal(expected))
+			})
+
+			It("should sort CIDRs for dual-stack IPv6,IPv4", func() {
+				cidrs := []net.IPNet{ipv4CIDR1, ipv6CIDR1, ipv4CIDR2, ipv6CIDR2}
+				result := SortByIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6, gardencorev1beta1.IPFamilyIPv4}, cidrs)
+				expected := []net.IPNet{ipv6CIDR1, ipv6CIDR2, ipv4CIDR1, ipv4CIDR2}
+				Expect(result).To(Equal(expected))
+			})
+
+			It("should handle mixed CIDRs with single-stack IPv4", func() {
+				cidrs := []net.IPNet{ipv6CIDR1, ipv4CIDR1}
+				result := SortByIPFamilies([]gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4}, cidrs)
+				expected := []net.IPNet{ipv4CIDR1, ipv6CIDR1}
+				Expect(result).To(Equal(expected))
+			})
+		})
+
+		Describe("#WithoutShootDNS", func() {
+			var (
+				ctx          context.Context
+				c            client.Client
+				shootBuilder *Builder
+			)
+
+			BeforeEach(func() {
+				ctx = context.Background()
+				c = fake.NewFakeClient()
+
+				uid := "057cf3ec-1b86-40b3-abc2-47ac71abbe85"
+				s := &gardencorev1beta1.Shoot{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "foo",
+						Namespace: "garden-bar",
+						UID:       types.UID(uid),
+					},
+					Spec: gardencorev1beta1.ShootSpec{
+						DNS: &gardencorev1beta1.DNS{
+							Domain: ptr.To("shoot.example.com"),
+						},
+						Kubernetes: gardencorev1beta1.Kubernetes{
+							Version: "v1.35.0",
+						},
+					},
+					Status: gardencorev1beta1.ShootStatus{
+						TechnicalID: "shoot--bar--foo-" + uid,
+					},
+				}
+
+				shootBuilder = NewBuilder().
+					WithShootObject(s).
+					WithCloudProfileObject(nil).
+					WithoutShootCredentials().
+					WithDefaultDomains([]*gardener.Domain{
+						{
+							Domain: "example.com",
+						},
+					})
+			})
+
+			It("should unset the shoot DNS domain in the builder", func() {
+				shoot, err := shootBuilder.
+					WithoutShootDNS().
+					Build(ctx, c)
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(shoot.GetInfo().Spec.DNS).To(BeNil())
+			})
+
+			It("should not overwrite the shoot DNS domain in the builder", func() {
+				shoot, err := shootBuilder.
+					Build(ctx, c)
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(shoot.GetInfo().Spec.DNS).To(Equal(&gardencorev1beta1.DNS{
+					Domain: ptr.To("shoot.example.com"),
+				}))
 			})
 		})
 	})

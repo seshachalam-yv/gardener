@@ -8,23 +8,25 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	bootstrapetcd "github.com/gardener/gardener/pkg/component/etcd/bootstrap"
 	corebackupbucket "github.com/gardener/gardener/pkg/component/garden/backupbucket"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	backupbucketcontroller "github.com/gardener/gardener/pkg/gardenlet/controller/backupbucket"
 	backupentrycontroller "github.com/gardener/gardener/pkg/gardenlet/controller/backupentry"
 	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
@@ -33,7 +35,7 @@ import (
 )
 
 // DeployEtcdDruid deploys the etcd-druid component.
-func (b *AutonomousBotanist) DeployEtcdDruid(ctx context.Context) error {
+func (b *GardenadmBotanist) DeployEtcdDruid(ctx context.Context) error {
 	var componentImageVectors imagevectorutils.ComponentImageVectors
 	if path := os.Getenv(imagevectorutils.ComponentOverrideEnv); path != "" {
 		var err error
@@ -45,16 +47,18 @@ func (b *AutonomousBotanist) DeployEtcdDruid(ctx context.Context) error {
 
 	gardenletConfig := &gardenletconfigv1alpha1.GardenletConfiguration{}
 	gardenletconfigv1alpha1.SetObjectDefaults_GardenletConfiguration(gardenletConfig)
+	gardenletConfig.ETCDConfig.FeatureGates = map[string]bool{"UpgradeEtcdVersion": true}
 
 	deployer, err := sharedcomponent.NewEtcdDruid(
 		b.SeedClientSet.Client(),
-		b.Shoot.ControlPlaneNamespace,
+		v1beta1constants.GardenNamespace,
 		b.Shoot.KubernetesVersion,
 		componentImageVectors,
 		gardenletConfig.ETCDConfig,
 		b.SecretsManager,
 		v1beta1constants.SecretNameCACluster,
 		v1beta1constants.PriorityClassNameSeedSystem800,
+		false,
 	)
 	if err != nil {
 		return fmt.Errorf("failed creating etcd-druid deployer: %w", err)
@@ -64,7 +68,7 @@ func (b *AutonomousBotanist) DeployEtcdDruid(ctx context.Context) error {
 }
 
 // ReconcileBackupBucket reconciles the core.gardener.cloud/v1beta1.BackupBucket resource for the shoot cluster.
-func (b *AutonomousBotanist) ReconcileBackupBucket(ctx context.Context) error {
+func (b *GardenadmBotanist) ReconcileBackupBucket(ctx context.Context) error {
 	backupBucket, err := b.reconcileCoreBackupBucketResource(ctx)
 	if err != nil {
 		return fmt.Errorf("failed reconciling core.gardener.cloud/v1beta1.BackupBucket resource: %w", err)
@@ -74,7 +78,7 @@ func (b *AutonomousBotanist) ReconcileBackupBucket(ctx context.Context) error {
 		GardenClient:    b.GardenClient,
 		SeedClient:      b.SeedClientSet.Client(),
 		Clock:           b.Clock,
-		Recorder:        &record.FakeRecorder{},
+		Recorder:        &events.FakeRecorder{},
 		GardenNamespace: b.Shoot.ControlPlaneNamespace,
 	}
 
@@ -87,12 +91,13 @@ func (b *AutonomousBotanist) ReconcileBackupBucket(ctx context.Context) error {
 	})
 }
 
-func (b *AutonomousBotanist) reconcileCoreBackupBucketResource(ctx context.Context) (*gardencorev1beta1.BackupBucket, error) {
+func (b *GardenadmBotanist) reconcileCoreBackupBucketResource(ctx context.Context) (*gardencorev1beta1.BackupBucket, error) {
 	component := corebackupbucket.New(b.Logger, b.GardenClient, &corebackupbucket.Values{
 		Name:          string(b.Shoot.GetInfo().Status.UID),
 		Config:        v1beta1helper.GetBackupConfigForShoot(b.Shoot.GetInfo(), nil),
 		DefaultRegion: b.Shoot.GetInfo().Spec.Region,
 		Clock:         b.Clock,
+		Shoot:         b.Shoot.GetInfo(),
 	}, corebackupbucket.DefaultInterval, corebackupbucket.DefaultTimeout)
 
 	if err := component.Deploy(ctx); err != nil {
@@ -103,7 +108,7 @@ func (b *AutonomousBotanist) reconcileCoreBackupBucketResource(ctx context.Conte
 }
 
 // ReconcileBackupEntry reconciles the core.gardener.cloud/v1beta1.BackupEntry resource for the shoot cluster.
-func (b *AutonomousBotanist) ReconcileBackupEntry(ctx context.Context) error {
+func (b *GardenadmBotanist) ReconcileBackupEntry(ctx context.Context) error {
 	backupEntry, err := b.reconcileCoreBackupEntryResource(ctx)
 	if err != nil {
 		return fmt.Errorf("failed reconciling core.gardener.cloud/v1beta1.BackupEntry resource: %w", err)
@@ -113,7 +118,7 @@ func (b *AutonomousBotanist) ReconcileBackupEntry(ctx context.Context) error {
 		GardenClient:    b.GardenClient,
 		SeedClient:      b.SeedClientSet.Client(),
 		Clock:           b.Clock,
-		Recorder:        &record.FakeRecorder{},
+		Recorder:        &events.FakeRecorder{},
 		GardenNamespace: b.Shoot.ControlPlaneNamespace,
 	}
 
@@ -126,7 +131,7 @@ func (b *AutonomousBotanist) ReconcileBackupEntry(ctx context.Context) error {
 	})
 }
 
-func (b *AutonomousBotanist) reconcileCoreBackupEntryResource(ctx context.Context) (*gardencorev1beta1.BackupEntry, error) {
+func (b *GardenadmBotanist) reconcileCoreBackupEntryResource(ctx context.Context) (*gardencorev1beta1.BackupEntry, error) {
 	if err := b.Shoot.Components.BackupEntry.Deploy(ctx); err != nil {
 		return nil, fmt.Errorf("failed reconciling core.gardener.cloud/v1beta1.BackupEntry resource: %w", err)
 	}
@@ -154,4 +159,30 @@ func runReconcilerUntilCondition(ctx context.Context, logger logr.Logger, contro
 
 		return retry.Ok()
 	})
+}
+
+// WaitUntilEtcdsReconciled waits until the druid.gardener.cloud/v1alpha1.Etcd resources have been reconciled by
+// etcd-druid.
+func (b *GardenadmBotanist) WaitUntilEtcdsReconciled(ctx context.Context) error {
+	if err := b.WaitUntilEtcdsReady(ctx); err != nil {
+		return fmt.Errorf("failed waiting for etcd to become ready: %w", err)
+	}
+
+	b.useEtcdManagedByDruid = true
+	return nil
+}
+
+// FinalizeEtcdBootstrapTransition cleans up no longer needed directories for the bootstrap etcds. Those are not deleted
+// automatically.
+func (b *GardenadmBotanist) FinalizeEtcdBootstrapTransition(_ context.Context) error {
+	for _, dir := range []string{
+		filepath.Join(string(filepath.Separator), "var", "lib", bootstrapetcd.Name(v1beta1constants.ETCDRoleMain)),
+		filepath.Join(string(filepath.Separator), "var", "lib", bootstrapetcd.Name(v1beta1constants.ETCDRoleEvents)),
+	} {
+		if err := b.FS.RemoveAll(dir); err != nil {
+			return fmt.Errorf("failed cleaning up %s directory: %w", dir, err)
+		}
+	}
+
+	return nil
 }

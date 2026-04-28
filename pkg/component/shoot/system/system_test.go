@@ -17,6 +17,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apitypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/utils/ptr"
@@ -43,13 +44,15 @@ var _ = Describe("ShootSystem", func() {
 		namespace           = "some-namespace"
 
 		projectName       = "foo"
-		shootNamespace    = "garden-" + projectName
+		projectNamespace  = "garden-" + projectName
 		shootName         = "bar"
 		region            = "test-region"
 		providerType      = "test-provider"
 		kubernetesVersion = "1.31.1"
 		maintenanceBegin  = "123456+0100"
 		maintenanceEnd    = "134502+0100"
+		uid               = apitypes.UID("1234")
+		statusUID         = apitypes.UID("5678")
 		domain            = "my-shoot.example.com"
 		podCIDRs          = []net.IPNet{{IP: net.ParseIP("10.10.0.0"), Mask: net.CIDRMask(16, 32)}, {IP: net.ParseIP("2001:db8:1::"), Mask: net.CIDRMask(64, 128)}}
 		serviceCIDRs      = []net.IPNet{{IP: net.ParseIP("11.11.0.0"), Mask: net.CIDRMask(16, 32)}, {IP: net.ParseIP("2001:db8:2::"), Mask: net.CIDRMask(64, 128)}}
@@ -59,7 +62,8 @@ var _ = Describe("ShootSystem", func() {
 		shootObj          = &gardencorev1beta1.Shoot{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      shootName,
-				Namespace: shootNamespace,
+				Namespace: projectNamespace,
+				UID:       uid,
 			},
 			Spec: gardencorev1beta1.ShootSpec{
 				Kubernetes: gardencorev1beta1.Kubernetes{
@@ -75,6 +79,9 @@ var _ = Describe("ShootSystem", func() {
 					},
 				},
 				Region: region,
+			},
+			Status: gardencorev1beta1.ShootStatus{
+				UID: statusUID,
 			},
 		}
 
@@ -151,47 +158,58 @@ var _ = Describe("ShootSystem", func() {
 		})
 
 		Context("shoot-info ConfigMap", func() {
+			var configMap *corev1.ConfigMap
+
+			BeforeEach(func() {
+				configMap = &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "shoot-info",
+						Namespace: "kube-system",
+					},
+					Data: map[string]string{
+						"domain":            domain,
+						"extensions":        extension1 + `,` + extension2,
+						"kubernetesVersion": kubernetesVersion,
+						"maintenanceBegin":  maintenanceBegin,
+						"maintenanceEnd":    maintenanceEnd,
+						"nodeNetwork":       nodeCIDRs[0].String(),
+						"nodeNetworks":      nodeCIDRs[0].String() + "," + nodeCIDRs[1].String(),
+						"uid":               string(uid),
+						"statusUID":         string(statusUID),
+						"projectName":       projectName,
+						"provider":          providerType,
+						"region":            region,
+						"serviceNetwork":    serviceCIDRs[0].String(),
+						"serviceNetworks":   serviceCIDRs[0].String() + "," + serviceCIDRs[1].String(),
+						"shootNamespace":    projectNamespace,
+						"shootName":         shootName,
+					},
+				}
+			})
+
+			It("should successfully deploy all resources", func() {
+				configMap.Data["podNetwork"] = podCIDRs[0].String()
+				configMap.Data["podNetworks"] = podCIDRs[0].String() + "," + podCIDRs[1].String()
+
+				Expect(managedResource).To(contain(configMap))
+			})
+
 			When("shoot is workerless", func() {
 				BeforeEach(func() {
 					values.IsWorkerless = true
+					values.PodNetworkCIDRs = nil
 				})
 
-				It("should not deploy any ConfigMap", func() {
+				It("should successfully deploy all resources", func() {
 					manifests, err := test.ExtractManifestsFromManagedResourceData(managedResourceSecret.Data)
 					Expect(err).NotTo(HaveOccurred())
 
 					for _, manifest := range manifests {
-						Expect(manifest).NotTo(And(ContainSubstring("name: shoot-info"), ContainSubstring("kind: ConfigMap")))
+						Expect(manifest).NotTo(ContainSubstring("podNetworks"))
 					}
+
+					Expect(managedResource).To(contain(configMap))
 				})
-			})
-
-			configMap := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shoot-info",
-					Namespace: "kube-system",
-				},
-				Data: map[string]string{
-					"domain":            domain,
-					"extensions":        extension1 + `,` + extension2,
-					"kubernetesVersion": kubernetesVersion,
-					"maintenanceBegin":  maintenanceBegin,
-					"maintenanceEnd":    maintenanceEnd,
-					"nodeNetwork":       nodeCIDRs[0].String(),
-					"nodeNetworks":      nodeCIDRs[0].String() + "," + nodeCIDRs[1].String(),
-					"podNetwork":        podCIDRs[0].String(),
-					"podNetworks":       podCIDRs[0].String() + "," + podCIDRs[1].String(),
-					"projectName":       projectName,
-					"provider":          providerType,
-					"region":            region,
-					"serviceNetwork":    serviceCIDRs[0].String(),
-					"serviceNetworks":   serviceCIDRs[0].String() + "," + serviceCIDRs[1].String(),
-					"shootName":         shootName,
-				},
-			}
-
-			It("should successfully deploy all resources", func() {
-				Expect(managedResource).To(contain(configMap))
 			})
 		})
 
@@ -453,14 +471,15 @@ var _ = Describe("ShootSystem", func() {
 			})
 		})
 
-		Context("Read-Only resources", func() {
-			It("should do nothing when the API resource list is unset", func() {
+		Context("RBAC resources", func() {
+			It("should not add read-only RBACs when the API resource list is unset", func() {
 				manifests, err := test.ExtractManifestsFromManagedResourceData(managedResourceSecret.Data)
 				Expect(err).NotTo(HaveOccurred())
 
-				for _, manifest := range manifests {
-					Expect(manifest).NotTo(And(ContainSubstring("name: gardener.cloud:system:read-only"), ContainSubstring("kind: ClusterRole")))
-				}
+				Expect(manifests).NotTo(ContainElement(And(
+					ContainSubstring("name: gardener.cloud:system:read-only"),
+					ContainSubstring("kind: ClusterRole"),
+				)))
 			})
 
 			When("API resource list is set", func() {
@@ -550,27 +569,60 @@ var _ = Describe("ShootSystem", func() {
 						},
 					}
 
-					clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+					Expect(managedResource).To(contain(clusterRole))
+				})
+			})
+
+			When("shoot is self-hosted", func() {
+				BeforeEach(func() {
+					values.IsSelfHosted = true
+				})
+
+				It("should successfully deploy all gardenadm RBAC resources", func() {
+					expectedClusterRole := &rbacv1.ClusterRole{
 						ObjectMeta: metav1.ObjectMeta{
-							Name: "gardener.cloud:system:read-only",
-							Annotations: map[string]string{
-								"resources.gardener.cloud/delete-on-invalid-update": "true",
-							},
+							Name: "gardener.cloud:gardenadm",
 						},
-						RoleRef: rbacv1.RoleRef{
-							APIGroup: "rbac.authorization.k8s.io",
-							Kind:     "ClusterRole",
-							Name:     "gardener.cloud:system:read-only",
-						},
-						Subjects: []rbacv1.Subject{
+						Rules: []rbacv1.PolicyRule{
 							{
-								Kind: "Group",
-								Name: "gardener.cloud:system:viewers",
+								APIGroups:     []string{"extensions.gardener.cloud"},
+								Resources:     []string{"clusters"},
+								Verbs:         []string{"get"},
+								ResourceNames: []string{"kube-system"},
+							},
+							{
+								APIGroups: []string{""},
+								Resources: []string{"nodes"},
+								Verbs:     []string{"get", "list", "watch"},
+							},
+							{
+								APIGroups: []string{""},
+								Resources: []string{"secrets"},
+								Verbs:     []string{"get", "list", "watch", "create", "patch", "update"},
 							},
 						},
 					}
 
-					Expect(managedResource).To(contain(clusterRole, clusterRoleBinding))
+					expectedClusterRoleBinding := &rbacv1.ClusterRoleBinding{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "gardener.cloud:gardenadm",
+						},
+						RoleRef: rbacv1.RoleRef{
+							APIGroup: "rbac.authorization.k8s.io",
+							Kind:     "ClusterRole",
+							Name:     "gardener.cloud:gardenadm",
+						},
+						Subjects: []rbacv1.Subject{{
+							APIGroup: "rbac.authorization.k8s.io",
+							Kind:     "Group",
+							Name:     "gardener.cloud:system:shoots",
+						}},
+					}
+
+					Expect(managedResource).To(contain(
+						expectedClusterRole,
+						expectedClusterRoleBinding,
+					))
 				})
 			})
 		})

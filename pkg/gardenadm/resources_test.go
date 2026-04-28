@@ -29,16 +29,21 @@ var _ = Describe("Resources", func() {
 			createCloudProfile(fsys, "cpfl")
 			createProject(fsys, "project")
 			createShoot(fsys, "shoot")
+			createShootState(fsys, "shoot")
 			createControllerRegistration(fsys, "ext1")
 			createControllerRegistration(fsys, "ext2")
 			createControllerDeployment(fsys, "ext1")
 			createControllerDeployment(fsys, "ext2")
 			createExtension(fsys, "ext3")
 			createExtension(fsys, "ext4")
+			createConfigMap(fsys, "configmap1")
+			createConfigMap(fsys, "configmap2")
 			createSecret(fsys, "secret1")
 			createSecret(fsys, "secret2")
 			createSecretBinding(fsys, "secretBinding")
 			createCredentialsBinding(fsys, "credentialsBinding")
+			createWorkloadIdentity(fsys, "workloadIdentity1")
+			createWorkloadIdentity(fsys, "workloadIdentity2")
 		})
 
 		It("should read the Kubernetes resources successfully", func() {
@@ -48,6 +53,7 @@ var _ = Describe("Resources", func() {
 			Expect(resources.CloudProfile.Name).To(Equal("cpfl"))
 			Expect(resources.Project.Name).To(Equal("project"))
 			Expect(resources.Shoot.Name).To(Equal("shoot"))
+			Expect(resources.ShootState.Name).To(Equal("shoot"))
 			Expect(resources.ControllerRegistrations).To(HaveLen(4))
 			Expect(resources.ControllerRegistrations[0].Name).To(Equal("ext1"))
 			Expect(resources.ControllerRegistrations[1].Name).To(Equal("ext2"))
@@ -58,11 +64,32 @@ var _ = Describe("Resources", func() {
 			Expect(resources.ControllerDeployments[1].Name).To(Equal("ext2"))
 			Expect(resources.ControllerDeployments[2].Name).To(Equal("ext3"))
 			Expect(resources.ControllerDeployments[3].Name).To(Equal("ext4"))
+			Expect(resources.ConfigMaps).To(HaveLen(2))
+			Expect(resources.ConfigMaps[0].Name).To(Equal("configmap1"))
+			Expect(resources.ConfigMaps[1].Name).To(Equal("configmap2"))
 			Expect(resources.Secrets).To(HaveLen(2))
 			Expect(resources.Secrets[0].Name).To(Equal("secret1"))
 			Expect(resources.Secrets[1].Name).To(Equal("secret2"))
 			Expect(resources.SecretBinding.Name).To(Equal("secretBinding"))
 			Expect(resources.CredentialsBinding.Name).To(Equal("credentialsBinding"))
+			Expect(resources.WorkloadIdentities[0].Name).To(Equal("workloadIdentity1"))
+			Expect(resources.WorkloadIdentities[1].Name).To(Equal("workloadIdentity2"))
+		})
+
+		It("should ignore hidden files", func() {
+			// invalid content should not be read
+			fsys[".cloudprofile-foo.yaml"] = &fstest.MapFile{Data: []byte(`{`)}
+
+			_, err := gardenadm.ReadManifests(log, fsys)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should ignore hidden folders", func() {
+			// invalid content should not be read
+			fsys[".hidden/cloudprofile-foo.yaml"] = &fstest.MapFile{Data: []byte(`{`)}
+
+			_, err := gardenadm.ReadManifests(log, fsys)
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
@@ -114,6 +141,16 @@ var _ = Describe("Resources", func() {
 
 				_, err := gardenadm.ReadManifests(log, fsys)
 				Expect(err).To(MatchError(ContainSubstring("found more than one *gardencorev1beta1.Shoot resource")))
+			})
+		})
+
+		Describe("ShootState", func() {
+			It("should return an error", func() {
+				createShootState(fsys, "obj1")
+				createShootState(fsys, "obj2")
+
+				_, err := gardenadm.ReadManifests(log, fsys)
+				Expect(err).To(MatchError(ContainSubstring("found more than one *gardencorev1beta1.ShootState resource")))
 			})
 		})
 
@@ -195,6 +232,14 @@ metadata:
 `)}
 }
 
+func createShootState(fsys fstest.MapFS, name string) {
+	fsys["shootstate-"+name+".yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: core.gardener.cloud/v1beta1
+kind: ShootState
+metadata:
+  name: ` + name + `
+`)}
+}
+
 func createControllerRegistration(fsys fstest.MapFS, name string) {
 	fsys["controllerregistration-"+name+".yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: core.gardener.cloud/v1beta1
 kind: ControllerRegistration
@@ -230,6 +275,14 @@ spec:
 `)}
 }
 
+func createConfigMap(fsys fstest.MapFS, name string) {
+	fsys["configmap-"+name+".yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ` + name + `
+`)}
+}
+
 func createSecret(fsys fstest.MapFS, name string) {
 	fsys["secret-"+name+".yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: v1
 kind: Secret
@@ -249,6 +302,14 @@ metadata:
 func createCredentialsBinding(fsys fstest.MapFS, name string) {
 	fsys["credentialsbinding-"+name+".yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: security.gardener.cloud/v1alpha1
 kind: CredentialsBinding
+metadata:
+  name: ` + name + `
+`)}
+}
+
+func createWorkloadIdentity(fsys fstest.MapFS, name string) {
+	fsys["workloadidentity-"+name+".yaml"] = &fstest.MapFile{Data: []byte(`apiVersion: security.gardener.cloud/v1alpha1
+kind: WorkloadIdentity
 metadata:
   name: ` + name + `
 `)}

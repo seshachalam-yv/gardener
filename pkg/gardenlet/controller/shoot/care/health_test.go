@@ -22,11 +22,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/testing"
 	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
@@ -34,7 +37,6 @@ import (
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/shoot/care"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	mockclient "github.com/gardener/gardener/third_party/mock/controller-runtime/client"
 )
@@ -48,7 +50,7 @@ var _ = Describe("health check", func() {
 		condition gardencorev1beta1.Condition
 
 		controlPlaneNamespace = "shoot--foo--bar"
-		kubernetesVersion     = semver.MustParse("1.27.3")
+		kubernetesVersion     = semver.MustParse("1.33.3")
 
 		shoot = &gardencorev1beta1.Shoot{
 			Spec: gardencorev1beta1.ShootSpec{
@@ -72,7 +74,10 @@ var _ = Describe("health check", func() {
 	)
 
 	BeforeEach(func() {
-		fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+		// Starting with controller-runtime v0.22.0, the default object tracker does not work with resources which include
+		// structs directly as pointer, e.g. *MachineConfiguration in Machine resource. Hence, use the old one instead.
+		objectTracker := testing.NewObjectTracker(kubernetes.SeedScheme, scheme.Codecs.UniversalDecoder())
+		fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).WithObjectTracker(objectTracker).Build()
 		fakeClock = testclock.NewFakeClock(time.Now())
 		condition = gardencorev1beta1.Condition{
 			Type:               "test",
@@ -82,12 +87,12 @@ var _ = Describe("health check", func() {
 
 	Describe("#ComputeRequiredControlPlaneDeployments", func() {
 		var (
-			workerlessDepoymentNames = []any{
+			workerlessDeploymentNames = []any{
 				"gardener-resource-manager",
 				"kube-apiserver",
 				"kube-controller-manager",
 			}
-			commonDeploymentNames = append(workerlessDepoymentNames, "kube-scheduler", "machine-controller-manager")
+			commonDeploymentNames = append(workerlessDeploymentNames, "kube-scheduler", "machine-controller-manager")
 		)
 
 		tests := func(shoot *gardencorev1beta1.Shoot, names []any, isWorkerless bool) {
@@ -145,7 +150,7 @@ var _ = Describe("health check", func() {
 		})
 
 		Context("workerless shoot", func() {
-			tests(workerlessShoot, workerlessDepoymentNames, true)
+			tests(workerlessShoot, workerlessDeploymentNames, true)
 		})
 	})
 
@@ -864,9 +869,15 @@ var _ = Describe("health check", func() {
 			Expect(scaledDownDeploymentNames).To(BeEmpty())
 		})
 
-		It("should report names because some relevant deployment have replicas == 0", func() {
+		It("should report names because some relevant deployment have replicas == 0 and meltdown annotation is set", func() {
 			deploymentKCM.Spec.Replicas = nil
 			deploymentMCM.Spec.Replicas = ptr.To[int32](0)
+
+			// Set meltdown annotation only on deploymentMCM
+			if deploymentMCM.Annotations == nil {
+				deploymentMCM.Annotations = map[string]string{}
+			}
+			deploymentMCM.Annotations["dependency-watchdog.gardener.cloud/meltdown-protection-active"] = ""
 
 			Expect(fakeClient.Create(ctx, deploymentCA)).To(Succeed())
 			Expect(fakeClient.Create(ctx, deploymentKCM)).To(Succeed())
@@ -874,7 +885,7 @@ var _ = Describe("health check", func() {
 
 			scaledDownDeploymentNames, err := CheckIfDependencyWatchdogProberScaledDownControllers(ctx, fakeClient, controlPlaneNamespace)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(scaledDownDeploymentNames).To(HaveExactElements(deploymentKCM.Name, deploymentMCM.Name))
+			Expect(scaledDownDeploymentNames).To(HaveExactElements(deploymentMCM.Name))
 		})
 	})
 

@@ -12,8 +12,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/shoot/migration"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
@@ -46,6 +46,10 @@ var _ = Describe("Shoot Migration controller tests", Ordered, func() {
 							Maximum: 3,
 							Machine: gardencorev1beta1.Machine{
 								Type: "large",
+								Image: &gardencorev1beta1.ShootMachineImage{
+									Name:    "some-image",
+									Version: ptr.To("1.0.0"),
+								},
 							},
 						},
 					},
@@ -79,9 +83,21 @@ var _ = Describe("Shoot Migration controller tests", Ordered, func() {
 				DNS: gardencorev1beta1.SeedDNS{
 					Provider: &gardencorev1beta1.SeedDNSProvider{
 						Type: "provider",
-						SecretRef: corev1.SecretReference{
-							Name:      "some-secret",
-							Namespace: "some-namespace",
+						CredentialsRef: &corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
+						},
+					},
+					Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+						Type:   "providerType",
+						Domain: "internal.example.com",
+						CredentialsRef: corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
 						},
 					},
 				},
@@ -240,7 +256,7 @@ var _ = Describe("Shoot Migration controller tests", Ordered, func() {
 		destinationSeed.Status.Gardener = sourceSeed.Status.Gardener
 		destinationSeed.Status.ObservedGeneration = destinationSeed.Generation
 		destinationSeed.Status.Conditions = []gardencorev1beta1.Condition{
-			{Type: gardencorev1beta1.SeedGardenletReady, Status: gardencorev1beta1.ConditionTrue},
+			{Type: gardencorev1beta1.GardenletReady, Status: gardencorev1beta1.ConditionTrue},
 			{Type: gardencorev1beta1.SeedSystemComponentsHealthy, Status: gardencorev1beta1.ConditionTrue},
 		}
 		Expect(testClient.Status().Update(ctx, destinationSeed)).To(Succeed())

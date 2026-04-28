@@ -1,0 +1,14 @@
+{
+  "name": "gardener-dev",
+  "version": "2.0.0",
+  "description": "Behavioral discipline plugin for Gardener contributors — enforces API change workflows, code generation, component patterns, feature gate lifecycle, and review-ready conventions",
+  "author": {
+    "name": "gardener-contributors"
+  },
+  "instructionsFile": "CLAUDE.md",
+  "agentsFile": "AGENTS.md",
+  "settingsFile": "settings.json",
+  "skills": "./skills/",
+  "hooks": "./hooks/",
+  "rules": "./rules/"
+}

@@ -9,9 +9,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/sets"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 )
 
@@ -30,6 +31,12 @@ func (o *Operation) DefaultIstioNamespace() string {
 	return *o.sniConfig().Ingress.Namespace
 }
 
+// WildcardIstioNamespace returns the Istio ingress gateway namespace from the SNI configuration,
+// ignoring any exposure class handler logic.
+func (o *Operation) WildcardIstioNamespace() string {
+	return *o.Config.SNI.Ingress.Namespace
+}
+
 // IstioLabels contain the labels to be used for the istio ingress gateway entities.
 func (o *Operation) IstioLabels() map[string]string {
 	return o.istioLabels(o.singleZoneIfPinned())
@@ -38,6 +45,12 @@ func (o *Operation) IstioLabels() map[string]string {
 // DefaultIstioLabels contain the labels to be used for the default istio ingress gateway entities disregarding zonal affinities.
 func (o *Operation) DefaultIstioLabels() map[string]string {
 	return o.istioLabels(nil)
+}
+
+// WildcardIstioLabels returns the Istio ingress gateway labels from the SNI configuration,
+// ignoring any exposure class handler logic.
+func (o *Operation) WildcardIstioLabels() map[string]string {
+	return sharedcomponent.GetIstioZoneLabels(o.Config.SNI.Ingress.Labels, nil)
 }
 
 func (o *Operation) istioLabels(zone *string) map[string]string {
@@ -78,7 +91,7 @@ func (o *Operation) addZonePinningIfRequired(namespace string) string {
 
 func (o *Operation) singleZoneIfPinned() *string {
 	// Zone-specific istio ingress gateways are only deployed with more than one zone
-	if len(o.Seed.GetInfo().Spec.Provider.Zones) <= 1 {
+	if len(o.Seed.GetInfo().Spec.Provider.Zones) <= 1 || !v1beta1helper.SeedSettingZonalIngressEnabled(o.Seed.GetInfo().Spec.Settings) {
 		return nil
 	}
 	if v, ok := o.SeedNamespaceObject.Annotations[resourcesv1alpha1.HighAvailabilityConfigZones]; ok {

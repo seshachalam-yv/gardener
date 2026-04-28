@@ -7,6 +7,8 @@ package gardener
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -18,11 +20,14 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/rest"
+	"k8s.io/pod-security-admission/api"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -31,39 +36,15 @@ import (
 
 // Domain contains information about a domain configured in the garden cluster.
 type Domain struct {
-	Domain     string
-	Provider   string
-	Zone       string
-	SecretData map[string][]byte
-}
-
-// GetDefaultDomains finds all the default domain secrets within the given map and returns a list of
-// objects that contains all relevant information about the default domains.
-func GetDefaultDomains(secrets map[string]*corev1.Secret) ([]*Domain, error) {
-	var defaultDomains []*Domain
-
-	for key, secret := range secrets {
-		if strings.HasPrefix(key, v1beta1constants.GardenRoleDefaultDomain) {
-			domain, err := constructDomainFromSecret(secret)
-			if err != nil {
-				return nil, fmt.Errorf("error getting information out of default domain secret: %+v", err)
-			}
-			defaultDomains = append(defaultDomains, domain)
-		}
-	}
-
-	return defaultDomains, nil
-}
-
-// GetInternalDomain finds the internal domain secret within the given map and returns the object
-// that contains all relevant information about the internal domain.
-func GetInternalDomain(secrets map[string]*corev1.Secret) (*Domain, error) {
-	internalDomainSecret, ok := secrets[v1beta1constants.GardenRoleInternalDomain]
-	if !ok {
-		return nil, nil
-	}
-
-	return constructDomainFromSecret(internalDomainSecret)
+	// Domain is the domain name to be used by the DNS provider.
+	Domain string
+	// Provider is the type of the DNS provider.
+	Provider string
+	// Zone is the zone where the DNS records are managed.
+	Zone string
+	// Credentials is a resource containing credentials for a DNS service provider.
+	// Supported resources are v1.Secret and security.gardener.cloud/v1alpha1.WorkloadIdentity.
+	Credentials client.Object
 }
 
 func constructDomainFromSecret(secret *corev1.Secret) (*Domain, error) {
@@ -73,10 +54,10 @@ func constructDomainFromSecret(secret *corev1.Secret) (*Domain, error) {
 	}
 
 	return &Domain{
-		Domain:     domain,
-		Provider:   provider,
-		Zone:       zone,
-		SecretData: secret.Data,
+		Domain:      domain,
+		Provider:    provider,
+		Zone:        zone,
+		Credentials: secret,
 	}, nil
 }
 
@@ -92,6 +73,176 @@ func DomainIsDefaultDomain(domain string, defaultDomains []*Domain) *Domain {
 
 var gardenRoleReq = utils.MustNewRequirement(v1beta1constants.GardenRole, selection.Exists)
 
+// ReadGardenInternalDomain reads the internal domain information from the Garden cluster.
+func ReadGardenInternalDomain(
+	ctx context.Context,
+	c client.Reader,
+	namespace string,
+	enforceSecret bool,
+	seedDNSProvider *gardencorev1beta1.SeedDNSProviderConfig,
+) (
+	*Domain,
+	error,
+) {
+	if seedDNSProvider != nil {
+		credentials, err := kubernetesutils.GetCredentialsByObjectReference(ctx, c, seedDNSProvider.CredentialsRef)
+		if err != nil {
+			return nil, fmt.Errorf("cannot fetch internal domain credentials from reference %q: %w", seedDNSProvider.CredentialsRef.String(), err)
+		}
+
+		return &Domain{
+			Domain:      seedDNSProvider.Domain,
+			Provider:    seedDNSProvider.Type,
+			Zone:        ptr.Deref(seedDNSProvider.Zone, ""),
+			Credentials: credentials,
+		}, nil
+	}
+
+	secret, err := ReadInternalDomainSecret(ctx, c, namespace, enforceSecret)
+	if err != nil || secret == nil && !enforceSecret {
+		return nil, err
+	}
+
+	domain, err := constructDomainFromSecret(secret)
+	if err != nil {
+		return nil, fmt.Errorf("error constructing internal domain from secret %s: %w", client.ObjectKeyFromObject(secret), err)
+	}
+
+	return domain, nil
+}
+
+// ReadGardenDefaultDomains reads the default domain information from the Garden cluster.
+func ReadGardenDefaultDomains(
+	ctx context.Context,
+	c client.Reader,
+	namespace string,
+	seedDNSDefaults []gardencorev1beta1.SeedDNSProviderConfig,
+) (
+	[]*Domain,
+	error,
+) {
+	var domains []*Domain
+
+	if len(seedDNSDefaults) > 0 {
+		for _, seedDNSDefault := range seedDNSDefaults {
+			credentials, err := kubernetesutils.GetCredentialsByObjectReference(ctx, c, seedDNSDefault.CredentialsRef)
+			if err != nil {
+				return nil, fmt.Errorf("cannot fetch default domain credentials from reference %q: %w", seedDNSDefault.CredentialsRef.String(), err)
+			}
+
+			domain := &Domain{
+				Domain:      seedDNSDefault.Domain,
+				Provider:    seedDNSDefault.Type,
+				Zone:        ptr.Deref(seedDNSDefault.Zone, ""),
+				Credentials: credentials,
+			}
+			domains = append(domains, domain)
+		}
+
+		return domains, nil
+	}
+
+	// Fall back to reading default domain secrets from the namespace
+	secrets, err := ReadGardenDefaultDomainsSecrets(ctx, c, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, secret := range secrets {
+		domain, err := constructDomainFromSecret(&secret)
+		if err != nil {
+			return nil, fmt.Errorf("error constructing default domain from secret %s: %w", client.ObjectKeyFromObject(&secret), err)
+		}
+		domains = append(domains, domain)
+	}
+
+	return domains, nil
+}
+
+// ReadGardenDefaultDomainsSecrets reads the default domain secrets from the given namespace.
+// This function makes sense only if no default domains are configured in the seed spec.
+// The passed reader should target the garden cluster.
+//
+// Deprecated: Use ReadGardenDefaultDomains instead.
+func ReadGardenDefaultDomainsSecrets(
+	ctx context.Context,
+	c client.Reader,
+	namespace string,
+) (
+	[]corev1.Secret,
+	error,
+) {
+	// TODO(dimityrmirchev): Remove this function once explicit DNS configuration becomes mandatory after release v1.133
+	secretList := &corev1.SecretList{}
+	if err := c.List(ctx, secretList, client.InNamespace(namespace), client.MatchingLabels{
+		v1beta1constants.GardenRole: v1beta1constants.GardenRoleDefaultDomain,
+	}); err != nil {
+		return nil, err
+	}
+
+	// Sort domain secrets by DNSDefaultDomainPriority to get the domain with the highest priority first
+	sort.SliceStable(secretList.Items, func(i, j int) bool {
+		iAnnotations := secretList.Items[i].GetAnnotations()
+		jAnnotations := secretList.Items[j].GetAnnotations()
+		var iPriority, jPriority int
+		var err error
+
+		if iAnnotations != nil {
+			if domainPriority, ok := iAnnotations[DNSDefaultDomainPriority]; ok {
+				iPriority, err = strconv.Atoi(domainPriority)
+				if err != nil {
+					iPriority = 0
+				}
+			}
+		}
+		if jAnnotations != nil {
+			if domainPriority, ok := jAnnotations[DNSDefaultDomainPriority]; ok {
+				jPriority, err = strconv.Atoi(domainPriority)
+				if err != nil {
+					jPriority = 0
+				}
+			}
+		}
+
+		return iPriority > jPriority
+	})
+
+	return secretList.Items, nil
+}
+
+// ReadInternalDomainSecret reads the internal domain secret from the given namespace.
+// If enforceSecret is true, an error is returned if no secret is found.
+// If enforceSecret is false, the function can return (nil, nil) in case no internal domain secret is found.
+func ReadInternalDomainSecret(ctx context.Context, c client.Reader, namespace string, enforceSecret bool) (*corev1.Secret, error) {
+	secretList := &corev1.SecretList{}
+	if err := c.List(ctx, secretList, client.InNamespace(namespace), client.MatchingLabels{
+		v1beta1constants.GardenRole: v1beta1constants.GardenRoleInternalDomain,
+	}); err != nil {
+		return nil, err
+	}
+
+	if len(secretList.Items) == 0 {
+		// For each Shoot we create a LoadBalancer(LB) pointing to the API server of the Shoot. Because the technical address
+		// of the LB (ip or hostname) can change we cannot directly write it into the kubeconfig of the components
+		// which talk from outside (kube-proxy, kubelet etc.) (otherwise those kubeconfigs would be broken once ip/hostname
+		// of LB changed; and we don't have means to exchange kubeconfigs currently).
+		// Therefore, to have a stable endpoint, we create a DNS record pointing to the ip/hostname of the LB. This DNS record
+		// is used in all kubeconfigs. With that we have a robust endpoint stable against underlying ip/hostname changes.
+		// And there can only be one of this internal domain secret because otherwise the gardener would not know which
+		// domain it should use.
+		if enforceSecret {
+			return nil, fmt.Errorf("need an internal domain secret but found none")
+		}
+		return nil, nil
+	}
+
+	if len(secretList.Items) > 1 {
+		return nil, fmt.Errorf("found more than one internal domain secret")
+	}
+
+	return &secretList.Items[0], nil
+}
+
 // ReadGardenSecrets reads the Kubernetes Secrets from the Garden cluster which are independent of Shoot clusters.
 // The Secret objects are stored on the Controller in order to pass them to created Garden objects later.
 func ReadGardenSecrets(
@@ -99,7 +250,6 @@ func ReadGardenSecrets(
 	log logr.Logger,
 	c client.Reader,
 	namespace string,
-	enforceInternalDomainSecret bool,
 ) (
 	map[string]*corev1.Secret,
 	error,
@@ -107,7 +257,6 @@ func ReadGardenSecrets(
 	var (
 		logInfo                                  []string
 		secretsMap                               = make(map[string]*corev1.Secret)
-		numberOfInternalDomainSecrets            = 0
 		numberOfAlertingSecrets                  = 0
 		numberOfGlobalMonitoringSecrets          = 0
 		numberOfShootServiceAccountIssuerSecrets = 0
@@ -119,35 +268,6 @@ func ReadGardenSecrets(
 	}
 
 	for _, secret := range secretList.Items {
-		// Retrieving default domain secrets based on all secrets in the Garden namespace which have
-		// a label indicating the Garden role default-domain.
-		if secret.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleDefaultDomain {
-			_, domain, _, err := GetDomainInfoFromAnnotations(secret.Annotations)
-			if err != nil {
-				log.Error(err, "Error getting information out of default domain secret", "secret", client.ObjectKeyFromObject(&secret))
-				continue
-			}
-
-			defaultDomainSecret := secret
-			secretsMap[fmt.Sprintf("%s-%s", v1beta1constants.GardenRoleDefaultDomain, domain)] = &defaultDomainSecret
-			logInfo = append(logInfo, fmt.Sprintf("default domain secret %q for domain %q", secret.Name, domain))
-		}
-
-		// Retrieving internal domain secrets based on all secrets in the Garden namespace which have
-		// a label indicating the Garden role internal-domain.
-		if secret.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleInternalDomain {
-			_, domain, _, err := GetDomainInfoFromAnnotations(secret.Annotations)
-			if err != nil {
-				log.Error(err, "Error getting information out of internal domain secret", "secret", client.ObjectKeyFromObject(&secret))
-				continue
-			}
-
-			internalDomainSecret := secret
-			secretsMap[v1beta1constants.GardenRoleInternalDomain] = &internalDomainSecret
-			logInfo = append(logInfo, fmt.Sprintf("internal domain secret %q for domain %q", secret.Name, domain))
-			numberOfInternalDomainSecrets++
-		}
-
 		// Retrieve the alerting secret to configure alerting. Either in cluster email alerting or
 		// external alertmanager configuration.
 		if secret.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleAlerting {
@@ -189,18 +309,6 @@ func ReadGardenSecrets(
 			logInfo = append(logInfo, fmt.Sprintf("Shoot Service Account Issuer secret %q", secret.Name))
 			numberOfShootServiceAccountIssuerSecrets++
 		}
-	}
-
-	// For each Shoot we create a LoadBalancer(LB) pointing to the API server of the Shoot. Because the technical address
-	// of the LB (ip or hostname) can change we cannot directly write it into the kubeconfig of the components
-	// which talk from outside (kube-proxy, kubelet etc.) (otherwise those kubeconfigs would be broken once ip/hostname
-	// of LB changed; and we don't have means to exchange kubeconfigs currently).
-	// Therefore, to have a stable endpoint, we create a DNS record pointing to the ip/hostname of the LB. This DNS record
-	// is used in all kubeconfigs. With that we have a robust endpoint stable against underlying ip/hostname changes.
-	// And there can only be one of this internal domain secret because otherwise the gardener would not know which
-	// domain it should use.
-	if enforceInternalDomainSecret && numberOfInternalDomainSecrets == 0 {
-		return nil, fmt.Errorf("need an internal domain secret but found none")
 	}
 
 	// Operators can configure gardener to send email alerts or send the alerts to an external alertmanager. If no configuration
@@ -367,4 +475,23 @@ func GetRequiredGardenWildcardCertificate(ctx context.Context, c client.Client, 
 	}
 
 	return tlsSecret, nil
+}
+
+// ReconcileGardenNamespace ensures that the Garden namespace exists with the appropriate labels and annotations.
+func ReconcileGardenNamespace(ctx context.Context, client client.Client, namespaceName string, zones []string, manageMetadata bool, mutateFn func(namespace *corev1.Namespace)) error {
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName}}
+	_, err := controllerutils.CreateOrGetAndMergePatch(ctx, client, namespace, func() error {
+		if manageMetadata {
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, api.EnforceLevelLabel, string(api.LevelPrivileged))
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigConsider, "true")
+			metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.GardenRole, v1beta1constants.GardenRoleGarden)
+			metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigZones, strings.Join(zones, ","))
+		}
+
+		if mutateFn != nil {
+			mutateFn(namespace)
+		}
+		return nil
+	})
+	return err
 }

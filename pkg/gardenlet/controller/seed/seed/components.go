@@ -7,6 +7,7 @@ package seed
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	fluentbitv1alpha2 "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2"
 	proberapi "github.com/gardener/dependency-watchdog/api/prober"
@@ -21,9 +22,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gardener/gardener/imagevector"
+	gardenlethelper "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/autoscaling/clusterautoscaler"
@@ -53,6 +55,7 @@ import (
 	"github.com/gardener/gardener/pkg/component/observability/logging/eventlogger"
 	"github.com/gardener/gardener/pkg/component/observability/logging/fluentcustomresources"
 	"github.com/gardener/gardener/pkg/component/observability/logging/fluentoperator"
+	victoriaoperator "github.com/gardener/gardener/pkg/component/observability/logging/victoria/operator"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/alertmanager"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/kubestatemetrics"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/metricsserver"
@@ -63,12 +66,12 @@ import (
 	cacheprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/cache"
 	seedprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/seed"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheusoperator"
+	"github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector"
 	oteloperator "github.com/gardener/gardener/pkg/component/observability/opentelemetry/operator"
 	"github.com/gardener/gardener/pkg/component/observability/plutono"
 	seedsystem "github.com/gardener/gardener/pkg/component/seed/system"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
 	"github.com/gardener/gardener/pkg/features"
-	gardenlethelper "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1/helper"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -86,6 +89,7 @@ type components struct {
 	fluentCRD        component.DeployWaiter
 	prometheusCRD    component.DeployWaiter
 	persesCRD        component.DeployWaiter
+	victoriaCRD      component.DeployWaiter
 	openTelemetryCRD component.DeployWaiter
 
 	backupBucket            component.DeployWaiter
@@ -119,7 +123,10 @@ type components struct {
 	aggregatePrometheus           component.DeployWaiter
 	alertManager                  component.DeployWaiter
 	persesOperator                component.DeployWaiter
+	victoriaOperator              component.DeployWaiter
 	openTelemetryOperator         component.DeployWaiter
+	openTelemetryCollector        component.Deployer
+	victoriaLogs                  component.DeployWaiter
 }
 
 func (r *Reconciler) instantiateComponents(
@@ -137,39 +144,43 @@ func (r *Reconciler) instantiateComponents(
 	err error,
 ) {
 	// crds
-	c.machineCRD, err = machinecontrollermanager.NewCRD(r.SeedClientSet.Client(), r.SeedClientSet.Applier())
+	c.machineCRD, err = machinecontrollermanager.NewCRD(r.SeedClientSet.Client())
 	if err != nil {
 		return
 	}
-	c.extensionCRD, err = extensioncrds.NewCRD(r.SeedClientSet.Client(), r.SeedClientSet.Applier(), !seedIsGarden, true)
+	c.extensionCRD, err = extensioncrds.NewCRD(r.SeedClientSet.Client(), !seedIsGarden, true)
 	if err != nil {
 		return
 	}
-	c.etcdCRD, err = etcd.NewCRD(r.SeedClientSet.Client(), r.SeedClientSet.Applier(), r.SeedVersion)
+	c.etcdCRD, err = etcd.NewCRD(r.SeedClientSet.Client(), r.SeedVersion)
 	if err != nil {
 		return
 	}
-	c.istioCRD, err = istio.NewCRD(r.SeedClientSet.Client(), r.SeedClientSet.Applier())
+	c.istioCRD, err = istio.NewCRD(r.SeedClientSet.Client())
 	if err != nil {
 		return
 	}
-	c.vpaCRD, err = vpa.NewCRD(r.SeedClientSet.Client(), r.SeedClientSet.Applier(), nil)
+	c.vpaCRD, err = vpa.NewCRD(r.SeedClientSet.Client(), nil)
 	if err != nil {
 		return
 	}
-	c.fluentCRD, err = fluentoperator.NewCRDs(r.SeedClientSet.Client(), r.SeedClientSet.Applier())
+	c.fluentCRD, err = fluentoperator.NewCRDs(r.SeedClientSet.Client())
 	if err != nil {
 		return
 	}
-	c.prometheusCRD, err = prometheusoperator.NewCRDs(r.SeedClientSet.Client(), r.SeedClientSet.Applier())
+	c.prometheusCRD, err = prometheusoperator.NewCRDs(r.SeedClientSet.Client())
 	if err != nil {
 		return
 	}
-	c.openTelemetryCRD, err = oteloperator.NewCRDs(r.SeedClientSet.Client(), r.SeedClientSet.Applier())
+	c.openTelemetryCRD, err = oteloperator.NewCRDs(r.SeedClientSet.Client())
 	if err != nil {
 		return
 	}
-	c.persesCRD, err = persesoperator.NewCRDs(r.SeedClientSet.Client(), r.SeedClientSet.Applier())
+	c.persesCRD, err = persesoperator.NewCRDs(r.SeedClientSet.Client())
+	if err != nil {
+		return
+	}
+	c.victoriaCRD, err = victoriaoperator.NewCRDs(r.SeedClientSet.Client())
 	if err != nil {
 		return
 	}
@@ -223,6 +234,10 @@ func (r *Reconciler) instantiateComponents(
 	if err != nil {
 		return
 	}
+	c.openTelemetryCollector, err = r.newOpenTelemetryCollector(secretsManager, seedIsGarden)
+	if err != nil {
+		return
+	}
 
 	c.fluentOperator, err = r.newFluentOperator()
 	if err != nil {
@@ -240,7 +255,7 @@ func (r *Reconciler) instantiateComponents(
 	if err != nil {
 		return
 	}
-	c.plutono, err = r.newPlutono(seed, secretsManager, globalMonitoringSecretSeed, wildCardCertSecret)
+	c.plutono, err = r.newPlutono(seed, secretsManager, globalMonitoringSecretSeed, wildCardCertSecret, seedIsGarden)
 	if err != nil {
 		return
 	}
@@ -272,6 +287,14 @@ func (r *Reconciler) instantiateComponents(
 	if err != nil {
 		return
 	}
+	c.victoriaOperator, err = r.newVictoriaOperator()
+	if err != nil {
+		return
+	}
+	c.victoriaLogs, err = r.newVictoriaLogs()
+	if err != nil {
+		return
+	}
 
 	return c, nil
 }
@@ -292,6 +315,7 @@ func (r *Reconciler) newGardenerResourceManager(seed *gardencorev1beta1.Seed, se
 
 	return sharedcomponent.NewRuntimeGardenerResourceManager(r.SeedClientSet.Client(), r.GardenNamespace, secretsManager, resourcemanager.Values{
 		DefaultSeccompProfileEnabled:              features.DefaultFeatureGate.Enabled(features.DefaultSeccompProfile),
+		HighAvailabilityConfigWebhookEnabled:      true,
 		DefaultNotReadyToleration:                 defaultNotReadyTolerationSeconds,
 		DefaultUnreachableToleration:              defaultUnreachableTolerationSeconds,
 		EndpointSliceHintsEnabled:                 endpointSliceHintsEnabled,
@@ -309,15 +333,20 @@ func (r *Reconciler) newGardenerResourceManager(seed *gardencorev1beta1.Seed, se
 				},
 			},
 		},
+		// TODO(vitanovs): Remove the VPAInPlaceUpdates webhook once the
+		// VPAInPlaceUpdates feature gates is deprecated.
+		VPAInPlaceUpdatesEnabled: features.DefaultFeatureGate.Enabled(features.VPAInPlaceUpdates),
 	})
 }
 
-func (r *Reconciler) newIstio(ctx context.Context, seed *seedpkg.Seed, isGardenCluster bool) (component.DeployWaiter, map[string]string, string, error) {
+func (r *Reconciler) newIstio(ctx context.Context, seed *seedpkg.Seed, seedIsGarden bool) (component.DeployWaiter, map[string]string, string, error) {
 	labels := sharedcomponent.GetIstioZoneLabels(r.Config.SNI.Ingress.Labels, nil)
 
 	servicePorts := []corev1.ServicePort{
 		{Name: "tcp", Port: 443, TargetPort: intstr.FromInt32(9443)},
+		// TODO(hown3d): Drop with RemoveHTTPProxyLegacyPort feature gate
 		{Name: "tls-tunnel", Port: vpnseedserver.GatewayPort, TargetPort: intstr.FromInt32(vpnseedserver.GatewayPort)},
+		{Name: "http-proxy", Port: vpnseedserver.HTTPProxyGatewayPort, TargetPort: intstr.FromInt(vpnseedserver.HTTPProxyGatewayPort)},
 	}
 
 	istioDeployer, err := sharedcomponent.NewIstio(
@@ -327,10 +356,11 @@ func (r *Reconciler) newIstio(ctx context.Context, seed *seedpkg.Seed, isGardenC
 		"",
 		*r.Config.SNI.Ingress.Namespace,
 		v1beta1constants.PriorityClassNameSeedSystemCritical,
-		!isGardenCluster,
+		!seedIsGarden,
 		labels,
 		gardenerutils.NetworkPolicyLabel(v1beta1constants.LabelNetworkPolicyShootNamespaceAlias+"-"+v1beta1constants.DeploymentNameKubeAPIServer, kubeapiserverconstants.Port),
 		seed.GetLoadBalancerServiceAnnotations(),
+		seed.GetLoadBalancerServiceClass(),
 		seed.GetLoadBalancerServiceExternalTrafficPolicy(),
 		r.Config.SNI.Ingress.ServiceExternalIP,
 		servicePorts,
@@ -345,7 +375,12 @@ func (r *Reconciler) newIstio(ctx context.Context, seed *seedpkg.Seed, isGardenC
 	}
 
 	// Automatically create ingress gateways for single-zone control planes on multi-zonal seeds
-	if len(seed.GetInfo().Spec.Provider.Zones) > 1 {
+	// Keep deploying zonal gateways if disabled but shoots are still using them (graceful migration)
+	zonalGatewaysInUse, err := sharedcomponent.AreZonalGatewaysInUse(ctx, r.SeedClientSet.Client(), seed.GetInfo().Spec.Provider.Zones)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to check zonal gateway usage for seed %s: %w", seed.GetInfo().Name, err)
+	}
+	if len(seed.GetInfo().Spec.Provider.Zones) > 1 && (v1beta1helper.SeedSettingZonalIngressEnabled(seed.GetInfo().Spec.Settings) || zonalGatewaysInUse) {
 		for _, zone := range seed.GetInfo().Spec.Provider.Zones {
 			if err := sharedcomponent.AddIstioIngressGateway(
 				ctx,
@@ -354,6 +389,7 @@ func (r *Reconciler) newIstio(ctx context.Context, seed *seedpkg.Seed, isGardenC
 				sharedcomponent.GetIstioNamespaceForZone(*r.Config.SNI.Ingress.Namespace, zone),
 				seed.GetZonalLoadBalancerServiceAnnotations(zone),
 				sharedcomponent.GetIstioZoneLabels(labels, &zone),
+				seed.GetLoadBalancerServiceClass(),
 				seed.GetZonalLoadBalancerServiceExternalTrafficPolicy(zone),
 				nil,
 				&zone,
@@ -376,6 +412,7 @@ func (r *Reconciler) newIstio(ctx context.Context, seed *seedpkg.Seed, isGardenC
 			// handler.LoadBalancerService.Annotations must put last to override non-exposure class related keys.
 			utils.MergeStringMaps(seed.GetLoadBalancerServiceAnnotations(), handler.LoadBalancerService.Annotations),
 			sharedcomponent.GetIstioZoneLabels(gardenerutils.GetMandatoryExposureClassHandlerSNILabels(handler.SNI.Ingress.Labels, handler.Name), nil),
+			handler.LoadBalancerService.DeepCopy().Class,
 			seed.GetLoadBalancerServiceExternalTrafficPolicy(),
 			handler.SNI.Ingress.ServiceExternalIP,
 			nil,
@@ -387,7 +424,8 @@ func (r *Reconciler) newIstio(ctx context.Context, seed *seedpkg.Seed, isGardenC
 		}
 
 		// Automatically create ingress gateways for single-zone control planes on multi-zonal seeds
-		if len(seed.GetInfo().Spec.Provider.Zones) > 1 {
+		// Keep deploying zonal gateways if disabled but shoots are still using them (graceful migration)
+		if len(seed.GetInfo().Spec.Provider.Zones) > 1 && (v1beta1helper.SeedSettingZonalIngressEnabled(seed.GetInfo().Spec.Settings) || zonalGatewaysInUse) {
 			for _, zone := range seed.GetInfo().Spec.Provider.Zones {
 				if err := sharedcomponent.AddIstioIngressGateway(
 					ctx,
@@ -397,6 +435,7 @@ func (r *Reconciler) newIstio(ctx context.Context, seed *seedpkg.Seed, isGardenC
 					// handler.LoadBalancerService.Annotations must put last to override non-exposure class related keys.
 					utils.MergeStringMaps(seed.GetZonalLoadBalancerServiceAnnotations(zone), handler.LoadBalancerService.Annotations),
 					sharedcomponent.GetIstioZoneLabels(gardenerutils.GetMandatoryExposureClassHandlerSNILabels(handler.SNI.Ingress.Labels, handler.Name), &zone),
+					handler.LoadBalancerService.DeepCopy().Class,
 					seed.GetZonalLoadBalancerServiceExternalTrafficPolicy(zone),
 					nil,
 					&zone,
@@ -447,9 +486,7 @@ func (r *Reconciler) newDependencyWatchdogs(seedSettings *gardencorev1beta1.Seed
 			if err != nil {
 				return nil, nil, err
 			}
-			for k, v := range dwdConfig {
-				dependencyWatchdogWeederConfiguration.ServicesAndDependantSelectors[k] = v
-			}
+			maps.Copy(dependencyWatchdogWeederConfiguration.ServicesAndDependantSelectors, dwdConfig)
 		}
 
 		dwdWeederValues.WeederConfig = dependencyWatchdogWeederConfiguration
@@ -525,19 +562,53 @@ func (r *Reconciler) newVali() (component.Deployer, error) {
 		v1beta1constants.PriorityClassNameSeedSystem600,
 		storage,
 		"",
+		false,
 	)
 	if err != nil {
 		return nil, err
 	}
 
+	// Destroy Vali if logging is disabled in config
 	if !gardenlethelper.IsLoggingEnabled(&r.Config) {
+		return component.OpDestroy(deployer), err
+	}
+
+	// Destroy Vali if RemoveVali feature gate is enabled (requires VictoriaLogsBackend as well)
+	if features.DefaultFeatureGate.Enabled(features.VictoriaLogsBackend) &&
+		features.DefaultFeatureGate.Enabled(features.RemoveVali) {
 		return component.OpDestroy(deployer), err
 	}
 
 	return deployer, err
 }
 
-func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanager.Interface, authSecret, wildcardCertSecret *corev1.Secret) (plutono.Interface, error) {
+func (r *Reconciler) newVictoriaLogs() (component.DeployWaiter, error) {
+	var storage *resource.Quantity
+	if r.Config.Logging != nil && r.Config.Logging.VictoriaLogs != nil && r.Config.Logging.VictoriaLogs.Garden != nil {
+		storage = r.Config.Logging.VictoriaLogs.Garden.Storage
+	}
+
+	deployer, err := sharedcomponent.NewVictoriaLogs(
+		r.SeedClientSet.Client(),
+		r.GardenNamespace,
+		component.ClusterTypeSeed,
+		1,
+		v1beta1constants.PriorityClassNameSeedSystem600,
+		storage,
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !gardenlethelper.IsLoggingEnabled(&r.Config) || !features.DefaultFeatureGate.Enabled(features.VictoriaLogsBackend) {
+		return component.OpDestroyAndWait(deployer), err
+	}
+
+	return deployer, err
+}
+
+func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanager.Interface, authSecret, wildcardCertSecret *corev1.Secret, seedIsGarden bool) (plutono.Interface, error) {
 	var wildcardCertName *string
 	if wildcardCertSecret != nil {
 		wildcardCertName = ptr.To(wildcardCertSecret.GetName())
@@ -563,6 +634,7 @@ func (r *Reconciler) newPlutono(seed *seedpkg.Seed, secretsManager secretsmanage
 		false,
 		v1beta1helper.SeedSettingVerticalPodAutoscalerEnabled(seed.GetInfo().Spec.Settings),
 		wildcardCertName,
+		seedIsGarden,
 	)
 }
 
@@ -579,12 +651,14 @@ func (r *Reconciler) newCachePrometheus(log logr.Logger, seed *seedpkg.Seed, see
 		Replicas:          1,
 		Retention:         ptr.To(monitoringv1.Duration("1d")),
 		RetentionSize:     "5GB",
+		HealthCheckBy:     prometheus.Gardenlet,
 		AdditionalPodLabels: map[string]string{
 			"networking.resources.gardener.cloud/to-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets: v1beta1constants.LabelNetworkPolicyAllowed,
 		},
 		CentralConfigs: prometheus.CentralConfigs{
+			ScrapeConfigs:           cacheprometheus.CentralScrapeConfigs(),
 			AdditionalScrapeConfigs: additionalScrapeConfigs,
-			ServiceMonitors:         cacheprometheus.CentralServiceMonitors(),
+			ServiceMonitors:         cacheprometheus.CentralServiceMonitors(seedIsShoot),
 			PrometheusRules:         cacheprometheus.CentralPrometheusRules(),
 		},
 		AdditionalResources: []client.Object{
@@ -602,18 +676,20 @@ func (r *Reconciler) newSeedPrometheus(log logr.Logger, seed *seedpkg.Seed) (com
 		Replicas:          1,
 		RetentionSize:     "85GB",
 		VPAMinAllowed:     &corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("400Mi")},
+		HealthCheckBy:     prometheus.Gardenlet,
 		AdditionalPodLabels: map[string]string{
 			"networking.resources.gardener.cloud/to-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets:            v1beta1constants.LabelNetworkPolicyAllowed,
 			"networking.resources.gardener.cloud/to-extensions-" + v1beta1constants.LabelNetworkPolicySeedScrapeTargets: v1beta1constants.LabelNetworkPolicyAllowed,
 			// TODO: For whatever reasons, the seed-prometheus also scrapes vpa-recommenders in all shoot namespaces.
-			//  Conceptionally, this is wrong and should be improved (seed-prometheus should only scrape
-			//  vpa-recommenders in garden namespace, and prometheis in shoot namespaces should scrape their
-			//  vpa-recommenders, respectively).
+			// Conceptually, this is wrong and should be improved (seed-prometheus should only scrape
+			// vpa-recommenders in garden namespace, and prometheis in shoot namespaces should scrape their
+			// vpa-recommenders, respectively).
 			gardenerutils.NetworkPolicyLabel(v1beta1constants.LabelNetworkPolicyShootNamespaceAlias+"-vpa-recommender", 8942): v1beta1constants.LabelNetworkPolicyAllowed,
 		},
 		CentralConfigs: prometheus.CentralConfigs{
-			PodMonitors:   seedprometheus.CentralPodMonitors(),
-			ScrapeConfigs: seedprometheus.CentralScrapeConfigs(),
+			PodMonitors:     seedprometheus.CentralPodMonitors(),
+			ScrapeConfigs:   seedprometheus.CentralScrapeConfigs(),
+			PrometheusRules: seedprometheus.CentralPrometheusRules(),
 		},
 	})
 }
@@ -628,6 +704,7 @@ func (r *Reconciler) newAggregatePrometheus(log logr.Logger, seed *seedpkg.Seed,
 		RetentionSize:     "15GB",
 		ExternalLabels:    map[string]string{"seed": seed.GetInfo().Name},
 		VPAMinAllowed:     &corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1000M")},
+		HealthCheckBy:     prometheus.Gardenlet,
 		CentralConfigs: prometheus.CentralConfigs{
 			PrometheusRules: aggregateprometheus.CentralPrometheusRules(seedIsGarden),
 			ScrapeConfigs:   aggregateprometheus.CentralScrapeConfigs(),
@@ -702,8 +779,12 @@ func (r *Reconciler) newFluentCustomResources(seedIsGarden bool) (deployer compo
 		metricsserver.CentralLoggingConfiguration,
 		// shoot addon components
 		kubernetesdashboard.CentralLoggingConfiguration,
+		istio.CentralLoggingConfiguration,
 	}
 
+	if features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) {
+		centralLoggingConfigurations = append(centralLoggingConfigurations, collector.CentralLoggingConfiguration)
+	}
 	if !seedIsGarden {
 		centralLoggingConfigurations = append(centralLoggingConfigurations, logging.GardenCentralLoggingConfigurations...)
 	}
@@ -726,19 +807,35 @@ func (r *Reconciler) newFluentCustomResources(seedIsGarden bool) (deployer compo
 	)
 }
 
-func (r *Reconciler) newVerticalPodAutoscaler(settings *gardencorev1beta1.SeedSettings, secretsManager secretsmanager.Interface, isGardenCluster bool) (component.DeployWaiter, error) {
-	return sharedcomponent.NewVerticalPodAutoscaler(
+func (r *Reconciler) newVerticalPodAutoscaler(settings *gardencorev1beta1.SeedSettings, secretsManager secretsmanager.Interface, seedIsGarden bool) (component.DeployWaiter, error) {
+	var featureGates map[string]bool
+
+	if settings.VerticalPodAutoscaler != nil {
+		featureGates = settings.VerticalPodAutoscaler.FeatureGates
+	}
+
+	verticalPodAutoscaler, err := sharedcomponent.NewVerticalPodAutoscaler(
 		r.SeedClientSet.Client(),
 		r.GardenNamespace,
 		r.SeedVersion,
 		secretsManager,
-		vpaEnabled(settings),
+		v1beta1helper.SeedSettingVerticalPodAutoscalerMaxAllowed(settings),
 		v1beta1constants.SecretNameCASeed,
 		v1beta1constants.PriorityClassNameSeedSystem800,
 		v1beta1constants.PriorityClassNameSeedSystem700,
 		v1beta1constants.PriorityClassNameSeedSystem700,
-		isGardenCluster,
+		seedIsGarden,
+		featureGates,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !vpaEnabled(settings) {
+		return component.OpDestroyWithoutWait(verticalPodAutoscaler), nil
+	}
+
+	return verticalPodAutoscaler, nil
 }
 
 func (r *Reconciler) newEtcdDruid(secretsManager secretsmanager.Interface) (component.DeployWaiter, error) {
@@ -751,6 +848,7 @@ func (r *Reconciler) newEtcdDruid(secretsManager secretsmanager.Interface) (comp
 		secretsManager,
 		v1beta1constants.SecretNameCASeed,
 		v1beta1constants.PriorityClassNameSeedSystem800,
+		false,
 	)
 }
 
@@ -774,6 +872,14 @@ func (r *Reconciler) newPrometheusOperator() (component.DeployWaiter, error) {
 
 func (r *Reconciler) newPersesOperator() (component.DeployWaiter, error) {
 	return sharedcomponent.NewPersesOperator(
+		r.SeedClientSet.Client(),
+		r.GardenNamespace,
+		v1beta1constants.PriorityClassNameSeedSystem600,
+	)
+}
+
+func (r *Reconciler) newVictoriaOperator() (component.DeployWaiter, error) {
+	return sharedcomponent.NewVictoriaOperator(
 		r.SeedClientSet.Client(),
 		r.GardenNamespace,
 		v1beta1constants.PriorityClassNameSeedSystem600,
@@ -806,6 +912,27 @@ func (r *Reconciler) newOpenTelemetryOperator() (component.DeployWaiter, error) 
 		gardenlethelper.IsLoggingEnabled(&r.Config),
 		v1beta1constants.PriorityClassNameSeedSystem600,
 	)
+}
+
+func (r *Reconciler) newOpenTelemetryCollector(secretsManager secretsmanager.Interface, seedIsGarden bool) (component.Deployer, error) {
+	deployer, err := sharedcomponent.NewOpenTelemetryCollector(
+		r.SeedClientSet.Client(),
+		r.GardenNamespace,
+		v1beta1constants.PriorityClassNameSeedSystem600,
+		secretsManager,
+		v1beta1constants.SecretNameCASeed,
+		component.ClusterTypeSeed,
+		seedIsGarden,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !gardenlethelper.IsLoggingEnabled(&r.Config) {
+		return component.OpDestroy(deployer), err
+	}
+
+	return deployer, err
 }
 
 func (r *Reconciler) newClusterAutoscaler() component.DeployWaiter {

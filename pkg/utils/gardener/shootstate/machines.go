@@ -14,6 +14,7 @@ import (
 	"slices"
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,6 +39,10 @@ func computeMachineState(ctx context.Context, seedClient client.Client, namespac
 
 	machineDeployments := &machinev1alpha1.MachineDeploymentList{}
 	if err := seedClient.List(ctx, machineDeployments, client.InNamespace(namespace)); err != nil {
+		// In case of self-hosted shoot clusters with unmanaged infrastructure, the MCM resources are not present.
+		if meta.IsNoMatchError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -46,56 +51,59 @@ func computeMachineState(ctx context.Context, seedClient client.Client, namespac
 		return nil, err
 	}
 
-	machineSetToMachines, err := getMachineSetToMachinesMap(ctx, seedClient, namespace)
+	machineSetOrDeploymentToMachines, err := getMachineSetOrDeploymentToMachinesMap(ctx, seedClient, namespace)
 	if err != nil {
 		return nil, err
 	}
 
-	var allMachines []machinev1alpha1.Machine
 	for _, machineDeployment := range machineDeployments.Items {
 		machineSets, ok := machineDeploymentToMachineSets[machineDeployment.Name]
 		if !ok {
 			continue
 		}
 
+		// get machines that have a machine deployment as owner
+		machinesForMachineDeployment := slices.Clone(machineSetOrDeploymentToMachines[machineDeployment.Name])
+
 		for i, machineSet := range machineSets {
-			// remove irrelevant data from the machine set
-			machineSets[i].ObjectMeta = metav1.ObjectMeta{
-				Name:        machineSet.Name,
-				Namespace:   machineSet.Namespace,
-				Annotations: machineSet.Annotations,
-				Labels:      machineSet.Labels,
-			}
-			machineSets[i].Status = machinev1alpha1.MachineSetStatus{}
+			removeIrrelevantDataFromObject(&machineSets[i])
+			// get machines that have a machine set as owner
+			machinesForMachineSet := machineSetOrDeploymentToMachines[machineSet.Name]
+			machinesForMachineDeployment = append(machinesForMachineDeployment, machinesForMachineSet...)
+		}
 
-			// fetch machines related to the machine set/deployment
-			machines := append(machineSetToMachines[machineSet.Name], machineSetToMachines[machineDeployment.Name]...)
-			if len(machines) == 0 {
-				continue
-			}
-
-			for j, machine := range machines {
-				// remove irrelevant data from the machine
-				machines[j].ObjectMeta = metav1.ObjectMeta{
-					Name:        machine.Name,
-					Namespace:   machine.Namespace,
-					Annotations: machine.Annotations,
-					Labels:      machine.Labels,
-				}
-				machines[j].Status = machinev1alpha1.MachineStatus{}
-			}
-
-			allMachines = append(allMachines, machines...)
+		for i := range machinesForMachineDeployment {
+			removeIrrelevantDataFromObject(&machinesForMachineDeployment[i])
 		}
 
 		state.MachineDeployments[machineDeployment.Name] = &MachineDeploymentState{
 			Replicas:    machineDeployment.Spec.Replicas,
 			MachineSets: machineSets,
-			Machines:    allMachines,
+			Machines:    machinesForMachineDeployment,
 		}
 	}
 
 	return state, nil
+}
+
+func removeIrrelevantDataFromObject(obj client.Object) {
+	switch o := obj.(type) {
+	case *machinev1alpha1.Machine:
+		resetObjectMeta(&o.ObjectMeta)
+		o.Status = machinev1alpha1.MachineStatus{}
+	case *machinev1alpha1.MachineSet:
+		resetObjectMeta(&o.ObjectMeta)
+		o.Status = machinev1alpha1.MachineSetStatus{}
+	}
+}
+
+func resetObjectMeta(meta *metav1.ObjectMeta) {
+	*meta = metav1.ObjectMeta{
+		Name:        meta.Name,
+		Namespace:   meta.Namespace,
+		Annotations: meta.Annotations,
+		Labels:      meta.Labels,
+	}
 }
 
 func getMachineDeploymentToMachineSetsMap(ctx context.Context, c client.Client, namespace string) (map[string][]machinev1alpha1.MachineSet, error) {
@@ -113,7 +121,7 @@ func getMachineDeploymentToMachineSetsMap(ctx context.Context, c client.Client, 
 	return gardenerutils.BuildOwnerToMachineSetsMap(existingMachineSets.Items), nil
 }
 
-func getMachineSetToMachinesMap(ctx context.Context, seedClient client.Client, namespace string) (map[string][]machinev1alpha1.Machine, error) {
+func getMachineSetOrDeploymentToMachinesMap(ctx context.Context, seedClient client.Client, namespace string) (map[string][]machinev1alpha1.Machine, error) {
 	existingMachines := &machinev1alpha1.MachineList{}
 	if err := seedClient.List(ctx, existingMachines, client.InNamespace(namespace)); err != nil {
 		return nil, err
@@ -143,6 +151,21 @@ type compressedMachineState struct {
 	State []byte `json:"state"`
 }
 
+// MarshalMachineState encodes and compresses the machine state data.
+func MarshalMachineState(machineState *MachineState) ([]byte, error) {
+	machineStateJSON, err := json.Marshal(machineState)
+	if err != nil {
+		return nil, fmt.Errorf("failed marshalling machine state to JSON: %w", err)
+	}
+
+	machineStateJSONCompressed, err := compressMachineState(machineStateJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed compressing machine state data: %w", err)
+	}
+
+	return machineStateJSONCompressed, nil
+}
+
 func compressMachineState(state []byte) ([]byte, error) {
 	if len(state) == 0 || string(state) == "{}" {
 		return nil, nil
@@ -170,8 +193,30 @@ func compressMachineState(state []byte) ([]byte, error) {
 	return json.Marshal(&compressedMachineState{State: stateCompressed.Bytes()})
 }
 
-// DecompressMachineState decompresses the machine state data.
-func DecompressMachineState(stateCompressed []byte) ([]byte, error) {
+// UnmarshalMachineState decompresses and decodes the machine state data.
+func UnmarshalMachineState(stateCompressed []byte) (*MachineState, error) {
+	if len(stateCompressed) == 0 {
+		return &MachineState{}, nil
+	}
+
+	state, err := decompressMachineState(stateCompressed)
+	if err != nil {
+		return nil, fmt.Errorf("failed decompressing machine state: %w", err)
+	}
+	if len(state) == 0 {
+		return &MachineState{}, nil
+	}
+
+	// Parse the worker state to MachineDeploymentStates
+	machineState := &MachineState{MachineDeployments: make(map[string]*MachineDeploymentState)}
+	if err := json.Unmarshal(state, &machineState); err != nil {
+		return nil, fmt.Errorf("failed decoding machine state: %w", err)
+	}
+
+	return machineState, nil
+}
+
+func decompressMachineState(stateCompressed []byte) ([]byte, error) {
 	if len(stateCompressed) == 0 {
 		return nil, nil
 	}
@@ -179,6 +224,10 @@ func DecompressMachineState(stateCompressed []byte) ([]byte, error) {
 	var machineState compressedMachineState
 	if err := json.Unmarshal(stateCompressed, &machineState); err != nil {
 		return nil, fmt.Errorf("failed unmarshalling JSON to compressed machine state structure: %w", err)
+	}
+
+	if len(machineState.State) == 0 {
+		return nil, nil
 	}
 
 	gzipReader, err := gzip.NewReader(bytes.NewReader(machineState.State))

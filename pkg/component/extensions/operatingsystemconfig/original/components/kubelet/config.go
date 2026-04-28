@@ -16,6 +16,7 @@ import (
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
+	"github.com/gardener/gardener/pkg/features"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/version"
 )
@@ -27,8 +28,12 @@ var FilePathKubernetesManifests = filepath.Join(string(filepath.Separator), "etc
 func Config(kubernetesVersion *semver.Version, clusterDNSAddresses []string, clusterDomain string, taints []corev1.Taint, params components.ConfigurableKubeletConfigParameters) *kubeletconfigv1beta1.KubeletConfiguration {
 	setConfigDefaults(&params)
 
+	criticalComponentsTaintKey := v1beta1constants.TaintNodeCriticalComponentsNotReady
+	if features.DefaultFeatureGate.Enabled(features.NodeReadinessController) {
+		criticalComponentsTaintKey = v1beta1constants.TaintNodeReadinessControllerNotReady
+	}
 	nodeTaints := append(taints, corev1.Taint{
-		Key:    v1beta1constants.TaintNodeCriticalComponentsNotReady,
+		Key:    criticalComponentsTaintKey,
 		Effect: corev1.TaintEffectNoSchedule,
 	})
 
@@ -178,7 +183,8 @@ func setConfigDefaults(c *components.ConfigurableKubeletConfigParameters) {
 	}
 
 	if c.CpuManagerPolicy == nil {
-		c.CpuManagerPolicy = ptr.To(kubeletconfigv1beta1.NoneTopologyManagerPolicy)
+		// Ref: https://github.com/kubernetes/kubernetes/blob/cede96336a809a67546ca08df0748e4253ec270d/pkg/kubelet/cm/cpumanager/policy_none.go#L34
+		c.CpuManagerPolicy = ptr.To("none")
 	}
 
 	if c.EvictionHard == nil {

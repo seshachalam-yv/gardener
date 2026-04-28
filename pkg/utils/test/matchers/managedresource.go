@@ -8,9 +8,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/onsi/gomega/format"
-	"golang.org/x/exp/maps"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,7 +29,12 @@ type managedResourceObjectsMatcher struct {
 
 	extraObjects             []string
 	missingObjects           []string
-	mismatchExpectedToActual map[client.Object]client.Object
+	mismatchExpectedToActual map[client.Object]*mismatch
+}
+
+type mismatch struct {
+	diff string
+	obj  client.Object
 }
 
 func (m *managedResourceObjectsMatcher) FailureMessage(actual any) string {
@@ -52,7 +57,8 @@ func (m *managedResourceObjectsMatcher) createMessage(actual any, addition strin
 	case len(m.mismatchExpectedToActual) > 0:
 		message = fmt.Sprintf("Expected for ManagedResource %s/%s the following object mismatches %s found:\n", managedResource.Namespace, managedResource.Name, addition)
 		for expected, actual := range m.mismatchExpectedToActual {
-			message += format.Message(actual, "to equal", expected)
+			message += format.Message(client.ObjectKeyFromObject(actual.obj), "to equal", client.ObjectKeyFromObject(expected))
+			message += fmt.Sprintf("\ndiff: %s", actual.diff)
 		}
 	case len(m.missingObjects) > 0:
 		message = fmt.Sprintf("Expected for ManagedResource %s/%s the following elements %s absent:\n", managedResource.Namespace, managedResource.Name, addition)
@@ -112,13 +118,16 @@ func (m *managedResourceObjectsMatcher) Match(actual any) (bool, error) {
 	return true, nil
 }
 
-func findMismatchObjects(availableObjects map[string]client.Object, expectedObjects map[string]client.Object) map[client.Object]client.Object {
-	mismatches := make(map[client.Object]client.Object)
+func findMismatchObjects(availableObjects map[string]client.Object, expectedObjects map[string]client.Object) map[client.Object]*mismatch {
+	mismatches := make(map[client.Object]*mismatch)
 
 	for expectedObjKey, expectedObj := range expectedObjects {
 		actualObject, ok := availableObjects[expectedObjKey]
-		if ok && !apiequality.Semantic.DeepEqual(actualObject, expectedObj) {
-			mismatches[expectedObj] = actualObject
+		if ok {
+			diff := cmp.Diff(actualObject, expectedObj, cmpopts.EquateEmpty())
+			if diff != "" {
+				mismatches[expectedObj] = &mismatch{diff: diff, obj: actualObject}
+			}
 		}
 	}
 
@@ -126,11 +135,11 @@ func findMismatchObjects(availableObjects map[string]client.Object, expectedObje
 }
 
 func findMissingObjects(availableObjects map[string]client.Object, expectedObjects map[string]client.Object) []string {
-	return sets.New(maps.Keys(expectedObjects)...).Difference(sets.New(maps.Keys(availableObjects)...)).UnsortedList()
+	return sets.KeySet(expectedObjects).Difference(sets.KeySet(availableObjects)).UnsortedList()
 }
 
 func findExtraObjects(availableObjects map[string]client.Object, expectedObjects map[string]client.Object) []string {
-	return sets.New(maps.Keys(availableObjects)...).Difference(sets.New(maps.Keys(expectedObjects)...)).UnsortedList()
+	return sets.KeySet(availableObjects).Difference(sets.KeySet(expectedObjects)).UnsortedList()
 }
 
 func objectKey(obj client.Object, scheme *runtime.Scheme) string {

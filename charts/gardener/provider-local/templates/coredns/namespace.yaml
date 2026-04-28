@@ -1,6 +1,0 @@
-{{- if eq (include "coredns.enabled" .) "true" -}}
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: gardener-extension-provider-local-coredns
-{{- end -}}

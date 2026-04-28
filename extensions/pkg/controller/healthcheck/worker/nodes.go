@@ -33,14 +33,20 @@ const (
 type DefaultHealthChecker struct {
 	logger logr.Logger
 	// Needs to be set by actuator before calling the Check function
-	seedClient client.Client
-	// make sure shoot client is instantiated
-	shootClient client.Client
+	sourceClient client.Client
+	// make sure target/shoot client is instantiated
+	targetClient client.Client
 	// scaleUpProgressingThreshold is the progressing threshold when the health check detects a scale-up situation.
 	scaleUpProgressingThreshold *time.Duration
 	// scaleDownProgressingThreshold is the progressing threshold when the health check detects a scale-down situation.
 	scaleDownProgressingThreshold *time.Duration
 }
+
+var (
+	_ healthcheck.HealthCheck  = (*DefaultHealthChecker)(nil)
+	_ healthcheck.SourceClient = (*DefaultHealthChecker)(nil)
+	_ healthcheck.TargetClient = (*DefaultHealthChecker)(nil)
+)
 
 // NewNodesChecker is a health check function which performs certain checks about the nodes registered in the cluster.
 // It implements the healthcheck.HealthCheck interface.
@@ -66,14 +72,14 @@ func (h *DefaultHealthChecker) WithScaleDownProgressingThreshold(d time.Duration
 	return h
 }
 
-// InjectSeedClient injects the seed client.
-func (h *DefaultHealthChecker) InjectSeedClient(seedClient client.Client) {
-	h.seedClient = seedClient
+// InjectSourceClient injects the seed client.
+func (h *DefaultHealthChecker) InjectSourceClient(sourceClient client.Client) {
+	h.sourceClient = sourceClient
 }
 
-// InjectShootClient injects the shoot client.
-func (h *DefaultHealthChecker) InjectShootClient(shootClient client.Client) {
-	h.shootClient = shootClient
+// InjectTargetClient injects the shoot client.
+func (h *DefaultHealthChecker) InjectTargetClient(targetClient client.Client) {
+	h.targetClient = targetClient
 }
 
 // SetLoggerSuffix injects the logger.
@@ -81,24 +87,17 @@ func (h *DefaultHealthChecker) SetLoggerSuffix(provider, extension string) {
 	h.logger = log.Log.WithName(fmt.Sprintf("%s-%s-healthcheck-nodes", provider, extension))
 }
 
-// DeepCopy clones the healthCheck struct by making a copy and returning the pointer to that new copy.
-// Actually, it does not perform a *deep* copy.
-func (h *DefaultHealthChecker) DeepCopy() healthcheck.HealthCheck {
-	shallowCopy := *h
-	return &shallowCopy
-}
-
 // Check executes the health check.
 func (h *DefaultHealthChecker) Check(ctx context.Context, request types.NamespacedName) (*healthcheck.SingleCheckResult, error) {
 	machineDeploymentList := &machinev1alpha1.MachineDeploymentList{}
-	if err := h.seedClient.List(ctx, machineDeploymentList, client.InNamespace(request.Namespace)); err != nil {
+	if err := h.sourceClient.List(ctx, machineDeploymentList, client.InNamespace(request.Namespace)); err != nil {
 		err := fmt.Errorf("unable to check nodes. Failed to list machine deployments in namespace %q: %w", request.Namespace, err)
 		h.logger.Error(err, "Health check failed")
 		return nil, err
 	}
 
 	nodeList := &corev1.NodeList{}
-	if err := h.shootClient.List(ctx, nodeList); err != nil {
+	if err := h.targetClient.List(ctx, nodeList); err != nil {
 		err := fmt.Errorf("unable to check nodes. Failed to list shoot nodes: %w", err)
 		h.logger.Error(err, "Health check failed")
 		return nil, err
@@ -131,7 +130,7 @@ func (h *DefaultHealthChecker) Check(ctx context.Context, request types.Namespac
 
 	machineList := &machinev1alpha1.MachineList{}
 	if registeredNodes != desiredMachines || readyNodes != desiredMachines {
-		if err := h.seedClient.List(ctx, machineList, client.InNamespace(request.Namespace)); err != nil {
+		if err := h.sourceClient.List(ctx, machineList, client.InNamespace(request.Namespace)); err != nil {
 			err := fmt.Errorf("unable to check nodes. Failed to list machines in namespace %q: %w", request.Namespace, err)
 			h.logger.Error(err, "Health check failed")
 			return nil, err

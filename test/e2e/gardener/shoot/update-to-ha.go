@@ -7,9 +7,10 @@ package shoot
 import (
 	. "github.com/onsi/ginkgo/v2"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	. "github.com/gardener/gardener/test/e2e/gardener"
+	"github.com/gardener/gardener/test/e2e/gardener/seed"
 	"github.com/gardener/gardener/test/e2e/gardener/shoot/internal/highavailability"
 	"github.com/gardener/gardener/test/e2e/gardener/shoot/internal/inclusterclient"
 )
@@ -22,7 +23,7 @@ var _ = Describe("Shoot Tests", Label("Shoot", "high-availability"), func() {
 			ItShouldCreateShoot(s)
 			ItShouldWaitForShootToBeReconciledAndHealthy(s)
 			ItShouldGetResponsibleSeed(s)
-			ItShouldInitializeSeedClient(s)
+			seed.ItShouldInitializeSeedClient(&s.SeedContext)
 			ItShouldInitializeShootClient(s)
 
 			if !v1beta1helper.IsWorkerless(s.Shoot) {
@@ -43,6 +44,10 @@ var _ = Describe("Shoot Tests", Label("Shoot", "high-availability"), func() {
 
 		Context("Shoot with workers", Ordered, func() {
 			test(NewTestContext().ForShoot(DefaultShoot(shootName)))
+		})
+
+		Context("Shoot with workers and overlapping CIDR ranges", Ordered, func() {
+			test(NewTestContext().ForShoot(DefaultOverlappingShoot(shootName)))
 		})
 
 		Context("Workerless Shoot", Label("workerless"), Ordered, func() {

@@ -16,12 +16,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig"
@@ -197,16 +198,26 @@ func (w *worker) deploy(ctx context.Context, operation string) (extensionsv1alph
 			}
 		}
 
-		nodeTemplate, machineType := w.findNodeTemplateAndMachineTypeByPoolName(obj, workerPool.Name)
+		machineType := v1beta1helper.FindMachineTypeByName(w.values.MachineTypes, workerPool.Machine.Type)
+		if machineType != nil && machineType.MachineControllerManager != nil && machineType.MachineControllerManager.MachineCreationTimeout != nil {
+			// A MachineCreationTimeout set in the cloud profile will be used if no value is specified in the worker pool.
+			if workerPool.MachineControllerManagerSettings == nil {
+				workerPool.MachineControllerManagerSettings = &gardencorev1beta1.MachineControllerManagerSettings{}
+			}
+			if workerPool.MachineControllerManagerSettings.MachineCreationTimeout == nil {
+				workerPool.MachineControllerManagerSettings.MachineCreationTimeout = machineType.MachineControllerManager.MachineCreationTimeout
+			}
+		}
 
-		if nodeTemplate == nil || machineType != workerPool.Machine.Type {
+		nodeTemplate, machineTypeName := w.findNodeTemplateAndMachineTypeByPoolName(obj, workerPool.Name)
+		if nodeTemplate == nil || machineTypeName != workerPool.Machine.Type {
 			// initializing nodeTemplate by fetching details from cloudprofile, if present there
-			if machineDetails := v1beta1helper.FindMachineTypeByName(w.values.MachineTypes, workerPool.Machine.Type); machineDetails != nil {
+			if machineType != nil {
 				nodeTemplate = &extensionsv1alpha1.NodeTemplate{
 					Capacity: corev1.ResourceList{
-						corev1.ResourceCPU:    machineDetails.CPU,
-						"gpu":                 machineDetails.GPU,
-						corev1.ResourceMemory: machineDetails.Memory,
+						corev1.ResourceCPU:    machineType.CPU,
+						"gpu":                 machineType.GPU,
+						corev1.ResourceMemory: machineType.Memory,
 					},
 				}
 			} else {
@@ -238,12 +249,13 @@ func (w *worker) deploy(ctx context.Context, operation string) (extensionsv1alph
 			Name:           workerPool.Name,
 			Minimum:        workerPool.Minimum,
 			Maximum:        workerPool.Maximum,
-			MaxSurge:       *workerPool.MaxSurge,
-			MaxUnavailable: *workerPool.MaxUnavailable,
+			MaxSurge:       ptr.Deref(workerPool.MaxSurge, intstr.FromInt32(0)),
+			MaxUnavailable: ptr.Deref(workerPool.MaxUnavailable, intstr.FromInt32(0)),
 			Annotations:    workerPool.Annotations,
-			Labels:         gardenerutils.NodeLabelsForWorkerPool(workerPool, w.values.NodeLocalDNSEnabled, gardenerNodeAgentSecretName),
-			Taints:         workerPool.Taints,
-			MachineType:    workerPool.Machine.Type,
+			// The worker is not created for unmanaged self-hosted shoots; for all other cases, CCM should always be there to put topology labels on the nodes for the region.
+			Labels:      gardenerutils.NodeLabelsForWorkerPool(workerPool, w.values.NodeLocalDNSEnabled, gardenerNodeAgentSecretName, ""),
+			Taints:      workerPool.Taints,
+			MachineType: workerPool.Machine.Type,
 			MachineImage: extensionsv1alpha1.MachineImage{
 				Name:    workerPool.Machine.Image.Name,
 				Version: *workerPool.Machine.Image.Version,
@@ -341,7 +353,19 @@ func (w *worker) Wait(ctx context.Context) error {
 		w.waitInterval,
 		w.waitSevereThreshold,
 		w.waitTimeout,
-		nil,
+		func(ctx context.Context) error {
+			// In Restore, we add the machine-state from the ShootState to Worker.status.state, so that the extension
+			// controller can pick it up and restore the MachineDeployments, MachineSets, and Machines.
+			// After the Worker has been successfully restored/reconciled, we need to clear Worker.status.state to not keep
+			// stale state information around.
+			if w.worker.Status.State == nil {
+				return nil
+			}
+
+			patch := client.MergeFromWithOptions(w.worker.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			w.worker.Status.State = nil
+			return w.client.Status().Patch(ctx, w.worker, patch)
+		},
 	)
 }
 
@@ -357,7 +381,7 @@ func (w *worker) WaitUntilWorkerStatusMachineDeploymentsUpdated(ctx context.Cont
 		w.waitInterval,
 		w.waitSevereThreshold,
 		w.waitTimeout,
-		func() error {
+		func(_ context.Context) error {
 			w.machineDeployments = w.worker.Status.MachineDeployments
 			return nil
 		},
@@ -429,11 +453,16 @@ func (w *worker) findNodeTemplateAndMachineTypeByPoolName(obj *extensionsv1alpha
 
 // checkWorkerStatusMachineDeploymentsUpdated checks if the status of the worker is updated or not during its reconciliation.
 // It is updated if
+// * The Worker status does not have a recent LastError
 // * The status.MachineDeploymentsLastUpdateTime > the value of the time stamp stored in worker struct before the reconciliation begins.
 func (w *worker) checkWorkerStatusMachineDeploymentsUpdated(o client.Object) error {
 	obj, ok := o.(*extensionsv1alpha1.Worker)
 	if !ok {
 		return fmt.Errorf("expected *extensionsv1alpha1.Worker but got %T", o)
+	}
+
+	if obj.Status.LastError != nil && obj.Status.LastError.LastUpdateTime != nil && (w.machineDeploymentsLastUpdateTime == nil || obj.Status.LastError.LastUpdateTime.After(w.machineDeploymentsLastUpdateTime.Time)) {
+		return v1beta1helper.NewErrorWithCodes(errors.New(obj.Status.LastError.Description), obj.Status.LastError.Codes...)
 	}
 
 	if obj.Status.MachineDeploymentsLastUpdateTime != nil && (w.machineDeploymentsLastUpdateTime == nil || obj.Status.MachineDeploymentsLastUpdateTime.After(w.machineDeploymentsLastUpdateTime.Time)) {

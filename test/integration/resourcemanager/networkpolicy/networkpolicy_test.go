@@ -17,15 +17,17 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
 var _ = Describe("NetworkPolicy Controller tests", func() {
 	var (
-		namespace      *corev1.Namespace
-		otherNamespace *corev1.Namespace
-		service        *corev1.Service
+		namespace       *corev1.Namespace
+		otherNamespace  *corev1.Namespace
+		service         *corev1.Service
+		skipPodCreation bool
 
 		serviceSelector         = map[string]string{"foo": "bar"}
 		customPodLabelSelector1 = "custom-selector1"
@@ -57,6 +59,43 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 		port6TargetPort = intstr.FromInt32(1023)
 		port6Suffix     = fmt.Sprintf("-%s-%s", strings.ToLower(string(port6Protocol)), port6TargetPort.String())
 
+		createPodWithNetPolLabels = func(namespaceName string, labels map[string]string) *corev1.Pod {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "pod-",
+					Namespace:    namespaceName,
+					Labels:       labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "test",
+						Image: "registry.k8s.io/pause:3.7",
+					}},
+				},
+			}
+			ExpectWithOffset(1, testClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				ExpectWithOffset(1, testClient.Delete(ctx, pod)).To(Or(Succeed(), BeNotFoundError()))
+			})
+			return pod
+		}
+
+		sameNamespaceLabelsForService = func() map[string]string {
+			labels := map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Name + port1Suffix: "allowed",
+				"networking.resources.gardener.cloud/to-" + service.Name + port2Suffix: "allowed",
+			}
+			return shortenLabelKeys(labels)
+		}
+
+		crossNamespaceLabelsForService = func() map[string]string {
+			labels := map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Namespace + "-" + service.Name + port1Suffix: "allowed",
+				"networking.resources.gardener.cloud/to-" + service.Namespace + "-" + service.Name + port2Suffix: "allowed",
+			}
+			return shortenLabelKeys(labels)
+		}
+
 		ensureNetworkPolicies = func(asyncAssertion func(int, any, ...any) AsyncAssertion, should bool) func() {
 			return func() {
 				assertedFunc := func(g Gomega) []string {
@@ -74,8 +113,7 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 				if should {
 					asyncAssertion(1, assertedFunc).Should(ContainElements(expectation))
 				} else {
-					// TODO(tobschli): Change this to the `ShouldNot(ContainAnyOf())` matcher, once https://github.com/gardener/gardener/pull/12317 is merged.
-					asyncAssertion(1, assertedFunc).ShouldNot(ContainElements(expectation))
+					asyncAssertion(1, assertedFunc).ShouldNot(ContainAnyOf(expectation...))
 				}
 			}
 		}
@@ -100,8 +138,7 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 				if should {
 					asyncAssertion(1, assertedFunc).Should(ContainElements(expectation))
 				} else {
-					// TODO(tobschli): Change this to the `ShouldNot(ContainAnyOf())` matcher, once https://github.com/gardener/gardener/pull/12317 is merged.
-					asyncAssertion(1, assertedFunc).ShouldNot(ContainElements(expectation))
+					asyncAssertion(1, assertedFunc).ShouldNot(ContainAnyOf(expectation...))
 				}
 
 				// egress rules
@@ -118,8 +155,7 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 				if should {
 					asyncAssertion(1, assertedFunc).Should(ContainElements(expectation))
 				} else {
-					// TODO(tobschli): Change this to the `ShouldNot(ContainAnyOf())` matcher, once https://github.com/gardener/gardener/pull/12317 is merged.
-					asyncAssertion(1, assertedFunc).ShouldNot(ContainElements(expectation))
+					asyncAssertion(1, assertedFunc).ShouldNot(ContainAnyOf(expectation...))
 				}
 			}
 		}
@@ -148,8 +184,7 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 				if should {
 					asyncAssertion(1, assertedFunc).Should(ContainElements(expectation))
 				} else {
-					// TODO(tobschli): Change this to the `ShouldNot(ContainAnyOf())` matcher, once https://github.com/gardener/gardener/pull/12317 is merged.
-					asyncAssertion(1, assertedFunc).ShouldNot(ContainElements(expectation))
+					asyncAssertion(1, assertedFunc).ShouldNot(ContainAnyOf(expectation...))
 				}
 			}
 		}
@@ -170,8 +205,7 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 				if should {
 					asyncAssertion(1, assertedFunc).Should(ContainElements(expectation))
 				} else {
-					// TODO(tobschli): Change this to the `ShouldNot(ContainAnyOf())` matcher, once https://github.com/gardener/gardener/pull/12317 is merged.
-					asyncAssertion(1, assertedFunc).ShouldNot(ContainElements(expectation))
+					asyncAssertion(1, assertedFunc).ShouldNot(ContainAnyOf(expectation...))
 				}
 			}
 		}
@@ -182,6 +216,7 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 
 	BeforeEach(func() {
 		logBuffer.Reset()
+		skipPodCreation = false
 
 		namespace = &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -244,6 +279,11 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 		By("Create Service")
 		Expect(testClient.Create(ctx, service)).To(Succeed())
 		log.Info("Created Service", "service", client.ObjectKeyFromObject(service))
+
+		if service.Spec.Selector != nil && !skipPodCreation {
+			By("Create Pod with matching netpol labels in service namespace")
+			createPodWithNetPolLabels(service.Namespace, sameNamespaceLabelsForService())
+		}
 
 		DeferCleanup(func() {
 			By("Delete Service")
@@ -342,14 +382,18 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 			service.Spec.Ports = append(service.Spec.Ports, corev1.ServicePort{Name: "newport", Port: 1357, Protocol: corev1.ProtocolUDP, TargetPort: intstr.FromInt32(2468)})
 			Expect(testClient.Patch(ctx, service, patch)).To(Succeed())
 
+			By("Create pod with labels for the new port")
+			createPodWithNetPolLabels(service.Namespace, map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Name + "-udp-2468": "allowed",
+			})
+
 			By("Wait until all policies were reconciled")
 			Eventually(func(g Gomega) []string {
 				networkPolicyList := &networkingv1.NetworkPolicyList{}
 				g.Expect(testClient.List(ctx, networkPolicyList, client.InNamespace(service.Namespace))).To(Succeed())
 				return test.ObjectNames(networkPolicyList)
 			}).Should(And(
-				// TODO(tobschli): Change this to the `ShouldNot(ContainAnyOf())` matcher, once https://github.com/gardener/gardener/pull/12317 is merged.
-				Not(ContainElements(
+				Not(ContainAnyOf(
 					"ingress-to-"+service.Name+port1Suffix,
 					"egress-to-"+service.Name+port1Suffix,
 				)),
@@ -479,6 +523,10 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 			metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/namespace-selectors", `[{"matchLabels":{"other":"namespace"}}]`)
 		})
 
+		JustBeforeEach(func() {
+			createPodWithNetPolLabels(otherNamespace.Name, crossNamespaceLabelsForService())
+		})
+
 		It("should create the expected cross-namespace network policies", func() {
 			ensureNetworkPoliciesGetCreated()
 
@@ -562,6 +610,14 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 			service.Spec.Ports = append(service.Spec.Ports, corev1.ServicePort{Name: "newport", Port: 1357, Protocol: corev1.ProtocolUDP, TargetPort: intstr.FromInt32(2468)})
 			Expect(testClient.Patch(ctx, service, patch)).To(Succeed())
 
+			By("Create pods with labels for the new port")
+			createPodWithNetPolLabels(service.Namespace, map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Name + "-udp-2468": "allowed",
+			})
+			createPodWithNetPolLabels(otherNamespace.Name, map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Namespace + "-" + service.Name + "-udp-2468": "allowed",
+			})
+
 			By("Wait until cross-namespace policies were reconciled")
 			Eventually(func(g Gomega) []networkingv1.NetworkPolicy {
 				networkPolicyList := &networkingv1.NetworkPolicyList{}
@@ -582,8 +638,7 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 				g.Expect(testClient.List(ctx, networkPolicyList, client.InNamespace(otherNamespace.Name))).To(Succeed())
 				return test.ObjectNames(networkPolicyList)
 			}).Should(And(
-				// TODO(tobschli): Change this to the `ShouldNot(ContainAnyOf())` matcher, once https://github.com/gardener/gardener/pull/12317 is merged.
-				Not(ContainElements(
+				Not(ContainAnyOf(
 					"egress-to-"+service.Namespace+"-"+service.Name+port1Suffix,
 				)),
 				ContainElements(
@@ -694,6 +749,9 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 				}).Should(BeNotFoundError())
 			})
 
+			By("Create Pod with matching netpol labels in new namespace")
+			createPodWithNetPolLabels(newNamespace.Name, crossNamespaceLabelsForService())
+
 			By("Wait until all ingress policies are created")
 			Eventually(func(g Gomega) []string {
 				networkPolicyList := &networkingv1.NetworkPolicyList{}
@@ -720,6 +778,13 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 
 			BeforeEach(func() {
 				metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/pod-label-selector-namespace-alias", alias)
+			})
+
+			JustBeforeEach(func() {
+				createPodWithNetPolLabels(otherNamespace.Name, map[string]string{
+					"networking.resources.gardener.cloud/to-" + alias + "-" + service.Name + port1Suffix: "allowed",
+					"networking.resources.gardener.cloud/to-" + alias + "-" + service.Name + port2Suffix: "allowed",
+				})
 			})
 
 			It("should create the expected cross-namespace network policies", func() {
@@ -760,6 +825,13 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 		BeforeEach(func() {
 			metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/from-"+customPodLabelSelector1+"-allowed-ports", `[{"protocol":"`+string(port3Protocol)+`","port":"`+port3TargetPort.String()+`"},{"protocol":"`+string(port4Protocol)+`","port":`+port4TargetPort.String()+`}]`)
 			metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/from-"+customPodLabelSelector2+"-allowed-ports", `[{"protocol":"`+string(port5Protocol)+`","port":`+port5TargetPort.String()+`},{"protocol":"`+string(port6Protocol)+`","port":`+port6TargetPort.String()+`}]`)
+		})
+
+		JustBeforeEach(func() {
+			createPodWithNetPolLabels(service.Namespace, map[string]string{
+				"networking.resources.gardener.cloud/to-" + customPodLabelSelector1: "allowed",
+				"networking.resources.gardener.cloud/to-" + customPodLabelSelector2: "allowed",
+			})
 		})
 
 		It("should create the expected network policies", func() {
@@ -1214,4 +1286,72 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 			ensureExposedViaIngressNetworkPoliciesGetDeleted()
 		})
 	})
+
+	Context("pod-aware policy creation", func() {
+		Context("same-namespace without matching pods", func() {
+			BeforeEach(func() {
+				service.Spec.Selector = serviceSelector
+				skipPodCreation = true
+			})
+
+			It("should not create policies when no matching pods exist", func() {
+				ensureNetworkPoliciesDoNotGetCreated()
+			})
+
+			It("should create policies when a pod with matching labels appears", func() {
+				By("Ensure no policies are created initially")
+				ensureNetworkPoliciesDoNotGetCreated()
+
+				By("Create pod with matching netpol labels")
+				createPodWithNetPolLabels(service.Namespace, sameNamespaceLabelsForService())
+
+				By("Ensure policies are created")
+				ensureNetworkPoliciesGetCreated()
+			})
+		})
+
+		Context("cross-namespace without matching pods", func() {
+			BeforeEach(func() {
+				metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/namespace-selectors", `[{"matchLabels":{"other":"namespace"}}]`)
+			})
+
+			It("should not create cross-namespace policies when no matching pods exist in remote namespace", func() {
+				ensureCrossNamespaceNetworkPoliciesDoNotGetCreated()
+			})
+
+			It("should create cross-namespace policies when a pod with matching labels appears in remote namespace", func() {
+				By("Ensure no cross-namespace policies are created initially")
+				ensureCrossNamespaceNetworkPoliciesDoNotGetCreated()
+
+				By("Create pod with matching netpol labels in remote namespace")
+				createPodWithNetPolLabels(otherNamespace.Name, crossNamespaceLabelsForService())
+
+				By("Ensure cross-namespace policies are created")
+				ensureCrossNamespaceNetworkPoliciesGetCreated()
+			})
+
+			It("should delete cross-namespace policies when matching pod disappears from remote namespace", func() {
+				By("Create pod with matching netpol labels in remote namespace")
+				pod := createPodWithNetPolLabels(otherNamespace.Name, crossNamespaceLabelsForService())
+
+				By("Wait until cross-namespace policies are created")
+				ensureCrossNamespaceNetworkPoliciesGetCreated()
+
+				By("Delete pod")
+				Expect(testClient.Delete(ctx, pod)).To(Succeed())
+
+				By("Wait until cross-namespace policies are deleted")
+				ensureCrossNamespaceNetworkPoliciesGetDeleted()
+			})
+		})
+	})
 })
+
+func shortenLabelKeys(labels map[string]string) map[string]string {
+	result := make(map[string]string, len(labels))
+	for k, v := range labels {
+		newKey, _ := gardenerutils.ShortenNetworkPolicyLabelKeyIfTooLong(k)
+		result[newKey] = v
+	}
+	return result
+}

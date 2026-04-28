@@ -11,10 +11,14 @@ import (
 	"io"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apiserver/pkg/admission"
+	kubeinformers "k8s.io/client-go/informers"
+	kubecorev1listers "k8s.io/client-go/listers/core/v1"
 
 	"github.com/gardener/gardener/pkg/apis/core"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
@@ -36,14 +40,15 @@ func Register(plugins *admission.Plugins) {
 type ValidateSeed struct {
 	*admission.Handler
 
-	seedLister             gardencorev1beta1listers.SeedLister
 	shootLister            gardencorev1beta1listers.ShootLister
+	secretLister           kubecorev1listers.SecretLister
 	workloadIdentityLister gardensecurityv1alpha1listers.WorkloadIdentityLister
 	readyFunc              admission.ReadyFunc
 }
 
 var (
 	_ = admissioninitializer.WantsCoreInformerFactory(&ValidateSeed{})
+	_ = admissioninitializer.WantsKubeInformerFactory(&ValidateSeed{})
 	_ = admissioninitializer.WantsSecurityInformerFactory(&ValidateSeed{})
 
 	readyFuncs []admission.ReadyFunc
@@ -64,13 +69,10 @@ func (v *ValidateSeed) AssignReadyFunc(f admission.ReadyFunc) {
 
 // SetCoreInformerFactory gets Lister from SharedInformerFactory.
 func (v *ValidateSeed) SetCoreInformerFactory(f gardencoreinformers.SharedInformerFactory) {
-	seedInformer := f.Core().V1beta1().Seeds()
-	v.seedLister = seedInformer.Lister()
-
 	shootInformer := f.Core().V1beta1().Shoots()
 	v.shootLister = shootInformer.Lister()
 
-	readyFuncs = append(readyFuncs, seedInformer.Informer().HasSynced, shootInformer.Informer().HasSynced)
+	readyFuncs = append(readyFuncs, shootInformer.Informer().HasSynced)
 }
 
 // SetSecurityInformerFactory gets Lister from SharedInformerFactory.
@@ -81,13 +83,21 @@ func (v *ValidateSeed) SetSecurityInformerFactory(f gardensecurityinformers.Shar
 	readyFuncs = append(readyFuncs, wiInformer.Informer().HasSynced)
 }
 
+// SetKubeInformerFactory gets Lister from SharedInformerFactory.
+func (v *ValidateSeed) SetKubeInformerFactory(f kubeinformers.SharedInformerFactory) {
+	secretInformer := f.Core().V1().Secrets()
+	v.secretLister = secretInformer.Lister()
+
+	readyFuncs = append(readyFuncs, secretInformer.Informer().HasSynced)
+}
+
 // ValidateInitialization checks whether the plugin was correctly initialized.
 func (v *ValidateSeed) ValidateInitialization() error {
-	if v.seedLister == nil {
-		return errors.New("missing seed lister")
-	}
 	if v.shootLister == nil {
 		return errors.New("missing shoot lister")
+	}
+	if v.secretLister == nil {
+		return errors.New("missing secret lister")
 	}
 	if v.workloadIdentityLister == nil {
 		return errors.New("missing WorkloadIdentity lister")
@@ -95,7 +105,7 @@ func (v *ValidateSeed) ValidateInitialization() error {
 	return nil
 }
 
-var _ admission.ValidationInterface = &ValidateSeed{}
+var _ admission.ValidationInterface = (*ValidateSeed)(nil)
 
 // Validate validates the Seed details against existing Shoots
 func (v *ValidateSeed) Validate(_ context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {
@@ -143,7 +153,20 @@ func (v *ValidateSeed) validateSeedUpdate(a admission.Attributes) error {
 		return err
 	}
 
+	if metav1.HasLabel(oldSeed.ObjectMeta, v1beta1constants.LabelSelfHostedShootCluster) &&
+		!metav1.HasLabel(newSeed.ObjectMeta, v1beta1constants.LabelSelfHostedShootCluster) {
+		return admission.NewForbidden(a, fmt.Errorf("label %q cannot be removed from a Seed", v1beta1constants.LabelSelfHostedShootCluster))
+	}
+
 	if err := admissionutils.ValidateZoneRemovalFromSeeds(&oldSeed.Spec, &newSeed.Spec, newSeed.Name, v.shootLister, "Seed"); err != nil {
+		return err
+	}
+
+	if err := admissionutils.ValidateInternalDomainChangeForSeed(&oldSeed.Spec, &newSeed.Spec, newSeed.Name, v.shootLister, "Seed"); err != nil {
+		return err
+	}
+
+	if err := admissionutils.ValidateDefaultDomainsChangeForSeed(&oldSeed.Spec, &newSeed.Spec, newSeed.Name, v.shootLister, v.secretLister, "Seed"); err != nil {
 		return err
 	}
 

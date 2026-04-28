@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -27,18 +28,23 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	. "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/nodeinit"
+	"github.com/gardener/gardener/pkg/utils"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
 var _ = Describe("controlPlaneBootstrap", func() {
 	const (
-		namespace = "test-namespace"
+		namespace    = "test-namespace"
+		sshPublicKey = "ssh-rsa foobar"
 	)
 
 	var (
 		ctx      context.Context
 		c        client.Client
+		sm       secretsmanager.Interface
 		values   *ControlPlaneBootstrapValues
 		worker   *gardencorev1beta1.Worker
 		deployer Interface
@@ -48,11 +54,21 @@ var _ = Describe("controlPlaneBootstrap", func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 		c = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+		sm = fakesecretsmanager.New(c, namespace)
 		clk = testing.NewFakePassiveClock(time.Now())
 
 		DeferCleanup(test.WithVars(
 			&TimeNow, clk.Now,
 		))
+
+		By("Create secrets managed outside of this function for which secretsmanager.Get() will be called")
+		sshKeypairSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "ssh-keypair", Namespace: namespace},
+			Data: map[string][]byte{
+				"id_rsa.pub": []byte(sshPublicKey),
+			},
+		}
+		Expect(c.Create(ctx, sshKeypairSecret)).To(Succeed())
 
 		worker = &gardencorev1beta1.Worker{
 			Name: "control-plane",
@@ -70,11 +86,14 @@ var _ = Describe("controlPlaneBootstrap", func() {
 		}
 
 		values = &ControlPlaneBootstrapValues{
-			Namespace:      namespace,
+			Values: &Values{
+				Namespace:         namespace,
+				KubernetesVersion: semver.MustParse("1.34.0"),
+			},
 			Worker:         worker,
 			GardenadmImage: "gardenadm-image",
 		}
-		deployer = NewControlPlaneBootstrap(logr.Discard(), c, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond)
+		deployer = NewControlPlaneBootstrap(logr.Discard(), c, sm, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond)
 	})
 
 	Describe("#Deploy", func() {
@@ -91,14 +110,28 @@ var _ = Describe("controlPlaneBootstrap", func() {
 			Expect(actual.Spec.Purpose).To(Equal(extensionsv1alpha1.OperatingSystemConfigPurposeProvision))
 			// The content of units/files is not tested here, because it is tested in the nodeinit package
 			Expect(actual.Spec.Units).To(ConsistOf(
+				HaveField("Name", "gardener-user.service"),
+				HaveField("Name", "gardener-user.path"),
 				HaveField("Name", "gardenadm-download.service"),
 			))
-			Expect(actual.Spec.Files).To(ConsistOf(And(
-				HaveField("Path", nodeinit.GardenadmPathDownloadScript),
-				HaveField("Permissions", ptr.To(uint32(0755))),
-				HaveField("Content.Inline.Encoding", "b64"),
-				HaveField("Content.Inline.Data", Not(BeEmpty())),
-			)))
+			Expect(actual.Spec.Files).To(ConsistOf(
+				HaveField("Path", "/var/lib/gardener-user/run.sh"),
+				And(
+					HaveField("Path", "/var/lib/gardener-user-authorized-keys"),
+					HaveField("Content.Inline.Data", utils.EncodeBase64([]byte(sshPublicKey))),
+				),
+				And(
+					HaveField("Path", nodeinit.GardenadmPathDownloadScript),
+					HaveField("Permissions", ptr.To(uint32(0755))),
+					HaveField("Content.Inline.Encoding", "b64"),
+					HaveField("Content.Inline.Data", Not(BeEmpty())),
+				),
+				And(
+					HaveField("Path", "/var/lib/gardener-node-agent/machine-name"),
+					HaveField("Content.Inline.Data", "<<MACHINE_NAME>>"),
+					HaveField("Content.TransmitUnencoded", HaveValue(BeTrue())),
+				),
+			))
 
 			Expect(actual.Spec.Type).To(Equal("type1"))
 			Expect(actual.Spec.ProviderConfig).To(Equal(worker.Machine.Image.ProviderConfig))
@@ -145,13 +178,13 @@ var _ = Describe("controlPlaneBootstrap", func() {
 		})
 
 		It("should return the correct result from the Deploy and Wait operations", func() {
-			Expect(deployer.WorkerPoolNameToOperatingSystemConfigsMap()).To(Equal(map[string]*OperatingSystemConfigs{
-				worker.Name: {
-					Init: Data{
-						SecretName: ptr.To(ccSecret.Name),
-					},
-				},
-			}))
+			Expect(deployer.WorkerPoolNameToOperatingSystemConfigsMap()).To(
+				HaveKeyWithValue(worker.Name, HaveField("Init", And(
+					HaveField("SecretName", ptr.To(ccSecret.Name)),
+					HaveField("IncludeSecretNameInWorkerPool", true),
+					HaveField("GardenerNodeAgentSecretName", "gardener-node-agent-control-plane-afd64c60da0e2d2d"),
+				))),
+			)
 		})
 	})
 })

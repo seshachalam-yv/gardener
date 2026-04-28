@@ -16,10 +16,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/admission"
 
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
+	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/api/seedmanagement/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/helper"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardencoreclientset "github.com/gardener/gardener/pkg/client/core/clientset/versioned"
 	seedmanagementclientset "github.com/gardener/gardener/pkg/client/seedmanagement/clientset/versioned"
@@ -84,7 +84,7 @@ func (v *ManagedSeed) ValidateInitialization() error {
 	return nil
 }
 
-var _ admission.ValidationInterface = &ManagedSeed{}
+var _ admission.ValidationInterface = (*ManagedSeed)(nil)
 
 // Validate validates changes to the Shoot referenced by a ManagedSeed.
 func (v *ManagedSeed) Validate(ctx context.Context, a admission.Attributes, _ admission.ObjectInterfaces) error {
@@ -161,6 +161,9 @@ func (v *ManagedSeed) validateUpdate(ctx context.Context, a admission.Attributes
 	seedTemplate, _, err := seedmanagementv1alpha1helper.ExtractSeedTemplateAndGardenletConfig(managedSeed.Name, &managedSeed.Spec.Gardenlet.Config)
 	if err != nil {
 		return apierrors.NewInternalError(fmt.Errorf("cannot extract the seed template: %w", err))
+	}
+	if seedTemplate == nil {
+		return apierrors.NewInternalError(fmt.Errorf("seed template is unset in gardenlet config"))
 	}
 
 	allErrs = append(allErrs, v.validateZoneRemovalFromShoot(field.NewPath("spec", "providers", "workers"), oldShoot, shoot, seedTemplate)...)

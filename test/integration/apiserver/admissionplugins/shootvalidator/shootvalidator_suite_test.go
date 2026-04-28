@@ -243,7 +243,7 @@ var _ = BeforeSuite(func() {
 			},
 			MachineTypes: []gardencorev1beta1.MachineType{{Name: "large"}},
 			Regions:      []gardencorev1beta1.Region{{Name: "region"}},
-			Type:         "providerType",
+			Type:         "provider-type",
 		},
 	}
 	Expect(testClient.Create(ctx, cloudProfile)).To(Succeed())
@@ -275,7 +275,7 @@ var _ = BeforeSuite(func() {
 			Namespace:    testNamespace.Name,
 		},
 		Provider: &gardencorev1beta1.SecretBindingProvider{
-			Type: "providerType",
+			Type: "provider-type",
 		},
 		SecretRef: corev1.SecretReference{
 			Name:      testSecret.Name,
@@ -298,7 +298,7 @@ var _ = BeforeSuite(func() {
 		Spec: gardencorev1beta1.SeedSpec{
 			Provider: gardencorev1beta1.SeedProvider{
 				Region: "region",
-				Type:   "providerType",
+				Type:   "provider-type",
 			},
 			Ingress: &gardencorev1beta1.Ingress{
 				Domain: "seed.example.com",
@@ -309,9 +309,21 @@ var _ = BeforeSuite(func() {
 			DNS: gardencorev1beta1.SeedDNS{
 				Provider: &gardencorev1beta1.SeedDNSProvider{
 					Type: "provider",
-					SecretRef: corev1.SecretReference{
-						Name:      "some-secret",
-						Namespace: "some-namespace",
+					CredentialsRef: &corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "some-secret",
+						Namespace:  "some-namespace",
+					},
+				},
+				Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+					Type:   "provider",
+					Domain: "local.example.com",
+					CredentialsRef: corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "some-secret",
+						Namespace:  "some-namespace",
 					},
 				},
 			},
@@ -322,10 +334,6 @@ var _ = BeforeSuite(func() {
 				Pods:     "10.0.0.0/16",
 				Services: "10.1.0.0/16",
 				Nodes:    ptr.To("10.2.0.0/16"),
-				ShootDefaults: &gardencorev1beta1.ShootNetworks{
-					Pods:     ptr.To("100.128.0.0/11"),
-					Services: ptr.To("100.72.0.0/13"),
-				},
 			},
 		},
 	}

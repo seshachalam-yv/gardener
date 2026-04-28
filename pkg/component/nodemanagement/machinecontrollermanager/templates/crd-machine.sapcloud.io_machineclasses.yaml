@@ -5,7 +5,7 @@ metadata:
   labels:
     gardener.cloud/deletion-protected: "true"
   annotations:
-    controller-gen.kubebuilder.io/version: v0.18.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: machineclasses.machine.sapcloud.io
 spec:
   group: machine.sapcloud.io
@@ -80,6 +80,16 @@ spec:
               region:
                 description: Region of the expected node belonging to nodeGroup
                 type: string
+              virtualCapacity:
+                additionalProperties:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                  x-kubernetes-int-or-string: true
+                description: VirtualCapacity represents the expected Node 'virtual'
+                  capacity ie comprising virtual extended resources.
+                type: object
               zone:
                 description: Zone of the expected node belonging to nodeGroup
                 type: string

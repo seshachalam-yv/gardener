@@ -14,13 +14,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/component/extensions/worker"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
 	"github.com/gardener/gardener/pkg/utils/retry"
 	"github.com/gardener/gardener/pkg/utils/secrets"
@@ -30,9 +30,9 @@ import (
 func (b *Botanist) DefaultWorker() worker.Interface {
 	workers := b.Shoot.GetInfo().Spec.Provider.Workers
 	// In `gardenadm bootstrap` we only deploy the control plane worker pool. When running `gardenadm init` on the
-	// medium-touch control plane, the full `Worker` with all pools will be deployed.
-	if b.Shoot.IsAutonomous() && !b.Shoot.RunsControlPlane() {
-		workers = []gardencorev1beta1.Worker{*v1beta1helper.ControlPlaneWorkerPoolForShoot(b.Shoot.GetInfo().DeepCopy())}
+	// created control plane nodes, the full `Worker` with all pools will be deployed.
+	if b.Shoot.IsSelfHosted() && !b.Shoot.RunsControlPlane() {
+		workers = []gardencorev1beta1.Worker{*v1beta1helper.ControlPlaneWorkerPoolForShoot(b.Shoot.GetInfo().DeepCopy().Spec.Provider.Workers)}
 	}
 
 	return worker.New(
@@ -139,12 +139,10 @@ func OperatingSystemConfigUpdatedForAllWorkerPools(
 				continue
 			}
 
-			if nodeChecksum, ok := node.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig]; nodeChecksum != secretChecksum {
-				if !ok {
-					result = multierror.Append(result, fmt.Errorf("the last successfully applied operating system config on node %q hasn't been reported yet", node.Name))
-				} else {
-					result = multierror.Append(result, fmt.Errorf("the last successfully applied operating system config on node %q is outdated (current: %s, desired: %s)", node.Name, nodeChecksum, secretChecksum))
-				}
+			if nodeChecksum, ok := node.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig]; !ok {
+				result = multierror.Append(result, fmt.Errorf("the last successfully applied operating system config on node %q hasn't been reported yet", node.Name))
+			} else if nodeChecksum != secretChecksum {
+				result = multierror.Append(result, fmt.Errorf("the last successfully applied operating system config on node %q is outdated (current: %s, desired: %s)", node.Name, nodeChecksum, secretChecksum))
 			}
 		}
 	}
@@ -194,7 +192,7 @@ func getTimeoutWaitOperatingSystemConfigUpdated(shoot *shootpkg.Shoot) time.Dura
 
 // WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools waits for a maximum of 6 minutes until all the nodes for all
 // the worker pools in the Shoot have successfully applied the desired version of their operating system config.
-func (b *Botanist) WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools(ctx context.Context) error {
+func (b *Botanist) WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools(ctx context.Context, tolerateErrors bool) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, GetTimeoutWaitOperatingSystemConfigUpdated(b.Shoot))
 	defer cancel()
 
@@ -205,15 +203,20 @@ func (b *Botanist) WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools(ctx co
 	timeoutCtx2, cancel2 := context.WithTimeout(ctx, GetTimeoutWaitOperatingSystemConfigUpdated(b.Shoot))
 	defer cancel2()
 
+	retryFn := retry.SevereError
+	if tolerateErrors {
+		retryFn = retry.MinorError
+	}
+
 	return retry.Until(timeoutCtx2, IntervalWaitOperatingSystemConfigUpdated, func(ctx context.Context) (done bool, err error) {
 		workerPoolToNodes, err := WorkerPoolToNodesMap(ctx, b.ShootClientSet.Client())
 		if err != nil {
-			return retry.SevereError(err)
+			return retryFn(err)
 		}
 
 		workerPoolToOperatingSystemConfigSecretMeta, err := WorkerPoolToOperatingSystemConfigSecretMetaMap(ctx, b.ShootClientSet.Client(), v1beta1constants.GardenRoleOperatingSystemConfig)
 		if err != nil {
-			return retry.SevereError(err)
+			return retryFn(err)
 		}
 
 		if err := OperatingSystemConfigUpdatedForAllWorkerPools(b.Shoot.GetInfo().Spec.Provider.Workers, workerPoolToNodes, workerPoolToOperatingSystemConfigSecretMeta); err != nil {

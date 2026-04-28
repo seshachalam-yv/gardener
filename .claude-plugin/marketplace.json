@@ -1,0 +1,15 @@
+{
+  "name": "gardener-dev-marketplace",
+  "version": "1.0.0",
+  "plugins": [
+    {
+      "name": "gardener-dev",
+      "source": "./",
+      "description": "Behavioral discipline plugin for Gardener contributors",
+      "version": "2.0.0"
+    }
+  ],
+  "owner": {
+    "name": "gardener-contributors"
+  }
+}

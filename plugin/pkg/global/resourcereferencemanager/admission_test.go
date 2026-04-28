@@ -81,6 +81,7 @@ var _ = Describe("resourcereferencemanager", func() {
 			credentialsBindingName     = "credentials-binding-1"
 			quotaName                  = "quota-1"
 			secretName                 = "secret-1"
+			internalSecretName         = "internal-secret-1"
 			workloadIdentityName       = "workloadIdentity-1"
 			configMapName              = "config-map-1"
 			controllerDeploymentName   = "controller-deployment-1"
@@ -97,6 +98,13 @@ var _ = Describe("resourcereferencemanager", func() {
 			secret = corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       secretName,
+					Namespace:  namespace,
+					Finalizers: finalizers,
+				},
+			}
+			internalSecret = gardencorev1beta1.InternalSecret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       internalSecretName,
 					Namespace:  namespace,
 					Finalizers: finalizers,
 				},
@@ -240,6 +248,26 @@ var _ = Describe("resourcereferencemanager", func() {
 				},
 				Provider: securityv1alpha1.CredentialsBindingProvider{
 					Type: "test",
+				},
+			}
+			securityCredentialsBindingRefInternalSecret = security.CredentialsBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       credentialsBindingName,
+					Namespace:  namespace,
+					Finalizers: finalizers,
+				},
+				CredentialsRef: corev1.ObjectReference{
+					Kind:       "InternalSecret",
+					APIVersion: gardencorev1beta1.SchemeGroupVersion.String(),
+					Name:       internalSecretName,
+					Namespace:  namespace,
+				},
+				Provider: security.CredentialsBindingProvider{Type: "wiprovider"},
+				Quotas: []corev1.ObjectReference{
+					{
+						Name:      quotaName,
+						Namespace: namespace,
+					},
 				},
 			}
 			securityCredentialsBindingRefWorkloadIdentity = security.CredentialsBinding{
@@ -600,6 +628,29 @@ var _ = Describe("resourcereferencemanager", func() {
 				Expect(err).To(HaveOccurred())
 			})
 
+			It("should allow even though the user is not allowed to read the referenced secret because it's the gardenadm-user", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(&coreSecretBinding, nil, core.Kind("SecretBinding").WithVersion("version"), coreSecretBinding.Namespace, coreSecretBinding.Name, core.Resource("secretbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+			})
+
+			It("should deny cross-namespace references even for the gardenadm-user", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				coreSecretBindingCopy := coreSecretBinding.DeepCopy()
+				coreSecretBindingCopy.Quotas[0].Namespace = "other-namespace"
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(coreSecretBindingCopy, nil, core.Kind("SecretBinding").WithVersion("version"), coreSecretBindingCopy.Namespace, coreSecretBindingCopy.Name, core.Resource("secretbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(ContainSubstring("cannot reference a quota you are not allowed to read")))
+			})
+
 			It("should reject because one of the referenced quotas does not exist", func() {
 				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
 
@@ -621,6 +672,29 @@ var _ = Describe("resourcereferencemanager", func() {
 				err := admissionHandler.Validate(context.TODO(), attrs, nil)
 
 				Expect(err).To(HaveOccurred())
+			})
+
+			It("should allow even though the user is not allowed to read the referenced quota because it's the gardenadm-user", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(&coreSecretBinding, nil, core.Kind("SecretBinding").WithVersion("version"), coreSecretBinding.Namespace, coreSecretBinding.Name, core.Resource("secretbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+			})
+
+			It("should deny cross-namespace references even for the gardenadm-user", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				coreSecretBindingCopy := coreSecretBinding.DeepCopy()
+				coreSecretBindingCopy.Namespace = "other-namespace"
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(coreSecretBindingCopy, nil, core.Kind("SecretBinding").WithVersion("version"), coreSecretBindingCopy.Namespace, coreSecretBindingCopy.Name, core.Resource("secretbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(ContainSubstring("cannot reference a Secret you are not allowed to read")))
 			})
 
 			It("should pass because exact one quota per scope is referenced", func() {
@@ -790,6 +864,29 @@ var _ = Describe("resourcereferencemanager", func() {
 				Expect(err).To(HaveOccurred())
 			})
 
+			It("should allow even though the user is not allowed to read the referenced secret because it's the gardenadm-user", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefSecret.Namespace, securityCredentialsBindingRefSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+			})
+
+			It("should deny cross-namespace references even for the gardenadm-user", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				securityCredentialsBindingRefSecretCopy := securityCredentialsBindingRefSecret.DeepCopy()
+				securityCredentialsBindingRefSecretCopy.CredentialsRef.Namespace = "other-namespace"
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(securityCredentialsBindingRefSecretCopy, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefSecretCopy.Namespace, securityCredentialsBindingRefSecretCopy.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(ContainSubstring("cannot reference a Secret you are not allowed to read")))
+			})
+
 			It("should reject because one of the referenced quotas does not exist", func() {
 				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
 
@@ -811,6 +908,29 @@ var _ = Describe("resourcereferencemanager", func() {
 				err := admissionHandler.Validate(context.TODO(), attrs, nil)
 
 				Expect(err).To(HaveOccurred())
+			})
+
+			It("should allow even though the user is not allowed to read the referenced secret because it's the gardenadm-user", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefSecret.Namespace, securityCredentialsBindingRefSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+			})
+
+			It("should deny cross-namespace references even for the gardenadm-user", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				securityCredentialsBindingRefSecretCopy := securityCredentialsBindingRefSecret.DeepCopy()
+				securityCredentialsBindingRefSecretCopy.Quotas[0].Namespace = "other-namespace"
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(securityCredentialsBindingRefSecretCopy, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefSecretCopy.Namespace, securityCredentialsBindingRefSecretCopy.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(ContainSubstring("cannot reference a quota you are not allowed to read")))
 			})
 
 			It("should pass because exact one quota per scope is referenced", func() {
@@ -897,6 +1017,219 @@ var _ = Describe("resourcereferencemanager", func() {
 			})
 		})
 
+		Context("tests for CredentialsBinding objects referencing InternalSecret", func() {
+			It("should accept because all referenced objects have been found (InternalSecret found in cache)", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().InternalSecrets().Informer().GetStore().Add(&internalSecret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: allowedUser}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				err := admissionHandler.Validate(context.TODO(), attrs, nil)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should accept because all referenced objects have been found (InternalSecret looked up live)", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+				gardenCoreClient.AddReactor("get", "internalsecrets", func(_ testing.Action) (bool, runtime.Object, error) {
+					return true, &internalSecret, nil
+				})
+
+				user := &user.DefaultInfo{Name: allowedUser}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				err := admissionHandler.Validate(context.TODO(), attrs, nil)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should reject because the referenced InternalSecret does not exist", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+				gardenCoreClient.AddReactor("get", "internalsecrets", func(_ testing.Action) (bool, runtime.Object, error) {
+					return true, nil, errors.New("nope, out of luck")
+				})
+
+				user := &user.DefaultInfo{Name: allowedUser}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				err := admissionHandler.Validate(context.TODO(), attrs, nil)
+
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("should reject because the user is not allowed to read the referenced InternalSecret", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().InternalSecrets().Informer().GetStore().Add(&internalSecret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "disallowed-user"}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				err := admissionHandler.Validate(context.TODO(), attrs, nil)
+
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("should allow even though the user is not allowed to read the referenced InternalSecret because it's the gardenadm-user", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().InternalSecrets().Informer().GetStore().Add(&internalSecret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+			})
+
+			It("should deny cross-namespace references even for the gardenadm-user", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().InternalSecrets().Informer().GetStore().Add(&internalSecret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				securityCredentialsBindingRefInternalSecretCopy := securityCredentialsBindingRefInternalSecret.DeepCopy()
+				securityCredentialsBindingRefInternalSecretCopy.CredentialsRef.Namespace = "other-namespace"
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(securityCredentialsBindingRefInternalSecretCopy, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecretCopy.Namespace, securityCredentialsBindingRefInternalSecretCopy.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(ContainSubstring("cannot reference a InternalSecret you are not allowed to read")))
+			})
+
+			It("should reject because one of the referenced quotas does not exist", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: allowedUser}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				err := admissionHandler.Validate(context.TODO(), attrs, nil)
+
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("should reject because the user is not allowed to read the referenced quota", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().InternalSecrets().Informer().GetStore().Add(&internalSecret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "disallowed-user"}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				err := admissionHandler.Validate(context.TODO(), attrs, nil)
+
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("should allow even though the user is not allowed to read the referenced secret because it's the gardenadm-user", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().InternalSecrets().Informer().GetStore().Add(&internalSecret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+			})
+
+			It("should deny cross-namespace references even for the gardenadm-user", func() {
+				Expect(gardenCoreInformerFactory.Core().V1beta1().InternalSecrets().Informer().GetStore().Add(&internalSecret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				securityCredentialsBindingRefInternalSecretCopy := securityCredentialsBindingRefInternalSecret.DeepCopy()
+				securityCredentialsBindingRefInternalSecretCopy.Quotas[0].Namespace = "other-namespace"
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(securityCredentialsBindingRefInternalSecretCopy, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecretCopy.Namespace, securityCredentialsBindingRefInternalSecretCopy.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(ContainSubstring("cannot reference a quota you are not allowed to read")))
+			})
+
+			It("should pass because exact one quota per scope is referenced", func() {
+				quotaName2 := "quota-2"
+				quota2 := gardencorev1beta1.Quota{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      quotaName2,
+						Namespace: namespace,
+					},
+					Spec: gardencorev1beta1.QuotaSpec{
+						Scope: corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+						},
+					},
+				}
+
+				quota2Ref := corev1.ObjectReference{
+					Name:      quotaName2,
+					Namespace: namespace,
+				}
+				quotaRefList := securityCredentialsBindingRefInternalSecret.Quotas
+				quotaRefList = append(quotaRefList, quota2Ref)
+				securityCredentialsBindingRefInternalSecret.Quotas = quotaRefList
+
+				Expect(gardenCoreInformerFactory.Core().V1beta1().InternalSecrets().Informer().GetStore().Add(&internalSecret)).To(Succeed())
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota2)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: allowedUser}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				err := admissionHandler.Validate(context.TODO(), attrs, nil)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should reject because more than one quota of the same scope is referenced", func() {
+				quotaName2 := "quota-2"
+				quota2 := gardencorev1beta1.Quota{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      quotaName2,
+						Namespace: namespace,
+					},
+					Spec: gardencorev1beta1.QuotaSpec{
+						Scope: corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+						},
+					},
+				}
+
+				quotaName3 := "quota-3"
+				quota3 := gardencorev1beta1.Quota{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      quotaName3,
+						Namespace: namespace,
+					},
+					Spec: gardencorev1beta1.QuotaSpec{
+						Scope: corev1.ObjectReference{
+							APIVersion: securityv1alpha1.SchemeGroupVersion.String(),
+							Kind:       "InternalSecret",
+						},
+					},
+				}
+
+				quota2Ref := corev1.ObjectReference{
+					Name:      quotaName2,
+					Namespace: namespace,
+				}
+				quota3Ref := corev1.ObjectReference{
+					Name:      quotaName3,
+					Namespace: namespace,
+				}
+				quotaRefList := securityCredentialsBindingRefInternalSecret.Quotas
+				quotaRefList = append(quotaRefList, quota2Ref, quota3Ref)
+				securityCredentialsBindingRefInternalSecret.Quotas = quotaRefList
+
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota2)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota3)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: allowedUser}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefInternalSecret, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefInternalSecret.Namespace, securityCredentialsBindingRefInternalSecret.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				err := admissionHandler.Validate(context.TODO(), attrs, nil)
+
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
 		Context("tests for CredentialsBinding objects referencing WorkloadIdentity", func() {
 			It("should accept because all referenced objects have been found (workloadidentity found in cache)", func() {
 				Expect(gardenSecurityInformerFactory.Security().V1alpha1().WorkloadIdentities().Informer().GetStore().Add(&workloadIdentity)).To(Succeed())
@@ -963,6 +1296,29 @@ var _ = Describe("resourcereferencemanager", func() {
 				Expect(err).To(HaveOccurred())
 			})
 
+			It("should allow even though the user is not allowed to read the referenced WorkloadIdentity because it's the gardenadm-user", func() {
+				Expect(gardenSecurityInformerFactory.Security().V1alpha1().WorkloadIdentities().Informer().GetStore().Add(&workloadIdentity)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefWorkloadIdentity, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefWorkloadIdentity.Namespace, securityCredentialsBindingRefWorkloadIdentity.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+			})
+
+			It("should deny cross-namespace references even for the gardenadm-user", func() {
+				Expect(gardenSecurityInformerFactory.Security().V1alpha1().WorkloadIdentities().Informer().GetStore().Add(&workloadIdentity)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				securityCredentialsBindingRefWorkloadIdentityCopy := securityCredentialsBindingRefWorkloadIdentity.DeepCopy()
+				securityCredentialsBindingRefWorkloadIdentityCopy.CredentialsRef.Namespace = "other-namespace"
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(securityCredentialsBindingRefWorkloadIdentityCopy, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefWorkloadIdentityCopy.Namespace, securityCredentialsBindingRefWorkloadIdentityCopy.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(ContainSubstring("cannot reference a WorkloadIdentity you are not allowed to read")))
+			})
+
 			It("should reject because one of the referenced quotas does not exist", func() {
 				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(&secret)).To(Succeed())
 
@@ -984,6 +1340,29 @@ var _ = Describe("resourcereferencemanager", func() {
 				err := admissionHandler.Validate(context.TODO(), attrs, nil)
 
 				Expect(err).To(HaveOccurred())
+			})
+
+			It("should allow even though the user is not allowed to read the referenced secret because it's the gardenadm-user", func() {
+				Expect(gardenSecurityInformerFactory.Security().V1alpha1().WorkloadIdentities().Informer().GetStore().Add(&workloadIdentity)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(&securityCredentialsBindingRefWorkloadIdentity, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefWorkloadIdentity.Namespace, securityCredentialsBindingRefWorkloadIdentity.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(Succeed())
+			})
+
+			It("should deny cross-namespace references even for the gardenadm-user", func() {
+				Expect(gardenSecurityInformerFactory.Security().V1alpha1().WorkloadIdentities().Informer().GetStore().Add(&workloadIdentity)).To(Succeed())
+				Expect(gardenCoreInformerFactory.Core().V1beta1().Quotas().Informer().GetStore().Add(&quota)).To(Succeed())
+
+				securityCredentialsBindingRefWorkloadIdentityCopy := securityCredentialsBindingRefWorkloadIdentity.DeepCopy()
+				securityCredentialsBindingRefWorkloadIdentityCopy.Quotas[0].Namespace = "other-namespace"
+
+				user := &user.DefaultInfo{Name: "gardener.cloud:gardenadm:shoot:foo:bar", Groups: []string{"gardener.cloud:system:shoots"}}
+				attrs := admission.NewAttributesRecord(securityCredentialsBindingRefWorkloadIdentityCopy, nil, security.Kind("CredentialsBinding").WithVersion("version"), securityCredentialsBindingRefWorkloadIdentityCopy.Namespace, securityCredentialsBindingRefWorkloadIdentityCopy.Name, security.Resource("credentialsbindings").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
+
+				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(ContainSubstring("cannot reference a quota you are not allowed to read")))
 			})
 
 			It("should pass because exact one quota per scope is referenced", func() {
@@ -1344,9 +1723,15 @@ var _ = Describe("resourcereferencemanager", func() {
 
 					mutate(&coreShoot)
 
-					kubeClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
-						return true, nil, errors.New("nope, out of luck")
-					})
+					if resource == "workloadidentities" {
+						gardenSecurityClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
+							return true, nil, errors.New("nope, out of luck")
+						})
+					} else {
+						kubeClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
+							return true, nil, errors.New("nope, out of luck")
+						})
+					}
 
 					user := &user.DefaultInfo{Name: allowedUser}
 					attrs := admission.NewAttributesRecord(&coreShoot, nil, core.Kind("Shoot").WithVersion("version"), coreShoot.Namespace, coreShoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
@@ -1364,9 +1749,15 @@ var _ = Describe("resourcereferencemanager", func() {
 
 					mutate(&coreShoot)
 
-					kubeClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
-						return true, nil, errors.New("nope, out of luck")
-					})
+					if resource == "workloadidentities" {
+						gardenSecurityClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
+							return true, nil, errors.New("nope, out of luck")
+						})
+					} else {
+						kubeClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
+							return true, nil, errors.New("nope, out of luck")
+						})
+					}
 
 					user := &user.DefaultInfo{Name: allowedUser}
 					attrs := admission.NewAttributesRecord(&coreShoot, oldShoot, core.Kind("Shoot").WithVersion("version"), coreShoot.Namespace, coreShoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, user)
@@ -1387,9 +1778,15 @@ var _ = Describe("resourcereferencemanager", func() {
 					now := metav1.Now()
 					coreShoot.DeletionTimestamp = &now
 
-					kubeClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
-						return true, nil, errors.New("nope, out of luck")
-					})
+					if resource == "workloadidentities" {
+						gardenSecurityClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
+							return true, nil, errors.New("nope, out of luck")
+						})
+					} else {
+						kubeClient.AddReactor("get", resource, func(_ testing.Action) (bool, runtime.Object, error) {
+							return true, nil, errors.New("nope, out of luck")
+						})
+					}
 
 					user := &user.DefaultInfo{Name: allowedUser}
 					attrs := admission.NewAttributesRecord(&coreShoot, oldShoot, core.Kind("Shoot").WithVersion("version"), coreShoot.Namespace, coreShoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, user)
@@ -1410,6 +1807,10 @@ var _ = Describe("resourcereferencemanager", func() {
 						return true, nil, nil
 					})
 
+					gardenSecurityClient.AddReactor("get", "workloadidentities", func(_ testing.Action) (bool, runtime.Object, error) {
+						return true, nil, nil
+					})
+
 					user := &user.DefaultInfo{Name: allowedUser}
 					attrs := admission.NewAttributesRecord(&coreShoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, user)
 
@@ -1417,14 +1818,30 @@ var _ = Describe("resourcereferencemanager", func() {
 				})
 			}
 
-			Context("DNS provider secrets", func() {
-				tests("DNS provider secret", "secrets", func(shoot *core.Shoot) {
+			Context("DNS provider credentials", func() {
+				tests("DNS provider Secret", "secrets", func(shoot *core.Shoot) {
 					shoot.Spec.DNS = &core.DNS{
-						Providers: []core.DNSProvider{
-							{SecretName: ptr.To("foo")},
-						},
+						Providers: []core.DNSProvider{{
+							CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+								APIVersion: "v1",
+								Kind:       "Secret",
+								Name:       "foo",
+							},
+						}},
 					}
-				}, "failed to resolve DNS provider secret reference")
+				}, "failed to resolve credentials reference of type Secret")
+
+				tests("DNS provider WorkloadIdentity", "workloadidentities", func(shoot *core.Shoot) {
+					shoot.Spec.DNS = &core.DNS{
+						Providers: []core.DNSProvider{{
+							CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+								APIVersion: "security.gardener.cloud/v1alpha1",
+								Kind:       "WorkloadIdentity",
+								Name:       "foo",
+							},
+						}},
+					}
+				}, "failed to resolve credentials reference of type WorkloadIdentity")
 			})
 
 			Context("admission plugin kubeconfig secrets", func() {
@@ -2815,13 +3232,8 @@ var _ = Describe("resourcereferencemanager", func() {
 
 				Expect(err).To(PointTo(MatchFields(IgnoreExtras, Fields{
 					"ErrStatus": MatchFields(IgnoreExtras, Fields{
-						"Code": Equal(int32(http.StatusForbidden)),
-						"Message": And(
-							ContainSubstring("maximum node count of worker pool \"coreos-worker\" in shoot \"default/shoot-one\" exceeds the limit of 5 total nodes configured in the cloud profile"),
-							ContainSubstring("total minimum node count of all worker pools of shoot \"default/shoot-one\" must not exceed the limit of 5 total nodes configured in the cloud profile"),
-							ContainSubstring("maximum node count of worker pool \"ubuntu-worker-2\" in shoot \"default/shoot-two\" exceeds the limit of 5 total nodes configured in the cloud profile"),
-							ContainSubstring("maximum node count of worker pool \"ubuntu-worker-1\" in shoot \"default/shoot-two\" exceeds the limit of 5 total nodes configured in the cloud profile"),
-						),
+						"Code":    Equal(int32(http.StatusForbidden)),
+						"Message": ContainSubstring("total minimum node count of all worker pools of shoot \"default/shoot-one\" must not exceed the limit of 5 total nodes configured in the cloud profile"),
 					}),
 				})))
 			})
@@ -2853,13 +3265,242 @@ var _ = Describe("resourcereferencemanager", func() {
 
 				Expect(err).To(PointTo(MatchFields(IgnoreExtras, Fields{
 					"ErrStatus": MatchFields(IgnoreExtras, Fields{
-						"Code": Equal(int32(http.StatusForbidden)),
-						"Message": And(
-							ContainSubstring("maximum node count of worker pool \"coreos-worker\" in shoot \"default/shoot-one\" exceeds the limit of 5 total nodes configured in the cloud profile"),
-							ContainSubstring("total minimum node count of all worker pools of shoot \"default/shoot-one\" must not exceed the limit of 5 total nodes configured in the cloud profile"),
-						),
+						"Code":    Equal(int32(http.StatusForbidden)),
+						"Message": ContainSubstring("total minimum node count of all worker pools of shoot \"default/shoot-one\" must not exceed the limit of 5 total nodes configured in the cloud profile"),
 					}),
 				})))
+			})
+		})
+
+		Context("CloudProfile - Remove MachineCapabilities", func() {
+			var (
+				ctx                           context.Context
+				cloudProfile, oldCloudProfile *core.CloudProfile
+				namespacedCloudProfile        *gardencorev1beta1.NamespacedCloudProfile
+			)
+
+			BeforeEach(func() {
+				ctx = context.Background()
+
+				// Base CloudProfile with MachineCapabilities
+				cloudProfile = &core.CloudProfile{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: cloudProfileName,
+					},
+					Spec: core.CloudProfileSpec{
+						MachineCapabilities: []core.CapabilityDefinition{
+							{Name: "architecture", Values: []string{"amd64", "arm64"}},
+							{Name: "network", Values: []string{"public", "private"}},
+							{Name: "storage", Values: []string{"ssd", "hdd"}},
+						},
+						MachineImages: []core.MachineImage{
+							{
+								Name: "ubuntu",
+								Versions: []core.MachineImageVersion{
+									{
+										ExpirableVersion: core.ExpirableVersion{Version: "20.04"},
+										CapabilityFlavors: []core.MachineImageFlavor{
+											{Capabilities: core.Capabilities{
+												"architecture": []string{"amd64"},
+												"storage":      []string{"ssd"},
+											}},
+											{Capabilities: core.Capabilities{
+												"architecture": []string{"amd64"},
+												"storage":      []string{"ssd"},
+											}},
+										},
+									},
+								},
+							},
+						},
+						MachineTypes: []core.MachineType{
+							{
+								Name: "m5.large",
+								Capabilities: core.Capabilities{
+									"architecture": []string{"amd64"},
+									"network":      []string{"public"},
+								},
+							},
+						},
+					},
+				}
+				oldCloudProfile = cloudProfile.DeepCopy()
+
+				// NamespacedCloudProfile that uses capabilities from parent
+				namespacedCloudProfile = &gardencorev1beta1.NamespacedCloudProfile{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "namespaced-profile",
+						Namespace: namespace,
+					},
+					Spec: gardencorev1beta1.NamespacedCloudProfileSpec{
+						Parent: gardencorev1beta1.CloudProfileReference{
+							Kind: "CloudProfile",
+							Name: cloudProfileName,
+						},
+						MachineImages: []gardencorev1beta1.MachineImage{
+							{
+								Name: "debian",
+								Versions: []gardencorev1beta1.MachineImageVersion{
+									{
+										ExpirableVersion: gardencorev1beta1.ExpirableVersion{Version: "11"},
+										CapabilityFlavors: []gardencorev1beta1.MachineImageFlavor{
+											{Capabilities: gardencorev1beta1.Capabilities{
+												"architecture": []string{"arm64"},
+												"network":      []string{"private"},
+												"storage":      []string{"hdd"},
+											}},
+										},
+									},
+								},
+							},
+						},
+						MachineTypes: []gardencorev1beta1.MachineType{
+							{
+								Name: "t3.micro",
+								Capabilities: gardencorev1beta1.Capabilities{
+									"architecture": []string{"arm64"},
+									"storage":      []string{"ssd"},
+								},
+							},
+						},
+					},
+				}
+
+				Expect(gardenCoreInformerFactory.Core().V1beta1().NamespacedCloudProfiles().Informer().GetStore().Add(namespacedCloudProfile)).To(Succeed())
+			})
+
+			It("should reject removing capability values still in use by NamespacedCloudProfile machine image flavors and machine types", func() {
+				// Remove arm64 architecture and private network capabilities that are used by NamespacedCloudProfile
+				cloudProfile.Spec.MachineCapabilities = []core.CapabilityDefinition{
+					{Name: "architecture", Values: []string{"amd64"}}, // removed arm64
+					{Name: "network", Values: []string{"public"}},     // removed private
+					{Name: "storage", Values: []string{"ssd"}},        // removed hdd
+				}
+
+				attrs := admission.NewAttributesRecord(cloudProfile, oldCloudProfile, core.Kind("CloudProfile").WithVersion("version"), "", cloudProfile.Name, core.Resource("cloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, defaultUserInfo)
+
+				err := admissionHandler.Validate(ctx, attrs, nil)
+				Expect(err).To(HaveOccurred())
+
+				// Should get multiple errors for different capability values being removed
+				Expect(err.Error()).To(And(
+					ContainSubstring("unable to delete MachineCapability \"architecture\" with value \"arm64\" from CloudProfile"),
+					ContainSubstring("capability value is still in use by NamespacedCloudProfile 'default/namespaced-profile'"),
+					ContainSubstring("unable to delete MachineCapability \"network\" with value \"private\" from CloudProfile"),
+					ContainSubstring("unable to delete MachineCapability \"storage\" with value \"hdd\" from CloudProfile"),
+				))
+			})
+
+			It("should allow removing capability values not used by any NamespacedCloudProfile", func() {
+				// Create another NamespacedCloudProfile that doesn't use certain capabilities
+				anotherNamespacedCloudProfile := &gardencorev1beta1.NamespacedCloudProfile{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "another-profile",
+						Namespace: namespace,
+					},
+					Spec: gardencorev1beta1.NamespacedCloudProfileSpec{
+						Parent: gardencorev1beta1.CloudProfileReference{
+							Kind: "CloudProfile",
+							Name: cloudProfileName,
+						},
+						MachineImages: []gardencorev1beta1.MachineImage{
+							{
+								Name: "centos",
+								Versions: []gardencorev1beta1.MachineImageVersion{
+									{
+										ExpirableVersion: gardencorev1beta1.ExpirableVersion{Version: "8"},
+										CapabilityFlavors: []gardencorev1beta1.MachineImageFlavor{
+											{Capabilities: gardencorev1beta1.Capabilities{
+												"architecture": []string{"amd64"},  // only uses amd64
+												"network":      []string{"public"}, // only uses public
+												"storage":      []string{"ssd"},    // only uses ssd
+											}},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+
+				Expect(gardenCoreInformerFactory.Core().V1beta1().NamespacedCloudProfiles().Informer().GetStore().Add(anotherNamespacedCloudProfile)).To(Succeed())
+
+				// This should succeed since the removed capabilities are not used by the additional NamespacedCloudProfile
+				// but will still fail due to the first NamespacedCloudProfile
+				cloudProfile.Spec.MachineCapabilities = []core.CapabilityDefinition{
+					{Name: "architecture", Values: []string{"amd64"}}, // removed arm64 - still used by first profile
+					{Name: "network", Values: []string{"public"}},     // removed private - still used by first profile
+					{Name: "storage", Values: []string{"ssd"}},        // removed hdd - still used by first profile
+				}
+
+				attrs := admission.NewAttributesRecord(cloudProfile, oldCloudProfile, core.Kind("CloudProfile").WithVersion("version"), "", cloudProfile.Name, core.Resource("cloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, defaultUserInfo)
+
+				err := admissionHandler.Validate(ctx, attrs, nil)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("namespaced-profile")) // should reference the first profile that uses the removed capabilities
+				Expect(err.Error()).NotTo(ContainSubstring("another-profile")) // should not reference the second profile
+
+				// Now remove the deleted capabilities from the first NamespacedCloudProfile to allow the update
+				namespacedCloudProfile.Spec.MachineImages[0].Versions[0].CapabilityFlavors[0].Capabilities["architecture"] = []string{"amd64"}
+				namespacedCloudProfile.Spec.MachineImages[0].Versions[0].CapabilityFlavors[0].Capabilities["network"] = []string{"public"}
+				namespacedCloudProfile.Spec.MachineImages[0].Versions[0].CapabilityFlavors[0].Capabilities["storage"] = []string{"ssd"}
+				namespacedCloudProfile.Spec.MachineTypes[0].Capabilities["architecture"] = []string{"amd64"}
+				namespacedCloudProfile.Spec.MachineTypes[0].Capabilities["storage"] = []string{"ssd"}
+
+				Expect(gardenCoreInformerFactory.Core().V1beta1().NamespacedCloudProfiles().Informer().GetStore().Update(namespacedCloudProfile)).To(Succeed())
+				Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
+			})
+
+			It("should reject completely removing capability definitions still in use", func() {
+				// Completely remove the storage capability definition
+				cloudProfile.Spec.MachineCapabilities = []core.CapabilityDefinition{
+					{Name: "architecture", Values: []string{"amd64", "arm64"}},
+					{Name: "network", Values: []string{"public", "private"}},
+					// storage capability completely removed
+				}
+
+				attrs := admission.NewAttributesRecord(cloudProfile, oldCloudProfile, core.Kind("CloudProfile").WithVersion("version"), "", cloudProfile.Name, core.Resource("cloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, defaultUserInfo)
+
+				err := admissionHandler.Validate(ctx, attrs, nil)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(And(
+					ContainSubstring("unable to delete MachineCapability \"storage\""),
+					ContainSubstring("capability value is still in use by NamespacedCloudProfile 'default/namespaced-profile'"),
+				))
+			})
+
+			It("should allow updates when NamespacedCloudProfile has deletion timestamp", func() {
+				// Mark NamespacedCloudProfile for deletion
+				deletionTime := metav1.Now()
+				namespacedCloudProfile.DeletionTimestamp = &deletionTime
+
+				Expect(gardenCoreInformerFactory.Core().V1beta1().NamespacedCloudProfiles().Informer().GetStore().Update(namespacedCloudProfile)).To(Succeed())
+
+				// Now removing capabilities should succeed since the NamespacedCloudProfile is being deleted
+				cloudProfile.Spec.MachineCapabilities = []core.CapabilityDefinition{
+					// removed network and storage capabilities
+					{Name: "architecture", Values: []string{"amd64"}}, // removed arm64
+				}
+
+				attrs := admission.NewAttributesRecord(cloudProfile, oldCloudProfile, core.Kind("CloudProfile").WithVersion("version"), "", cloudProfile.Name, core.Resource("cloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, defaultUserInfo)
+
+				Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
+			})
+
+			It("should allow updates when NamespacedCloudProfile references different parent", func() {
+				// Make NamespacedCloudProfile reference a different CloudProfile
+				namespacedCloudProfile.Spec.Parent.Name = "different-parent"
+
+				Expect(gardenCoreInformerFactory.Core().V1beta1().NamespacedCloudProfiles().Informer().GetStore().Update(namespacedCloudProfile)).To(Succeed())
+
+				// Now removing capabilities should succeed since the NamespacedCloudProfile doesn't reference this CloudProfile
+				cloudProfile.Spec.MachineCapabilities = []core.CapabilityDefinition{
+					{Name: "architecture", Values: []string{"amd64"}}, // removed arm64
+				}
+
+				attrs := admission.NewAttributesRecord(cloudProfile, oldCloudProfile, core.Kind("CloudProfile").WithVersion("version"), "", cloudProfile.Name, core.Resource("cloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, defaultUserInfo)
+
+				Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
 			})
 		})
 
@@ -2927,14 +3568,14 @@ var _ = Describe("resourcereferencemanager", func() {
 					},
 					Spec: core.NamespacedCloudProfileSpec{
 						Kubernetes: &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: &expirationDateFuture1},
+							{Version: "1.30.0", ExpirationDate: &expirationDateFuture1},
 						}},
 					},
 				}
 
 				shoot.Spec.CloudProfile = &gardencorev1beta1.CloudProfileReference{Kind: "NamespacedCloudProfile", Name: namespacedCloudProfile.Name}
 				shoot.Spec.CloudProfileName = nil
-				shoot.Spec.Kubernetes.Version = "1.29.0"
+				shoot.Spec.Kubernetes.Version = "1.30.0"
 
 				Expect(gardenCoreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
 				Expect(gardenCoreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(&shoot)).To(Succeed())
@@ -2949,9 +3590,9 @@ var _ = Describe("resourcereferencemanager", func() {
 
 			It("should succeed if a used and extended kubernetes version already expired is not modified", func() {
 				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{
-					{Version: "1.30.0", Classification: ptr.To(gardencorev1beta1.ClassificationPreview)},
-					{Version: "1.29.0", Classification: ptr.To(gardencorev1beta1.ClassificationSupported)},
-					{Version: "1.28.0", Classification: ptr.To(gardencorev1beta1.ClassificationDeprecated)},
+					{Version: "1.32.0", Classification: ptr.To(gardencorev1beta1.ClassificationPreview)},
+					{Version: "1.31.0", Classification: ptr.To(gardencorev1beta1.ClassificationSupported)},
+					{Version: "1.30.0", Classification: ptr.To(gardencorev1beta1.ClassificationDeprecated)},
 				}
 				Expect(gardenCoreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
 
@@ -2963,15 +3604,15 @@ var _ = Describe("resourcereferencemanager", func() {
 					Spec: core.NamespacedCloudProfileSpec{
 						Parent: core.CloudProfileReference{Name: cloudProfile.Name, Kind: "CloudProfile"},
 						Kubernetes: &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: &expirationDatePast},
-							{Version: "1.28.0", ExpirationDate: &expirationDatePast},
+							{Version: "1.31.0", ExpirationDate: &expirationDatePast},
+							{Version: "1.30.0", ExpirationDate: &expirationDatePast},
 						}},
 					},
 				}
 
 				shoot.Spec.CloudProfile = &gardencorev1beta1.CloudProfileReference{Kind: "NamespacedCloudProfile", Name: namespacedCloudProfile.Name}
 				shoot.Spec.CloudProfileName = nil
-				shoot.Spec.Kubernetes.Version = "1.29.0"
+				shoot.Spec.Kubernetes.Version = "1.31.0"
 
 				Expect(gardenCoreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(&shoot)).To(Succeed())
 
@@ -2985,8 +3626,8 @@ var _ = Describe("resourcereferencemanager", func() {
 
 			It("should succeed if an extended and used Kubernetes version is removed with the base version still being valid", func() {
 				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{
-					{Version: "1.30.0", Classification: ptr.To(gardencorev1beta1.ClassificationPreview)},
-					{Version: "1.29.0", Classification: ptr.To(gardencorev1beta1.ClassificationSupported)},
+					{Version: "1.31.0", Classification: ptr.To(gardencorev1beta1.ClassificationPreview)},
+					{Version: "1.30.0", Classification: ptr.To(gardencorev1beta1.ClassificationSupported)},
 				}
 
 				namespacedCloudProfile := &core.NamespacedCloudProfile{
@@ -2997,14 +3638,14 @@ var _ = Describe("resourcereferencemanager", func() {
 					Spec: core.NamespacedCloudProfileSpec{
 						Parent: core.CloudProfileReference{Kind: "CloudProfile", Name: cloudProfileName},
 						Kubernetes: &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: &expirationDateFuture1},
+							{Version: "1.30.0", ExpirationDate: &expirationDateFuture1},
 						}},
 					},
 				}
 
 				shoot.Spec.CloudProfile = &gardencorev1beta1.CloudProfileReference{Kind: "NamespacedCloudProfile", Name: namespacedCloudProfile.Name}
 				shoot.Spec.CloudProfileName = nil
-				shoot.Spec.Kubernetes.Version = "1.29.0"
+				shoot.Spec.Kubernetes.Version = "1.30.0"
 
 				Expect(gardenCoreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
 				Expect(gardenCoreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(&shoot)).To(Succeed())
@@ -3019,8 +3660,8 @@ var _ = Describe("resourcereferencemanager", func() {
 
 			It("should fail if an extended and used Kubernetes version is being removed with the base version being already expired", func() {
 				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{
-					{Version: "1.30.0", Classification: ptr.To(gardencorev1beta1.ClassificationPreview)},
-					{Version: "1.29.0", Classification: ptr.To(gardencorev1beta1.ClassificationSupported), ExpirationDate: &expirationDatePast},
+					{Version: "1.31.0", Classification: ptr.To(gardencorev1beta1.ClassificationPreview)},
+					{Version: "1.30.0", Classification: ptr.To(gardencorev1beta1.ClassificationSupported), ExpirationDate: &expirationDatePast},
 				}
 
 				namespacedCloudProfile := &core.NamespacedCloudProfile{
@@ -3031,14 +3672,14 @@ var _ = Describe("resourcereferencemanager", func() {
 					Spec: core.NamespacedCloudProfileSpec{
 						Parent: core.CloudProfileReference{Kind: "CloudProfile", Name: cloudProfileName},
 						Kubernetes: &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: &expirationDateFuture1},
+							{Version: "1.30.0", ExpirationDate: &expirationDateFuture1},
 						}},
 					},
 				}
 
 				shoot.Spec.CloudProfile = &gardencorev1beta1.CloudProfileReference{Kind: "NamespacedCloudProfile", Name: namespacedCloudProfile.Name}
 				shoot.Spec.CloudProfileName = nil
-				shoot.Spec.Kubernetes.Version = "1.29.0"
+				shoot.Spec.Kubernetes.Version = "1.30.0"
 
 				Expect(gardenCoreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
 				Expect(gardenCoreInformerFactory.Core().V1beta1().NamespacedCloudProfiles().Informer().GetStore().Add(namespacedCloudProfile)).To(Succeed())
@@ -3052,13 +3693,13 @@ var _ = Describe("resourcereferencemanager", func() {
 				err := admissionHandler.Validate(context.TODO(), attrs, nil)
 				Expect(err).To(MatchError(And(
 					ContainSubstring("unable to delete Kubernetes version"),
-					ContainSubstring("1.29.0"),
+					ContainSubstring("1.30.0"),
 					ContainSubstring("still in use by shoot"),
 				)))
 			})
 
 			It("should reject for the complete Kubernetes section being removed with Shoots using overridden versions rendering expired afterwards", func() {
-				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(-48 * time.Hour)})}}
+				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(-48 * time.Hour)})}}
 				Expect(gardenCoreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
 
 				namespacedCloudProfile := &core.NamespacedCloudProfile{
@@ -3068,13 +3709,13 @@ var _ = Describe("resourcereferencemanager", func() {
 					},
 					Spec: core.NamespacedCloudProfileSpec{
 						Parent:     core.CloudProfileReference{Name: cloudProfile.Name, Kind: "CloudProfile"},
-						Kubernetes: &core.KubernetesSettings{Versions: []core.ExpirableVersion{{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(96 * time.Hour)})}}},
+						Kubernetes: &core.KubernetesSettings{Versions: []core.ExpirableVersion{{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(96 * time.Hour)})}}},
 					},
 				}
 
 				shoot.Spec.CloudProfile = &gardencorev1beta1.CloudProfileReference{Kind: "NamespacedCloudProfile", Name: namespacedCloudProfile.Name}
 				shoot.Spec.CloudProfileName = nil
-				shoot.Spec.Kubernetes.Version = "1.29.0"
+				shoot.Spec.Kubernetes.Version = "1.30.0"
 				Expect(gardenCoreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(&shoot)).To(Succeed())
 
 				updatedNamespacedCloudProfile := namespacedCloudProfile.DeepCopy()
@@ -3084,15 +3725,15 @@ var _ = Describe("resourcereferencemanager", func() {
 
 				Expect(admissionHandler.Validate(context.TODO(), attrs, nil)).To(MatchError(And(
 					ContainSubstring("unable to delete Kubernetes version"),
-					ContainSubstring("1.29.0"),
+					ContainSubstring("1.30.0"),
 					ContainSubstring("still in use by shoot"),
 				)))
 			})
 
 			It("should succeed if a kubernetes version extended before but not used anymore is removed", func() {
 				cloudProfile.Spec.Kubernetes.Versions = []gardencorev1beta1.ExpirableVersion{
-					{Version: "1.30.0", Classification: ptr.To(gardencorev1beta1.ClassificationPreview)},
-					{Version: "1.29.0", Classification: ptr.To(gardencorev1beta1.ClassificationSupported), ExpirationDate: &expirationDatePast},
+					{Version: "1.31.0", Classification: ptr.To(gardencorev1beta1.ClassificationPreview)},
+					{Version: "1.30.0", Classification: ptr.To(gardencorev1beta1.ClassificationSupported), ExpirationDate: &expirationDatePast},
 				}
 
 				namespacedCloudProfile := &core.NamespacedCloudProfile{
@@ -3103,14 +3744,14 @@ var _ = Describe("resourcereferencemanager", func() {
 					Spec: core.NamespacedCloudProfileSpec{
 						Parent: core.CloudProfileReference{Kind: "CloudProfile", Name: cloudProfileName},
 						Kubernetes: &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: &expirationDateFuture1},
+							{Version: "1.30.0", ExpirationDate: &expirationDateFuture1},
 						}},
 					},
 				}
 
 				shoot.Spec.CloudProfile = &gardencorev1beta1.CloudProfileReference{Kind: "NamespacedCloudProfile", Name: namespacedCloudProfile.Name}
 				shoot.Spec.CloudProfileName = nil
-				shoot.Spec.Kubernetes.Version = "1.30.0"
+				shoot.Spec.Kubernetes.Version = "1.31.0"
 
 				Expect(gardenCoreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
 				Expect(gardenCoreInformerFactory.Core().V1beta1().NamespacedCloudProfiles().Informer().GetStore().Add(namespacedCloudProfile)).To(Succeed())
@@ -3563,12 +4204,8 @@ var _ = Describe("resourcereferencemanager", func() {
 
 				Expect(err).To(PointTo(MatchFields(IgnoreExtras, Fields{
 					"ErrStatus": MatchFields(IgnoreExtras, Fields{
-						"Code": Equal(int32(http.StatusForbidden)),
-						"Message": And(
-							ContainSubstring("maximum node count of worker pool \"ubuntu-worker-2\" in shoot \"test-project/shoot-two\" exceeds the limit of 5 total nodes configured in the cloud profile"),
-							ContainSubstring("maximum node count of worker pool \"ubuntu-worker-1\" in shoot \"test-project/shoot-two\" exceeds the limit of 5 total nodes configured in the cloud profile"),
-							ContainSubstring("total minimum node count of all worker pools of shoot \"test-project/shoot-two\" must not exceed the limit of 5 total nodes configured in the cloud profile"),
-						),
+						"Code":    Equal(int32(http.StatusForbidden)),
+						"Message": ContainSubstring("total minimum node count of all worker pools of shoot \"test-project/shoot-two\" must not exceed the limit of 5 total nodes configured in the cloud profile"),
 					}),
 				})))
 			})

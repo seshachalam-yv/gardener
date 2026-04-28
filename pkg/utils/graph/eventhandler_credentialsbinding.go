@@ -1,0 +1,97 @@
+// SPDX-FileCopyrightText: SAP SE or an SAP affiliate company and Gardener contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package graph
+
+import (
+	"context"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	toolscache "k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+)
+
+func (g *graph) setupCredentialsBindingWatch(_ context.Context, informer cache.Informer) error {
+	_, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			credentialsBinding, ok := obj.(*securityv1alpha1.CredentialsBinding)
+			if !ok {
+				return
+			}
+			g.HandleCredentialsBindingCreateOrUpdate(credentialsBinding)
+		},
+
+		UpdateFunc: func(oldObj, newObj any) {
+			oldCredentialsBinding, ok := oldObj.(*securityv1alpha1.CredentialsBinding)
+			if !ok {
+				return
+			}
+
+			newCredentialsBinding, ok := newObj.(*securityv1alpha1.CredentialsBinding)
+			if !ok {
+				return
+			}
+
+			if !apiequality.Semantic.DeepEqual(oldCredentialsBinding.CredentialsRef, newCredentialsBinding.CredentialsRef) {
+				g.HandleCredentialsBindingCreateOrUpdate(newCredentialsBinding)
+			}
+		},
+
+		DeleteFunc: func(obj any) {
+			if tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown); ok {
+				obj = tombstone.Obj
+			}
+			credentialsBinding, ok := obj.(*securityv1alpha1.CredentialsBinding)
+			if !ok {
+				return
+			}
+			g.handleCredentialsBindingDelete(credentialsBinding)
+		},
+	})
+	return err
+}
+
+func (g *graph) HandleCredentialsBindingCreateOrUpdate(credentialsBinding *securityv1alpha1.CredentialsBinding) {
+	start := time.Now()
+	defer func() {
+		metricUpdateDuration.WithLabelValues("CredentialsBinding", "CreateOrUpdate").Observe(time.Since(start).Seconds())
+	}()
+	g.lock.Lock()
+	defer g.lock.Unlock()
+
+	g.deleteAllIncomingEdges(VertexTypeSecret, VertexTypeCredentialsBinding, credentialsBinding.Namespace, credentialsBinding.Name)
+	g.deleteAllIncomingEdges(VertexTypeInternalSecret, VertexTypeCredentialsBinding, credentialsBinding.Namespace, credentialsBinding.Name)
+	g.deleteAllIncomingEdges(VertexTypeWorkloadIdentity, VertexTypeCredentialsBinding, credentialsBinding.Namespace, credentialsBinding.Name)
+
+	var (
+		credentialsBindingVertex = g.getOrCreateVertex(VertexTypeCredentialsBinding, credentialsBinding.Namespace, credentialsBinding.Name)
+		credentialsVertex        *Vertex
+	)
+	if credentialsBinding.CredentialsRef.APIVersion == securityv1alpha1.SchemeGroupVersion.String() && credentialsBinding.CredentialsRef.Kind == "WorkloadIdentity" {
+		credentialsVertex = g.getOrCreateVertex(VertexTypeWorkloadIdentity, credentialsBinding.CredentialsRef.Namespace, credentialsBinding.CredentialsRef.Name)
+	} else if credentialsBinding.CredentialsRef.APIVersion == gardencorev1beta1.SchemeGroupVersion.String() && credentialsBinding.CredentialsRef.Kind == "InternalSecret" {
+		credentialsVertex = g.getOrCreateVertex(VertexTypeInternalSecret, credentialsBinding.CredentialsRef.Namespace, credentialsBinding.CredentialsRef.Name)
+	} else if credentialsBinding.CredentialsRef.APIVersion == corev1.SchemeGroupVersion.String() && credentialsBinding.CredentialsRef.Kind == "Secret" {
+		credentialsVertex = g.getOrCreateVertex(VertexTypeSecret, credentialsBinding.CredentialsRef.Namespace, credentialsBinding.CredentialsRef.Name)
+	}
+	if credentialsVertex != nil {
+		g.addEdge(credentialsVertex, credentialsBindingVertex)
+	}
+}
+
+func (g *graph) handleCredentialsBindingDelete(credentialsBinding *securityv1alpha1.CredentialsBinding) {
+	start := time.Now()
+	defer func() {
+		metricUpdateDuration.WithLabelValues("CredentialsBinding", "Delete").Observe(time.Since(start).Seconds())
+	}()
+	g.lock.Lock()
+	defer g.lock.Unlock()
+
+	g.deleteVertex(VertexTypeCredentialsBinding, credentialsBinding.Namespace, credentialsBinding.Name)
+}

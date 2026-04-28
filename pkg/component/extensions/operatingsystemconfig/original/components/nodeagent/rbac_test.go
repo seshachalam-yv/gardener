@@ -17,122 +17,15 @@ import (
 var _ = Describe("RBAC", func() {
 	Describe("#RBACResourcesData", func() {
 		var (
-			clusterRoleYAML                        string
-			clusterRoleBindingYAML                 string
-			roleYAML                               string
-			roleBindingYAML                        string
 			clusterRoleBindingNodeBootstrapperYAML string
 			clusterRoleBindingNodeClientYAML       string
 			clusterRoleBindingSelfNodeClientYAML   string
 		)
 
 		BeforeEach(func() {
-			clusterRoleYAML = `apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  creationTimestamp: null
-  name: gardener-node-agent
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  - nodes/status
-  verbs:
-  - get
-  - list
-  - watch
-  - patch
-  - update
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - patch
-  - update
-- apiGroups:
-  - certificates.k8s.io
-  resources:
-  - certificatesigningrequests
-  verbs:
-  - create
-  - get
-`
-
-			clusterRoleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  creationTimestamp: null
-  name: gardener-node-agent
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: gardener-node-agent
-subjects:
-- kind: ServiceAccount
-  name: gardener-node-agent
-  namespace: kube-system
-`
-
-			roleYAML = `apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  creationTimestamp: null
-  name: gardener-node-agent
-  namespace: kube-system
-rules:
-- apiGroups:
-  - ""
-  resourceNames:
-  - gardener-node-agent
-  - gardener-valitail
-  - osc-secret1
-  - osc-secret2
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - coordination.k8s.io
-  resources:
-  - leases
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-`
-
-			roleBindingYAML = `apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  creationTimestamp: null
-  name: gardener-node-agent
-  namespace: kube-system
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: gardener-node-agent
-subjects:
-- kind: Group
-  name: system:bootstrappers
-- kind: ServiceAccount
-  name: gardener-node-agent
-  namespace: kube-system
-`
-
 			clusterRoleBindingNodeBootstrapperYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  creationTimestamp: null
   name: system:node-bootstrapper
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -147,7 +40,6 @@ subjects:
 			clusterRoleBindingNodeClientYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  creationTimestamp: null
   name: system:certificates.k8s.io:certificatesigningrequests:nodeclient
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -161,7 +53,6 @@ subjects:
 			clusterRoleBindingSelfNodeClientYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  creationTimestamp: null
   name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -175,7 +66,7 @@ subjects:
 		})
 
 		It("should generate the expected RBAC resources", func() {
-			dataMap, err := RBACResourcesData([]string{"osc-secret1", "osc-secret2"})
+			dataMap, err := RBACResourcesData()
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(dataMap).To(HaveKey("data.yaml.br"))
@@ -185,10 +76,6 @@ subjects:
 
 			manifests := strings.Split(string(data), "---\n")
 			Expect(manifests).To(ConsistOf(
-				clusterRoleYAML,
-				clusterRoleBindingYAML,
-				roleYAML,
-				roleBindingYAML,
 				clusterRoleBindingNodeBootstrapperYAML,
 				clusterRoleBindingNodeClientYAML,
 				clusterRoleBindingSelfNodeClientYAML,

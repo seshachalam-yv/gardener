@@ -74,7 +74,7 @@ var _ = Describe("KubeProxy", func() {
 				ShootClientSet:   fakeShootKubernetesInterface,
 				SecretsManager:   sm,
 				Shoot: &shootpkg.Shoot{
-					InternalClusterDomain: internalClusterDomain,
+					InternalClusterDomain: ptr.To(internalClusterDomain),
 					KubernetesVersion:     kubernetesVersionControlPlane,
 					ControlPlaneNamespace: namespace,
 				},
@@ -153,7 +153,6 @@ contexts:
   name: ` + namespace + `
 current-context: ` + namespace + `
 kind: Config
-preferences: {}
 users:
 - name: ` + namespace + `
   user:

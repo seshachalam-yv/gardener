@@ -122,38 +122,45 @@ var _ = Describe("ClusterAutoscaler", func() {
 		configExpander                            = gardencorev1beta1.ClusterAutoscalerExpanderRandom
 		configMaxGracefulTerminationSeconds int32 = 60 * 60 * 24
 		configMaxNodeProvisionTime                = &metav1.Duration{Duration: time.Second}
-		configScaleDownDelayAfterAdd              = &metav1.Duration{Duration: time.Second}
-		configScaleDownDelayAfterDelete           = &metav1.Duration{Duration: time.Second}
-		configScaleDownDelayAfterFailure          = &metav1.Duration{Duration: time.Second}
-		configScaleDownUnneededTime               = &metav1.Duration{Duration: time.Second}
-		configScaleDownUtilizationThreshold       = ptr.To(float64(1.2345))
-		configScanInterval                        = &metav1.Duration{Duration: time.Second}
-		configIgnoreDaemonsetsUtilization         = true
-		configVerbosity                     int32 = 4
-		configMaxEmptyBulkDelete                  = ptr.To[int32](20)
-		configMaxScaleDownParallelism             = ptr.To[int32](20)
-		configMaxDrainParallelism                 = ptr.To[int32](2)
-		configNewPodScaleUpDelay                  = &metav1.Duration{Duration: time.Second}
-		configTaints                              = []string{"taint-1", "taint-2"}
-		configFull                                = &gardencorev1beta1.ClusterAutoscaler{
-			Expander:                      &configExpander,
-			MaxGracefulTerminationSeconds: &configMaxGracefulTerminationSeconds,
-			MaxNodeProvisionTime:          configMaxNodeProvisionTime,
-			ScaleDownDelayAfterAdd:        configScaleDownDelayAfterAdd,
-			ScaleDownDelayAfterDelete:     configScaleDownDelayAfterDelete,
-			ScaleDownDelayAfterFailure:    configScaleDownDelayAfterFailure,
-			ScaleDownUnneededTime:         configScaleDownUnneededTime,
-			ScaleDownUtilizationThreshold: configScaleDownUtilizationThreshold,
-			ScanInterval:                  configScanInterval,
-			StartupTaints:                 configTaints,
-			StatusTaints:                  configTaints,
-			IgnoreTaints:                  configTaints,
-			IgnoreDaemonsetsUtilization:   &configIgnoreDaemonsetsUtilization,
-			Verbosity:                     &configVerbosity,
-			MaxEmptyBulkDelete:            configMaxEmptyBulkDelete,
-			MaxScaleDownParallelism:       configMaxScaleDownParallelism,
-			MaxDrainParallelism:           configMaxDrainParallelism,
-			NewPodScaleUpDelay:            configNewPodScaleUpDelay,
+		// add the 3 new config options here
+		configInitialNodeGroupBackoffDuration       = &metav1.Duration{Duration: 10 * time.Minute}
+		configMaxNodeGroupBackoffDuration           = &metav1.Duration{Duration: 20 * time.Minute}
+		configNodeGroupBackoffResetTimeout          = &metav1.Duration{Duration: time.Hour}
+		configScaleDownDelayAfterAdd                = &metav1.Duration{Duration: time.Second}
+		configScaleDownDelayAfterDelete             = &metav1.Duration{Duration: time.Second}
+		configScaleDownDelayAfterFailure            = &metav1.Duration{Duration: time.Second}
+		configScaleDownUnneededTime                 = &metav1.Duration{Duration: time.Second}
+		configScaleDownUtilizationThreshold         = ptr.To(float64(1.2345))
+		configScanInterval                          = &metav1.Duration{Duration: time.Second}
+		configIgnoreDaemonsetsUtilization           = true
+		configVerbosity                       int32 = 4
+		configMaxEmptyBulkDelete                    = ptr.To[int32](20)
+		configMaxScaleDownParallelism               = ptr.To[int32](20)
+		configMaxDrainParallelism                   = ptr.To[int32](2)
+		configNewPodScaleUpDelay                    = &metav1.Duration{Duration: time.Second}
+		configTaints                                = []string{"taint-1", "taint-2"}
+		configFull                                  = &gardencorev1beta1.ClusterAutoscaler{
+			Expander:                        &configExpander,
+			MaxGracefulTerminationSeconds:   &configMaxGracefulTerminationSeconds,
+			MaxNodeProvisionTime:            configMaxNodeProvisionTime,
+			InitialNodeGroupBackoffDuration: configInitialNodeGroupBackoffDuration,
+			MaxNodeGroupBackoffDuration:     configMaxNodeGroupBackoffDuration,
+			NodeGroupBackoffResetTimeout:    configNodeGroupBackoffResetTimeout,
+			ScaleDownDelayAfterAdd:          configScaleDownDelayAfterAdd,
+			ScaleDownDelayAfterDelete:       configScaleDownDelayAfterDelete,
+			ScaleDownDelayAfterFailure:      configScaleDownDelayAfterFailure,
+			ScaleDownUnneededTime:           configScaleDownUnneededTime,
+			ScaleDownUtilizationThreshold:   configScaleDownUtilizationThreshold,
+			ScanInterval:                    configScanInterval,
+			StartupTaints:                   configTaints,
+			StatusTaints:                    configTaints,
+			IgnoreTaints:                    configTaints,
+			IgnoreDaemonsetsUtilization:     &configIgnoreDaemonsetsUtilization,
+			Verbosity:                       &configVerbosity,
+			MaxEmptyBulkDelete:              configMaxEmptyBulkDelete,
+			MaxScaleDownParallelism:         configMaxScaleDownParallelism,
+			MaxDrainParallelism:             configMaxDrainParallelism,
+			NewPodScaleUpDelay:              configNewPodScaleUpDelay,
 		}
 
 		genericTokenKubeconfigSecretName = "generic-token-kubeconfig"
@@ -165,6 +172,7 @@ var _ = Describe("ClusterAutoscaler", func() {
 		serviceName                      = "cluster-autoscaler"
 		deploymentName                   = "cluster-autoscaler"
 		managedResourceName              = "shoot-core-cluster-autoscaler"
+		containerName                    = "cluster-autoscaler"
 
 		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{Name: vpaName, Namespace: namespace, ResourceVersion: "1"},
@@ -175,13 +183,19 @@ var _ = Describe("ClusterAutoscaler", func() {
 					Name:       deploymentName,
 				},
 				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
-					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-						ContainerName:    vpaautoscalingv1.DefaultContainerResourcePolicy,
-						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-					}},
+					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+						{
+							ContainerName:    containerName,
+							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+						},
+					},
 				},
 			},
 		}
@@ -297,6 +311,9 @@ var _ = Describe("ClusterAutoscaler", func() {
 					"--expander=least-waste",
 					"--max-graceful-termination-sec=600",
 					"--max-node-provision-time=20m0s",
+					"--initial-node-group-backoff-duration=5m0s",
+					"--max-node-group-backoff-duration=30m0s",
+					"--node-group-backoff-reset-timeout=3h0m0s",
 					"--scale-down-utilization-threshold=0.500000",
 					"--scale-down-unneeded-time=30m0s",
 					"--scale-down-delay-after-add=1h0m0s",
@@ -315,6 +332,9 @@ var _ = Describe("ClusterAutoscaler", func() {
 					"--expander="+expander,
 					fmt.Sprintf("--max-graceful-termination-sec=%d", configMaxGracefulTerminationSeconds),
 					fmt.Sprintf("--max-node-provision-time=%s", configMaxNodeProvisionTime.Duration),
+					fmt.Sprintf("--initial-node-group-backoff-duration=%s", configInitialNodeGroupBackoffDuration.Duration),
+					fmt.Sprintf("--max-node-group-backoff-duration=%s", configMaxNodeGroupBackoffDuration.Duration),
+					fmt.Sprintf("--node-group-backoff-reset-timeout=%s", configNodeGroupBackoffResetTimeout.Duration),
 					fmt.Sprintf("--scale-down-utilization-threshold=%f", *configScaleDownUtilizationThreshold),
 					fmt.Sprintf("--scale-down-unneeded-time=%s", configScaleDownUnneededTime.Duration),
 					fmt.Sprintf("--scale-down-delay-after-add=%s", configScaleDownDelayAfterAdd.Duration),
@@ -393,7 +413,7 @@ var _ = Describe("ClusterAutoscaler", func() {
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{
-									Name:            "cluster-autoscaler",
+									Name:            containerName,
 									Image:           image,
 									ImagePullPolicy: corev1.PullIfNotPresent,
 									Command:         command,
@@ -682,7 +702,7 @@ var _ = Describe("ClusterAutoscaler", func() {
 					shootWorkerConfig = workerConfig
 				}
 
-				clusterAutoscaler = New(fakeClient, namespace, sm, image, replicas, config, shootWorkerConfig, semver.MustParse("1.28.1"))
+				clusterAutoscaler = New(fakeClient, namespace, sm, image, replicas, config, shootWorkerConfig, semver.MustParse("1.33.1"))
 				clusterAutoscaler.SetNamespaceUID(namespaceUID)
 				clusterAutoscaler.SetMachineDeployments(machineDeployments)
 

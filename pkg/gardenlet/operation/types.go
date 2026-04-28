@@ -13,25 +13,28 @@ import (
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/garden"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
 )
 
 // Builder is an object that builds Operation objects.
 type Builder struct {
 	configFunc                func() (*gardenletconfigv1alpha1.GardenletConfiguration, error)
-	gardenFunc                func(context.Context, map[string]*corev1.Secret) (*garden.Garden, error)
+	gardenFunc                func(ctx context.Context, internalDomain *gardenerutils.Domain, defaultDomains []*gardenerutils.Domain) (*garden.Garden, error)
 	gardenerInfoFunc          func() (*gardencorev1beta1.Gardener, error)
 	gardenClusterIdentityFunc func() (string, error)
 	loggerFunc                func() (logr.Logger, error)
 	secretsFunc               func() (map[string]*corev1.Secret, error)
+	internalDomainFunc        func() (*gardenerutils.Domain, error)
+	defaultDomainsFunc        func() ([]*gardenerutils.Domain, error)
 	seedFunc                  func(context.Context) (*seed.Seed, error)
 	shootFunc                 func(context.Context, client.Reader, *garden.Garden, *seed.Seed, *corev1.Secret) (*shoot.Shoot, error)
 	clockFunc                 func() clock.Clock

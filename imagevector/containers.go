@@ -11,8 +11,8 @@ const (
 	ContainerImageNameAlertmanager = "alertmanager"
 	// ContainerImageNameAlpineConntrack is a constant for an image in the image vector with name 'alpine-conntrack'.
 	ContainerImageNameAlpineConntrack = "alpine-conntrack"
-	// ContainerImageNameApiserverProxy is a constant for an image in the image vector with name 'apiserver-proxy'.
-	ContainerImageNameApiserverProxy = "apiserver-proxy"
+	// ContainerImageNameAlpineIptables is a constant for an image in the image vector with name 'alpine-iptables'.
+	ContainerImageNameAlpineIptables = "alpine-iptables"
 	// ContainerImageNameApiserverProxySidecar is a constant for an image in the image vector with name 'apiserver-proxy-sidecar'.
 	ContainerImageNameApiserverProxySidecar = "apiserver-proxy-sidecar"
 	// ContainerImageNameBlackboxExporter is a constant for an image in the image vector with name 'blackbox-exporter'.
@@ -25,10 +25,14 @@ const (
 	ContainerImageNameConfigmapReloader = "configmap-reloader"
 	// ContainerImageNameCoredns is a constant for an image in the image vector with name 'coredns'.
 	ContainerImageNameCoredns = "coredns"
+	// ContainerImageNameCorednsConfigAdapter is a constant for an image in the image vector with name 'coredns-config-adapter'.
+	ContainerImageNameCorednsConfigAdapter = "coredns-config-adapter"
 	// ContainerImageNameCortex is a constant for an image in the image vector with name 'cortex'.
 	ContainerImageNameCortex = "cortex"
 	// ContainerImageNameDependencyWatchdog is a constant for an image in the image vector with name 'dependency-watchdog'.
 	ContainerImageNameDependencyWatchdog = "dependency-watchdog"
+	// ContainerImageNameEnvoyProxy is a constant for an image in the image vector with name 'envoy-proxy'.
+	ContainerImageNameEnvoyProxy = "envoy-proxy"
 	// ContainerImageNameEtcd is a constant for an image in the image vector with name 'etcd'.
 	ContainerImageNameEtcd = "etcd"
 	// ContainerImageNameEtcdDruid is a constant for an image in the image vector with name 'etcd-druid'.
@@ -37,6 +41,8 @@ const (
 	ContainerImageNameEventLogger = "event-logger"
 	// ContainerImageNameFluentBit is a constant for an image in the image vector with name 'fluent-bit'.
 	ContainerImageNameFluentBit = "fluent-bit"
+	// ContainerImageNameFluentBitPlugin is a constant for an image in the image vector with name 'fluent-bit-plugin'.
+	ContainerImageNameFluentBitPlugin = "fluent-bit-plugin"
 	// ContainerImageNameFluentBitPluginInstaller is a constant for an image in the image vector with name 'fluent-bit-plugin-installer'.
 	ContainerImageNameFluentBitPluginInstaller = "fluent-bit-plugin-installer"
 	// ContainerImageNameFluentOperator is a constant for an image in the image vector with name 'fluent-operator'.
@@ -99,6 +105,10 @@ const (
 	ContainerImageNameNodeLocalDns = "node-local-dns"
 	// ContainerImageNameNodeProblemDetector is a constant for an image in the image vector with name 'node-problem-detector'.
 	ContainerImageNameNodeProblemDetector = "node-problem-detector"
+	// ContainerImageNameNodeReadinessController is the container image name for the upstream Node Readiness Controller.
+	ContainerImageNameNodeReadinessController = "node-readiness-controller"
+	// ContainerImageNameOpentelemetryCollector is a constant for an image in the image vector with name 'opentelemetry-collector'.
+	ContainerImageNameOpentelemetryCollector = "opentelemetry-collector"
 	// ContainerImageNameOpentelemetryOperator is a constant for an image in the image vector with name 'opentelemetry-operator'.
 	ContainerImageNameOpentelemetryOperator = "opentelemetry-operator"
 	// ContainerImageNamePauseContainer is a constant for an image in the image vector with name 'pause-container'.
@@ -109,8 +119,8 @@ const (
 	ContainerImageNamePersesOperator = "perses-operator"
 	// ContainerImageNamePlutono is a constant for an image in the image vector with name 'plutono'.
 	ContainerImageNamePlutono = "plutono"
-	// ContainerImageNamePlutonoDashboardRefresher is a constant for an image in the image vector with name 'plutono-dashboard-refresher'.
-	ContainerImageNamePlutonoDashboardRefresher = "plutono-dashboard-refresher"
+	// ContainerImageNamePlutonoDataRefresher is a constant for an image in the image vector with name 'plutono-data-refresher'.
+	ContainerImageNamePlutonoDataRefresher = "plutono-data-refresher"
 	// ContainerImageNamePrometheus is a constant for an image in the image vector with name 'prometheus'.
 	ContainerImageNamePrometheus = "prometheus"
 	// ContainerImageNamePrometheusOperator is a constant for an image in the image vector with name 'prometheus-operator'.
@@ -127,6 +137,10 @@ const (
 	ContainerImageNameValiCurator = "vali-curator"
 	// ContainerImageNameValitail is a constant for an image in the image vector with name 'valitail'.
 	ContainerImageNameValitail = "valitail"
+	// ContainerImageNameVictoriaLogs is a constant for an image in the image vector with name 'victoria-logs'.
+	ContainerImageNameVictoriaLogs = "victoria-logs"
+	// ContainerImageNameVictoriaOperator is a constant for an image in the image vector with name 'victoria-operator'.
+	ContainerImageNameVictoriaOperator = "victoria-operator"
 	// ContainerImageNameVpaAdmissionController is a constant for an image in the image vector with name 'vpa-admission-controller'.
 	ContainerImageNameVpaAdmissionController = "vpa-admission-controller"
 	// ContainerImageNameVpaRecommender is a constant for an image in the image vector with name 'vpa-recommender'.

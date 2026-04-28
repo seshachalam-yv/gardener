@@ -43,11 +43,13 @@ type ProjectSpec struct {
 	// who created the project. This field is immutable.
 	CreatedBy *rbacv1.Subject
 	// Description is a human-readable description of what the project is used for.
+	// Only letters, digits and certain punctuation characters are allowed for this field.
 	Description *string
 	// Owner is a subject representing a user name, an email address, or any other identifier of a user owning
 	// the project.
 	Owner *rbacv1.Subject
 	// Purpose is a human-readable explanation of the project's purpose.
+	// Only letters, digits and certain punctuation characters are allowed for this field.
 	Purpose *string
 	// Members is a list of subjects representing a user name, an email address, or any other identifier of a user,
 	// group, or service account that has a certain role.
@@ -76,6 +78,8 @@ type ProjectStatus struct {
 	StaleAutoDeleteTimestamp *metav1.Time
 	// LastActivityTimestamp contains the timestamp from the last activity performed in this project.
 	LastActivityTimestamp *metav1.Time
+	// Conditions represents the latest available observations of a Project's current state.
+	Conditions []Condition
 }
 
 // ProjectMember is a member of a project.

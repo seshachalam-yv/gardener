@@ -7,8 +7,8 @@ package backupbucket
 import (
 	"context"
 	"errors"
+	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -17,11 +17,12 @@ import (
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
+	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/pkg/api"
+	"github.com/gardener/gardener/pkg/api/core/validation"
 	"github.com/gardener/gardener/pkg/apis/core"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/apis/core/validation"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
@@ -42,16 +43,12 @@ func (backupBucketStrategy) PrepareForCreate(_ context.Context, obj runtime.Obje
 
 	backupBucket.Generation = 1
 	backupBucket.Status = core.BackupBucketStatus{}
-
-	SyncBackupSecretRefAndCredentialsRef(&backupBucket.Spec)
 }
 
 func (backupBucketStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
 	newBackupBucket := obj.(*core.BackupBucket)
 	oldBackupBucket := old.(*core.BackupBucket)
 	newBackupBucket.Status = oldBackupBucket.Status
-
-	SyncBackupSecretRefAndCredentialsRef(&newBackupBucket.Spec)
 
 	if mustIncreaseGeneration(oldBackupBucket, newBackupBucket) {
 		newBackupBucket.Generation = oldBackupBucket.Generation + 1
@@ -119,11 +116,6 @@ func (backupBucketStatusStrategy) PrepareForUpdate(_ context.Context, obj, old r
 	newBackupBucket := obj.(*core.BackupBucket)
 	oldBackupBucket := old.(*core.BackupBucket)
 	newBackupBucket.Spec = oldBackupBucket.Spec
-
-	// Ensure credentialsRef is synced even on /status subresources requests.
-	// Some clients are patching just the status which still results in update events
-	// for those watching the resource.
-	SyncBackupSecretRefAndCredentialsRef(&newBackupBucket.Spec)
 }
 
 func (backupBucketStatusStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
@@ -136,8 +128,12 @@ func ToSelectableFields(backupBucket *core.BackupBucket) fields.Set {
 	// amount of allocations needed to create the fields.Set. If you add any
 	// field here or the number of object-meta related fields changes, this should
 	// be adjusted.
-	backupBucketSpecificFieldsSet := make(fields.Set, 3)
-	backupBucketSpecificFieldsSet[core.BackupBucketSeedName] = getSeedName(backupBucket)
+	backupBucketSpecificFieldsSet := make(fields.Set, 5)
+	backupBucketSpecificFieldsSet[core.BackupBucketSeedName] = ptr.Deref(backupBucket.Spec.SeedName, "")
+	if backupBucket.Spec.ShootRef != nil {
+		backupBucketSpecificFieldsSet[core.BackupBucketShootRefName] = backupBucket.Spec.ShootRef.Name
+		backupBucketSpecificFieldsSet[core.BackupBucketShootRefNamespace] = backupBucket.Spec.ShootRef.Namespace
+	}
 	return generic.AddObjectMetaFieldsSet(backupBucketSpecificFieldsSet, &backupBucket.ObjectMeta, true)
 }
 
@@ -156,58 +152,44 @@ func MatchBackupBucket(label labels.Selector, field fields.Selector) storage.Sel
 		Label:       label,
 		Field:       field,
 		GetAttrs:    GetAttrs,
-		IndexFields: []string{core.BackupBucketSeedName},
+		IndexFields: []string{core.BackupBucketSeedName, core.BackupBucketShootRefName, core.BackupBucketShootRefNamespace},
 	}
 }
 
-// SeedNameTriggerFunc returns spec.seedName of given BackupBucket.
-func SeedNameTriggerFunc(obj runtime.Object) string {
+// SeedNameIndexFunc returns spec.seedName of given BackupBucket.
+func SeedNameIndexFunc(obj any) ([]string, error) {
 	backupBucket, ok := obj.(*core.BackupBucket)
 	if !ok {
-		return ""
+		return nil, fmt.Errorf("expected *core.BackupBucket but got %T", obj)
 	}
 
-	return getSeedName(backupBucket)
+	return []string{ptr.Deref(backupBucket.Spec.SeedName, "")}, nil
 }
 
-func getSeedName(backupBucket *core.BackupBucket) string {
-	if backupBucket.Spec.SeedName == nil {
-		return ""
+// ShootRefNameIndexFunc returns spec.shootRef.name of given BackupBucket.
+func ShootRefNameIndexFunc(obj any) ([]string, error) {
+	backupBucket, ok := obj.(*core.BackupBucket)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupBucket but got %T", obj)
 	}
-	return *backupBucket.Spec.SeedName
+
+	if backupBucket.Spec.ShootRef == nil {
+		return []string{""}, nil
+	}
+
+	return []string{backupBucket.Spec.ShootRef.Name}, nil
 }
 
-// SyncBackupSecretRefAndCredentialsRef ensures the spec fields
-// credentialsRef and secretRef are synced.
-// TODO(vpnachev): Remove once the spec.secretRef field is removed.
-func SyncBackupSecretRefAndCredentialsRef(backupBucketSpec *core.BackupBucketSpec) {
-	emptySecretRef := corev1.SecretReference{}
-
-	// secretRef is set and credentialsRef is not, sync both fields.
-	if backupBucketSpec.SecretRef != emptySecretRef && backupBucketSpec.CredentialsRef == nil {
-		backupBucketSpec.CredentialsRef = &corev1.ObjectReference{
-			APIVersion: "v1",
-			Kind:       "Secret",
-			Namespace:  backupBucketSpec.SecretRef.Namespace,
-			Name:       backupBucketSpec.SecretRef.Name,
-		}
-
-		return
+// ShootRefNamespaceIndexFunc returns spec.shootRef.namespace of given BackupBucket.
+func ShootRefNamespaceIndexFunc(obj any) ([]string, error) {
+	backupBucket, ok := obj.(*core.BackupBucket)
+	if !ok {
+		return nil, fmt.Errorf("expected *core.BackupBucket but got %T", obj)
 	}
 
-	// secretRef is unset and credentialsRef refer a secret, sync both fields.
-	if backupBucketSpec.SecretRef == emptySecretRef && backupBucketSpec.CredentialsRef != nil &&
-		backupBucketSpec.CredentialsRef.APIVersion == "v1" && backupBucketSpec.CredentialsRef.Kind == "Secret" {
-		backupBucketSpec.SecretRef = corev1.SecretReference{
-			Namespace: backupBucketSpec.CredentialsRef.Namespace,
-			Name:      backupBucketSpec.CredentialsRef.Name,
-		}
-
-		return
+	if backupBucket.Spec.ShootRef == nil {
+		return []string{""}, nil
 	}
 
-	// in all other cases we can do nothing:
-	// - both fields are unset -> we have nothing to sync
-	// - both fields are set -> let the validation check if they are correct
-	// - credentialsRef refer to WorkloadIdentity -> secretRef should stay unset
+	return []string{backupBucket.Spec.ShootRef.Namespace}, nil
 }

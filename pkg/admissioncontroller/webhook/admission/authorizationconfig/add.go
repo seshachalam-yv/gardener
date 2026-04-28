@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/go-logr/logr"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -26,8 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	"github.com/gardener/gardener/pkg/webhook/configvalidator"
 )
 
@@ -42,7 +41,6 @@ const (
 func AddToManager(mgr manager.Manager) error {
 	webhook := &admission.Webhook{
 		Handler: NewHandler(
-			mgr.GetLogger().WithName("webhook").WithName(HandlerName),
 			mgr.GetAPIReader(),
 			mgr.GetClient(),
 			admission.NewDecoder(mgr.GetScheme()),
@@ -55,9 +53,8 @@ func AddToManager(mgr manager.Manager) error {
 }
 
 // NewHandler returns a new handler for validating authorization configuration.
-func NewHandler(log logr.Logger, apiReader, c client.Reader, decoder admission.Decoder) admission.Handler {
+func NewHandler(apiReader, c client.Reader, decoder admission.Decoder) admission.Handler {
 	return &configvalidator.Handler{
-		Logger:    log,
 		APIReader: apiReader,
 		Client:    c,
 		Decoder:   decoder,

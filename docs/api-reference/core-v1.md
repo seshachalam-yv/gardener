@@ -46,7 +46,7 @@ string
 <td>
 <code>metadata</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#objectmeta-v1-meta">
 Kubernetes meta/v1.ObjectMeta
 </a>
 </em>
@@ -119,7 +119,7 @@ resources.</p>
 <td>
 <code>values</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#json-v1-apiextensions-k8s-io">
 Kubernetes apiextensions/v1.JSON
 </a>
 </em>
@@ -215,7 +215,7 @@ The value should be in the format &lsquo;sha256:<HASH>&rsquo;.</p>
 <td>
 <code>pullSecretRef</code></br>
 <em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core">
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
 Kubernetes core/v1.LocalObjectReference
 </a>
 </em>
@@ -225,6 +225,24 @@ Kubernetes core/v1.LocalObjectReference
 <p>PullSecretRef is a reference to a secret containing the pull secret.
 The secret must be of type <code>kubernetes.io/dockerconfigjson</code> and must be located in the <code>garden</code> namespace.
 For usage in the gardenlet, the secret must have the label <code>gardener.cloud/role=helm-pull-secret</code>.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>caBundleSecretRef</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.33/#localobjectreference-v1-core">
+Kubernetes core/v1.LocalObjectReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CABundleSecretRef is a reference to a secret containing a PEM-encoded certificate authority bundle.
+The CA bundle is used to verify the TLS certificate of the OCI registry.
+The secret must have a data key <code>bundle.crt</code> and must be located in the <code>garden</code> namespace.
+For usage in the gardenlet, the secret must have the label <code>gardener.cloud/role=oci-ca-bundle</code>.
+If not provided, the system&rsquo;s default certificate pool is used.</p>
 </td>
 </tr>
 </tbody>

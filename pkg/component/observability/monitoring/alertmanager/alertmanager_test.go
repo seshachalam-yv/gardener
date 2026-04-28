@@ -206,7 +206,7 @@ var _ = Describe("Alertmanager", func() {
 				AlertmanagerConfiguration:           &monitoringv1.AlertmanagerConfiguration{Name: "alertmanager-" + name},
 			},
 		}
-		vpaUpdateMode, vpaControlledValuesRequestsOnly, vpaContainerScalingModeOff := vpaautoscalingv1.UpdateModeAuto, vpaautoscalingv1.ContainerControlledValuesRequestsOnly, vpaautoscalingv1.ContainerScalingModeOff
+
 		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "alertmanager-" + name,
@@ -225,7 +225,7 @@ var _ = Describe("Alertmanager", func() {
 					Name:       name,
 				},
 				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-					UpdateMode: &vpaUpdateMode,
+					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
@@ -237,12 +237,12 @@ var _ = Describe("Alertmanager", func() {
 							MaxAllowed: corev1.ResourceList{
 								corev1.ResourceMemory: resource.MustParse("200Mi"),
 							},
-							ControlledValues:    &vpaControlledValuesRequestsOnly,
+							ControlledValues:    ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 							ControlledResources: &[]corev1.ResourceName{corev1.ResourceMemory},
 						},
 						{
-							ContainerName: "config-reloader",
-							Mode:          &vpaContainerScalingModeOff,
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},
@@ -256,9 +256,9 @@ var _ = Describe("Alertmanager", func() {
 			Spec: monitoringv1alpha1.AlertmanagerConfigSpec{
 				Route: &monitoringv1alpha1.Route{
 					GroupBy:        []string{"service"},
-					GroupWait:      "5m",
-					GroupInterval:  "5m",
-					RepeatInterval: "72h",
+					GroupWait:      ptr.To(monitoringv1.NonEmptyDuration("5m")),
+					GroupInterval:  ptr.To(monitoringv1.NonEmptyDuration("5m")),
+					RepeatInterval: ptr.To(monitoringv1.NonEmptyDuration("72h")),
 					Receiver:       "dev-null",
 					Routes:         []apiextensionsv1.JSON{{Raw: []byte(`{"matchers":[{"matchType":"=~","name":"visibility","value":"all|operator"}],"receiver":"email-kubernetes-ops"}`)}},
 				},
@@ -299,11 +299,11 @@ var _ = Describe("Alertmanager", func() {
 					{
 						Name: "email-kubernetes-ops",
 						EmailConfigs: []monitoringv1alpha1.EmailConfig{{
-							To:           string(alertingSMTPSecret.Data["to"]),
-							From:         string(alertingSMTPSecret.Data["from"]),
-							Smarthost:    string(alertingSMTPSecret.Data["smarthost"]),
-							AuthUsername: string(alertingSMTPSecret.Data["auth_username"]),
-							AuthIdentity: string(alertingSMTPSecret.Data["auth_identity"]),
+							To:           ptr.To(string(alertingSMTPSecret.Data["to"])),
+							From:         ptr.To(string(alertingSMTPSecret.Data["from"])),
+							Smarthost:    ptr.To(string(alertingSMTPSecret.Data["smarthost"])),
+							AuthUsername: ptr.To(string(alertingSMTPSecret.Data["auth_username"])),
+							AuthIdentity: ptr.To(string(alertingSMTPSecret.Data["auth_identity"])),
 							AuthPassword: &corev1.SecretKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "alertmanager-" + name + "-smtp"},
 								Key:                  "auth_password",
@@ -494,22 +494,22 @@ var _ = Describe("Alertmanager", func() {
 
 					config.Spec.Receivers[1].EmailConfigs = []monitoringv1alpha1.EmailConfig{
 						{
-							To:           values.EmailReceivers[0],
-							From:         string(alertingSMTPSecret.Data["from"]),
-							Smarthost:    string(alertingSMTPSecret.Data["smarthost"]),
-							AuthUsername: string(alertingSMTPSecret.Data["auth_username"]),
-							AuthIdentity: string(alertingSMTPSecret.Data["auth_identity"]),
+							To:           ptr.To(values.EmailReceivers[0]),
+							From:         ptr.To(string(alertingSMTPSecret.Data["from"])),
+							Smarthost:    ptr.To(string(alertingSMTPSecret.Data["smarthost"])),
+							AuthUsername: ptr.To(string(alertingSMTPSecret.Data["auth_username"])),
+							AuthIdentity: ptr.To(string(alertingSMTPSecret.Data["auth_identity"])),
 							AuthPassword: &corev1.SecretKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "alertmanager-" + name + "-smtp"},
 								Key:                  "auth_password",
 							},
 						},
 						{
-							To:           values.EmailReceivers[1],
-							From:         string(alertingSMTPSecret.Data["from"]),
-							Smarthost:    string(alertingSMTPSecret.Data["smarthost"]),
-							AuthUsername: string(alertingSMTPSecret.Data["auth_username"]),
-							AuthIdentity: string(alertingSMTPSecret.Data["auth_identity"]),
+							To:           ptr.To(values.EmailReceivers[1]),
+							From:         ptr.To(string(alertingSMTPSecret.Data["from"])),
+							Smarthost:    ptr.To(string(alertingSMTPSecret.Data["smarthost"])),
+							AuthUsername: ptr.To(string(alertingSMTPSecret.Data["auth_username"])),
+							AuthIdentity: ptr.To(string(alertingSMTPSecret.Data["auth_identity"])),
 							AuthPassword: &corev1.SecretKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "alertmanager-" + name + "-smtp"},
 								Key:                  "auth_password",
@@ -532,12 +532,12 @@ var _ = Describe("Alertmanager", func() {
 			When("there are more than 1 replicas", func() {
 				BeforeEach(func() {
 					values.Replicas = 2
-					values.RuntimeVersion = semver.MustParse("1.29.1")
+					values.RuntimeVersion = semver.MustParse("1.30.1")
 				})
 
 				It("should successfully deploy all resources", func() {
-					alertManager.Spec.PodMetadata.Labels["networking.resources.gardener.cloud/to-alertmanager-operated-tcp-9094"] = "allowed"
-					alertManager.Spec.PodMetadata.Labels["networking.resources.gardener.cloud/to-alertmanager-operated-udp-9094"] = "allowed"
+					alertManager.Spec.PodMetadata.Labels["networking.resources.gardener.cloud/to-alertmanager-operated-tcp-mesh-tcp"] = "allowed"
+					alertManager.Spec.PodMetadata.Labels["networking.resources.gardener.cloud/to-alertmanager-operated-udp-mesh-udp"] = "allowed"
 					alertManager.Spec.Replicas = ptr.To[int32](2)
 
 					Expect(managedResource).To(consistOf(

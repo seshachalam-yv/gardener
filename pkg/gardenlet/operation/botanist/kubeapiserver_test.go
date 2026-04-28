@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
@@ -33,7 +34,6 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
 	mockkubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/mock"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/garden"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
@@ -69,6 +69,7 @@ var _ = Describe("KubeAPIServer", func() {
 		podNetworkCIDR        = "10.0.1.0/24"
 		serviceNetworkCIDR    = "10.0.2.0/24"
 		nodeNetworkCIDR       = "10.0.3.0/24"
+		seedPodNetworkCIDR    = "10.1.1.0/24"
 		apiServerClusterIP    = "1.2.3.4"
 		apiServerAddress      = "5.6.7.8"
 	)
@@ -123,7 +124,7 @@ var _ = Describe("KubeAPIServer", func() {
 							KubeAPIServer: kubeAPIServer,
 						},
 					},
-					InternalClusterDomain: internalClusterDomain,
+					InternalClusterDomain: ptr.To(internalClusterDomain),
 					ExternalClusterDomain: &externalClusterDomain,
 					Networks: &shootpkg.Networks{
 						APIServer: apiServerNetwork,
@@ -169,6 +170,9 @@ var _ = Describe("KubeAPIServer", func() {
 			Spec: gardencorev1beta1.SeedSpec{
 				Ingress: &gardencorev1beta1.Ingress{
 					Domain: "foo.bar.local",
+				},
+				Networks: gardencorev1beta1.SeedNetworks{
+					Pods: seedPodNetworkCIDR,
 				},
 			},
 		})
@@ -314,6 +318,7 @@ var _ = Describe("KubeAPIServer", func() {
 					kubeAPIServer.EXPECT().SetNodeNetworkCIDRs(gomock.Any())
 					kubeAPIServer.EXPECT().SetServiceNetworkCIDRs(gomock.Any())
 					kubeAPIServer.EXPECT().SetPodNetworkCIDRs(gomock.Any())
+					kubeAPIServer.EXPECT().SetSeedPodNetwork(gomock.Any())
 					kubeAPIServer.EXPECT().SetServerCertificateConfig(gomock.Any())
 					kubeAPIServer.EXPECT().SetServiceAccountConfig(gomock.Any())
 					kubeAPIServer.EXPECT().Deploy(ctx)
@@ -384,6 +389,7 @@ var _ = Describe("KubeAPIServer", func() {
 					kubeAPIServer.EXPECT().SetNodeNetworkCIDRs(gomock.Any())
 					kubeAPIServer.EXPECT().SetPodNetworkCIDRs(gomock.Any())
 					kubeAPIServer.EXPECT().SetServiceNetworkCIDRs(gomock.Any())
+					kubeAPIServer.EXPECT().SetSeedPodNetwork(gomock.Any())
 					kubeAPIServer.EXPECT().SetServerCertificateConfig(gomock.Any())
 					kubeAPIServer.EXPECT().SetServiceAccountConfig(expectedConfig)
 					kubeAPIServer.EXPECT().Deploy(ctx)
@@ -483,7 +489,6 @@ contexts:
   name: authorization-webhook
 current-context: authorization-webhook
 kind: Config
-preferences: {}
 users:
 - name: authorization-webhook
   user: {}
@@ -513,6 +518,7 @@ users:
 			kubeAPIServer.EXPECT().SetNodeNetworkCIDRs(gomock.Any())
 			kubeAPIServer.EXPECT().SetPodNetworkCIDRs(gomock.Any())
 			kubeAPIServer.EXPECT().SetServiceNetworkCIDRs(gomock.Any())
+			kubeAPIServer.EXPECT().SetSeedPodNetwork(gomock.Any())
 			kubeAPIServer.EXPECT().SetServerCertificateConfig(gomock.Any())
 			kubeAPIServer.EXPECT().SetServiceAccountConfig(gomock.Any())
 			kubeAPIServer.EXPECT().AppendAuthorizationWebhook(expectedAuthorizationWebhook, logr.Discard())

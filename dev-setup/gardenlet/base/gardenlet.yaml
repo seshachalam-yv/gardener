@@ -12,17 +12,24 @@ spec:
     kind: GardenletConfiguration
     featureGates:
       DefaultSeccompProfile: true
-      NewWorkerPoolHash: true
       IstioTLSTermination: true
+      VPNBondingModeRoundRobin: true
+      PrometheusHealthChecks: true
+      VictoriaLogsBackend: true
     controllers:
       shoot:
         reconcileInMaintenanceOnly: true
         respectSyncPeriodOverwrite: true
       shootState:
         concurrentSyncs: 0 # we don't need the shootstate controller locally, and enabling it would even distort the results of CPM e2e tests
+    etcdConfig:
+      featureGates:
+        UpgradeEtcdVersion: false
     logging:
       enabled: true
       vali:
+        enabled: true
+      victoriaLogs:
         enabled: true
       shootNodeLogging:
         shootPurposes:
@@ -48,19 +55,36 @@ spec:
         dns:
           provider:
             type: local
-            secretRef:
+            credentialsRef:
+              apiVersion: v1
+              kind: Secret
               name: internal-domain-internal-local-gardener-cloud
               namespace: garden
-      # TODO(timuthy): Enable extension after Gardener v1.120 was released.
-      # extensions:
-      # - type: local-ext-seed
+          internal:
+            credentialsRef:
+              apiVersion: v1
+              kind: Secret
+              name: internal-domain-internal-local-gardener-cloud
+              namespace: garden
+            type: local
+            domain: internal.local.gardener.cloud
+          defaults:
+          - credentialsRef:
+              apiVersion: v1
+              kind: Secret
+              name: default-domain-external-local-gardener-cloud
+              namespace: garden
+            type: local
+            domain: external.local.gardener.cloud
+        extensions:
+        - type: local-ext-seed
         ingress:
           domain: ingress.local.seed.local.gardener.cloud
           controller:
             kind: nginx
         networks:
-          nodes: 172.18.0.0/16
-          # Those CIDRs must match those specified in the kind Cluster configuration.
+          nodes: 172.18.0.0/24
+          # Subnet for automatic pod IP assignment (calico default IPPool) in the kind cluster.
           pods: 10.1.0.0/16
           services: 10.2.0.0/16
           shootDefaults:

@@ -94,6 +94,9 @@ honor_labels: true`
 		serviceAccount                      *corev1.ServiceAccount
 		service                             *corev1.Service
 		clusterRoleBinding                  *rbacv1.ClusterRoleBinding
+		role                                *rbacv1.Role
+		roleBinding                         *rbacv1.RoleBinding
+		gardenRoleBinding                   *rbacv1.RoleBinding
 		prometheusFor                       func([]alertmanager, bool) *monitoringv1.Prometheus
 		vpa                                 *vpaautoscalingv1.VerticalPodAutoscaler
 		ingress                             *networkingv1.Ingress
@@ -127,6 +130,7 @@ honor_labels: true`
 			RetentionSize:       retentionSize,
 			ExternalLabels:      externalLabels,
 			AdditionalPodLabels: additionalLabels,
+			HealthCheckBy:       "some-component",
 		}
 
 		fakeOps = &retryfake.Ops{MaxAttempts: 2}
@@ -173,8 +177,9 @@ honor_labels: true`
 					"name": name,
 				},
 				Annotations: map[string]string{
-					"networking.resources.gardener.cloud/from-all-seed-scrape-targets-allowed-ports": `[{"protocol":"TCP","port":9090}]`,
-					"networking.resources.gardener.cloud/namespace-selectors":                        `[{"matchLabels":{"gardener.cloud/role":"shoot"}}]`,
+					"networking.resources.gardener.cloud/from-all-garden-scrape-targets-allowed-ports": `[{"protocol":"TCP","port":9090}]`,
+					"networking.resources.gardener.cloud/from-all-seed-scrape-targets-allowed-ports":   `[{"protocol":"TCP","port":9090}]`,
+					"networking.resources.gardener.cloud/namespace-selectors":                          `[{"matchLabels":{"gardener.cloud/role":"shoot"}}]`,
 				},
 			},
 			Spec: corev1.ServiceSpec{
@@ -209,15 +214,80 @@ honor_labels: true`
 				Namespace: namespace,
 			}},
 		}
+		role = &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "prometheus-" + name,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":  "prometheus",
+					"role": "monitoring",
+					"name": name,
+				},
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{""},
+					Resources: []string{
+						"services",
+						"endpoints",
+						"pods",
+					},
+					Verbs: []string{"get", "list", "watch"},
+				},
+			},
+		}
+		roleBinding = &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "prometheus-" + name,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app":  "prometheus",
+					"role": "monitoring",
+					"name": name,
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     "prometheus-" + name,
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      "ServiceAccount",
+				Name:      "prometheus-" + name,
+				Namespace: namespace,
+			}},
+		}
+		gardenRoleBinding = &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "prometheus-" + namespace,
+				Namespace: "garden",
+				Labels: map[string]string{
+					"role": "monitoring",
+					"name": name,
+					"app":  "prometheus",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     "prometheus-shoot",
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      "ServiceAccount",
+				Name:      "prometheus-" + name,
+				Namespace: namespace,
+			}},
+		}
 		prometheusFor = func(alertmanagers []alertmanager, restrictToNamespace bool) *monitoringv1.Prometheus {
 			obj := &monitoringv1.Prometheus{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name,
 					Namespace: namespace,
 					Labels: map[string]string{
-						"app":  "prometheus",
-						"role": "monitoring",
-						"name": name,
+						"app":             "prometheus",
+						"role":            "monitoring",
+						"name":            name,
+						"health-check-by": "some-component",
 					},
 				},
 				Spec: monitoringv1.PrometheusSpec{
@@ -329,7 +399,7 @@ honor_labels: true`
 					Name:       name,
 				},
 				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeAuto),
+					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
@@ -341,7 +411,7 @@ honor_labels: true`
 							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 						},
 						{
-							ContainerName: "config-reloader",
+							ContainerName: "*",
 							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
@@ -424,7 +494,7 @@ honor_labels: true`
 				Labels:    map[string]string{"foo": "bar"},
 			},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
-				Scheme: ptr.To("baz"),
+				Scheme: ptr.To(monitoringv1.SchemeHTTPS),
 			},
 		}
 		additionalConfigMap = &corev1.ConfigMap{
@@ -663,7 +733,9 @@ honor_labels: true`
 					Expect(managedResource).To(consistOf(
 						serviceAccount,
 						service,
-						clusterRoleBinding,
+						role,
+						roleBinding,
+						gardenRoleBinding,
 						prometheusFor(nil, true),
 						vpa,
 						prometheusRule,
@@ -943,47 +1015,13 @@ tls_config:
 							TargetLabel:  "shoot_dashboard_url",
 						}}
 					})
-
-					It("should successfully append the additional alert relabel config", func() {
-						prometheusRule.Namespace = namespace
-						metav1.SetMetaDataLabel(&prometheusRule.ObjectMeta, "prometheus", name)
-						metav1.SetMetaDataLabel(&scrapeConfig.ObjectMeta, "prometheus", name)
-						metav1.SetMetaDataLabel(&serviceMonitor.ObjectMeta, "prometheus", name)
-						metav1.SetMetaDataLabel(&podMonitor.ObjectMeta, "prometheus", name)
-
-						prometheus := prometheusFor([]alertmanager{{name: alertmanagerName}}, false)
-						prometheus.Spec.Alerting.Alertmanagers[0].AlertRelabelConfigs = append(
-							prometheus.Spec.Alerting.Alertmanagers[0].AlertRelabelConfigs,
-							monitoringv1.RelabelConfig{
-								SourceLabels: []monitoringv1.LabelName{"project", "name"},
-								Regex:        "(.+);(.+)",
-								Action:       "replace",
-								Replacement:  ptr.To("https://dashboard.ingress.gardener.cloud/namespace/garden-$1/shoots/$2"),
-								TargetLabel:  "shoot_dashboard_url",
-							},
-						)
-
-						Expect(managedResource).To(contain(
-							serviceAccount,
-							service,
-							clusterRoleBinding,
-							prometheus,
-							vpa,
-							prometheusRule,
-							scrapeConfig,
-							serviceMonitor,
-							podMonitor,
-							secretAdditionalScrapeConfigs,
-							additionalConfigMap,
-						))
-					})
 				})
 			})
 
 			When("there is more than 1 replica", func() {
 				BeforeEach(func() {
 					values.Replicas = 2
-					values.RuntimeVersion = semver.MustParse("1.29.1")
+					values.RuntimeVersion = semver.MustParse("1.30.1")
 				})
 
 				It("should successfully deploy all resources", func() {
@@ -1125,11 +1163,11 @@ query_range:
 					})
 					Expect(references.InjectAnnotations(prometheusObj)).To(Succeed())
 
-					service.Spec.Ports[0].TargetPort = intstr.FromInt32(9091)
-
-					vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
-						ContainerName: "cortex",
-						Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+					service.Spec.Ports = append(service.Spec.Ports, corev1.ServicePort{
+						Name:       "cortex",
+						Port:       81,
+						TargetPort: intstr.FromInt32(9091),
+						Protocol:   corev1.ProtocolTCP,
 					})
 
 					prometheusRule.Namespace = namespace

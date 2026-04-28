@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
@@ -54,6 +55,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, sourceCluster, targetClus
 		Named(ControllerName).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
+			ReconciliationTimeout:   r.Config.SyncPeriod.Duration,
 		}).
 		Watches(
 			&resourcesv1alpha1.ManagedResource{},
@@ -75,11 +77,11 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, sourceCluster, targetClus
 	}
 
 	lock := sync.RWMutex{}
-	watchedObjectGVKs := make(map[schema.GroupVersionKind]struct{})
+	watchedObjectGVKs := sets.New[schema.GroupVersionKind]()
 	r.ensureWatchForGVK = func(gvk schema.GroupVersionKind, obj client.Object) error {
 		// fast-check: have we already added watch for this GVK?
 		lock.RLock()
-		if _, ok := watchedObjectGVKs[gvk]; ok {
+		if watchedObjectGVKs.Has(gvk) {
 			lock.RUnlock()
 			return nil
 		}
@@ -89,14 +91,14 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, sourceCluster, targetClus
 		// the watch and the second one should return now.
 		lock.Lock()
 		defer lock.Unlock()
-		if _, ok := watchedObjectGVKs[gvk]; ok {
+		if watchedObjectGVKs.Has(gvk) {
 			return nil
 		}
 
 		_, metadataOnly := obj.(*metav1.PartialObjectMetadata)
 		c.GetLogger().Info("Adding new watch for GroupVersionKind", "groupVersionKind", gvk, "metadataOnly", metadataOnly)
 
-		if err := c.Watch(source.Kind[client.Object](
+		if err := c.Watch(source.Kind(
 			targetCluster.GetCache(),
 			obj,
 			handler.EnqueueRequestsFromMapFunc(utils.MapToOriginManagedResource(c.GetLogger(), clusterID)),
@@ -105,7 +107,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, sourceCluster, targetClus
 			return fmt.Errorf("error starting watch for GVK %s: %w", gvk.String(), err)
 		}
 
-		watchedObjectGVKs[gvk] = struct{}{}
+		watchedObjectGVKs.Insert(gvk)
 		return nil
 	}
 

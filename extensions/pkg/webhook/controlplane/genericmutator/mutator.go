@@ -22,10 +22,11 @@ import (
 
 	extensionswebhook "github.com/gardener/gardener/extensions/pkg/webhook"
 	extensionscontextwebhook "github.com/gardener/gardener/extensions/pkg/webhook/context"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/utils"
 	"github.com/gardener/gardener/pkg/component/nodemanagement/machinecontrollermanager"
@@ -58,6 +59,9 @@ type Ensurer interface {
 	// EnsureVPNSeedServerDeployment ensures that the vpn-seed-server deployment conforms to the provider requirements.
 	// "old" might be "nil" and must always be checked.
 	EnsureVPNSeedServerDeployment(ctx context.Context, gctx extensionscontextwebhook.GardenContext, new, old *appsv1.Deployment) error
+	// EnsureVPNSeedServerStatefulSet ensures that the vpn-seed-server deployment conforms to the provider requirements.
+	// "old" might be "nil" and must always be checked.
+	EnsureVPNSeedServerStatefulSet(ctx context.Context, gctx extensionscontextwebhook.GardenContext, new, old *appsv1.StatefulSet) error
 	// EnsureKubeletServiceUnitOptions ensures that the kubelet.service unit options conform to the provider requirements.
 	EnsureKubeletServiceUnitOptions(ctx context.Context, gctx extensionscontextwebhook.GardenContext, kubeletVersion *semver.Version, new, old []*unit.UnitOption) ([]*unit.UnitOption, error)
 	// EnsureKubeletConfiguration ensures that the kubelet configuration conforms to the provider requirements.
@@ -135,10 +139,10 @@ func (m *mutator) Mutate(ctx context.Context, new, old client.Object) error {
 		}
 
 		switch x.Name {
-		case v1beta1constants.DeploymentNameKubeAPIServer:
+		case v1beta1constants.DeploymentNameKubeAPIServer, operatorv1alpha1.DeploymentNameVirtualGardenKubeAPIServer:
 			extensionswebhook.LogMutation(m.logger, x.Kind, x.Namespace, x.Name)
 			return m.ensurer.EnsureKubeAPIServerDeployment(ctx, gctx, x, oldDep)
-		case v1beta1constants.DeploymentNameKubeControllerManager:
+		case v1beta1constants.DeploymentNameKubeControllerManager, operatorv1alpha1.DeploymentNameVirtualGardenKubeControllerManager:
 			extensionswebhook.LogMutation(m.logger, x.Kind, x.Namespace, x.Name)
 			return m.ensurer.EnsureKubeControllerManagerDeployment(ctx, gctx, x, oldDep)
 		case v1beta1constants.DeploymentNameKubeScheduler:
@@ -154,6 +158,21 @@ func (m *mutator) Mutate(ctx context.Context, new, old client.Object) error {
 			extensionswebhook.LogMutation(m.logger, x.Kind, x.Namespace, x.Name)
 			return m.ensurer.EnsureVPNSeedServerDeployment(ctx, gctx, x, oldDep)
 		}
+	case *appsv1.StatefulSet:
+		var oldSet *appsv1.StatefulSet
+		if old != nil {
+			var ok bool
+			oldSet, ok = old.(*appsv1.StatefulSet)
+			if !ok {
+				return errors.New("could not cast old object to appsv1.StatefulSet")
+			}
+		}
+		switch x.Name {
+		case v1beta1constants.StatefulSetNameVPNSeedServer:
+			extensionswebhook.LogMutation(m.logger, x.Kind, x.Namespace, x.Name)
+			return m.ensurer.EnsureVPNSeedServerStatefulSet(ctx, gctx, x, oldSet)
+		}
+
 	case *vpaautoscalingv1.VerticalPodAutoscaler:
 		var oldVPA *vpaautoscalingv1.VerticalPodAutoscaler
 		if old != nil {
@@ -171,7 +190,7 @@ func (m *mutator) Mutate(ctx context.Context, new, old client.Object) error {
 		}
 	case *druidcorev1alpha1.Etcd:
 		switch x.Name {
-		case v1beta1constants.ETCDMain, v1beta1constants.ETCDEvents:
+		case v1beta1constants.ETCDMain, operatorv1alpha1.VirtualGardenETCDMain, v1beta1constants.ETCDEvents, operatorv1alpha1.VirtualGardenETCDEvents:
 			var oldEtcd *druidcorev1alpha1.Etcd
 			if old != nil {
 				var ok bool

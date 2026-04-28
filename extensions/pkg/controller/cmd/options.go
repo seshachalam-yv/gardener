@@ -66,9 +66,9 @@ const (
 
 	// GardenerVersionFlag is the name of the command line flag containing the Gardener version.
 	GardenerVersionFlag = "gardener-version"
-	// AutonomousShootClusterFlag is the name of the command line flag indicating that the extension runs in an
-	// autonomous shoot cluster.
-	AutonomousShootClusterFlag = "autonomous-shoot-cluster"
+	// SelfHostedShootClusterFlag is the name of the command line flag indicating that the extension runs in a
+	// self-hosted shoot cluster.
+	SelfHostedShootClusterFlag = "self-hosted-shoot-cluster"
 
 	// LogLevelFlag is the name of the command line flag containing the log level.
 	LogLevelFlag = "log-level"
@@ -479,8 +479,8 @@ type SwitchConfig struct {
 type GeneralOptions struct {
 	// GardenerVersion is the version of the Gardener.
 	GardenerVersion string
-	// AutonomousShootCluster indicates whether the extension runs in an autonomous shoot cluster.
-	AutonomousShootCluster bool
+	// SelfHostedShootCluster indicates whether the extension runs in a self-hosted shoot cluster.
+	SelfHostedShootCluster bool
 
 	config *GeneralConfig
 }
@@ -489,13 +489,16 @@ type GeneralOptions struct {
 type GeneralConfig struct {
 	// GardenerVersion is the version of the Gardener.
 	GardenerVersion string
-	// AutonomousShootCluster indicates whether the extension runs in an autonomous shoot cluster.
-	AutonomousShootCluster bool
+	// SelfHostedShootCluster indicates whether the extension runs in a self-hosted shoot cluster.
+	SelfHostedShootCluster bool
 }
 
 // Complete implements Complete.
 func (r *GeneralOptions) Complete() error {
-	r.config = &GeneralConfig{r.GardenerVersion, r.AutonomousShootCluster}
+	r.config = &GeneralConfig{
+		GardenerVersion:        r.GardenerVersion,
+		SelfHostedShootCluster: r.SelfHostedShootCluster,
+	}
 	return nil
 }
 
@@ -506,6 +509,12 @@ func (r *GeneralOptions) Completed() *GeneralConfig {
 
 // AddFlags implements Flagger.AddFlags.
 func (r *GeneralOptions) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&r.GardenerVersion, GardenerVersionFlag, "", "Version of the gardenlet.")
-	fs.BoolVar(&r.AutonomousShootCluster, AutonomousShootClusterFlag, false, "Does the extension run in an autonomous shoot cluster?")
+	// GeneralOptions is used in various places and AddFlags might be called multiple times.
+	// Hence, flag registration must only happen once.
+	if fs.Lookup(GardenerVersionFlag) == nil {
+		fs.StringVar(&r.GardenerVersion, GardenerVersionFlag, "", "Version of the gardenlet / gardener-operator.")
+	}
+	if fs.Lookup(SelfHostedShootClusterFlag) == nil {
+		fs.BoolVar(&r.SelfHostedShootCluster, SelfHostedShootClusterFlag, false, "Does the extension run in a self-hosted shoot cluster?")
+	}
 }

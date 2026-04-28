@@ -14,7 +14,7 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 )
 
 // DefaultManagedSeedName returns the name of the managed seed used in e2e tests
@@ -38,7 +38,7 @@ func baseShoot(name string) *gardencorev1beta1.Shoot {
 				Name: "local",
 			},
 			Kubernetes: gardencorev1beta1.Kubernetes{
-				Version:       "1.33.0",
+				Version:       "1.34",
 				KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{},
 			},
 			Provider: gardencorev1beta1.Provider{
@@ -60,22 +60,24 @@ func DefaultShoot(name string) *gardencorev1beta1.Shoot {
 	metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, v1beta1constants.AnnotationShootCloudConfigExecutionMaxDelaySeconds, "0")
 	metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, v1beta1constants.AnnotationAuthenticationIssuer, v1beta1constants.AnnotationAuthenticationIssuerManaged)
 
-	shoot.Spec.SecretBindingName = ptr.To("local")
+	shoot.Spec.CredentialsBindingName = ptr.To("local")
 	shoot.Spec.Kubernetes.Kubelet = &gardencorev1beta1.KubeletConfig{
 		SerializeImagePulls: ptr.To(false),
 		RegistryPullQPS:     ptr.To[int32](10),
 		RegistryBurst:       ptr.To[int32](20),
 	}
 	shoot.Spec.Networking = &gardencorev1beta1.Networking{
-		Type:  ptr.To("calico"),
-		Nodes: ptr.To("10.10.0.0/16"),
+		Type: ptr.To("calico"),
+		// Must be within 10.0.0.0/16 (subnet of kind pod CIDR 10.0.0.0/15, but disjoint with seed pod CIDR 10.1.0.0/16).
+		Nodes: ptr.To("10.0.0.0/16"),
 	}
 	shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, DefaultWorker("local", nil))
 	shoot.Spec.Extensions = append(shoot.Spec.Extensions, gardencorev1beta1.Extension{Type: "local-ext-shoot-after-worker"})
 
 	if os.Getenv("IPFAMILY") == "ipv6" {
 		shoot.Spec.Networking.IPFamilies = []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6}
-		shoot.Spec.Networking.Nodes = ptr.To("fd00:10:a::/64")
+		// Must be within fd00:10:1:100::/56 (subnet of kind pod CIDR fd00:10:1::/48, but disjoint with seed pod CIDR fd00:10:1::/56).
+		shoot.Spec.Networking.Nodes = ptr.To("fd00:10:1:100::/56")
 		shoot.Spec.Networking.ProviderConfig = &runtime.RawExtension{Raw: []byte(`{"ipv6":{"sourceNATEnabled":true}}`)}
 	}
 
@@ -91,6 +93,16 @@ func DefaultWorkerlessShoot(name string) *gardencorev1beta1.Shoot {
 			IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6},
 		}
 	}
+
+	return shoot
+}
+
+// DefaultOverlappingShoot returns a Shoot object with CIDR ranges overlapping with the
+// seed pod and service ranges of the default garden for the e2e tests.
+func DefaultOverlappingShoot(name string) *gardencorev1beta1.Shoot {
+	shoot := DefaultShoot(name + "-ovr")
+	shoot.Spec.Networking.Pods = ptr.To("10.1.0.0/16")
+	shoot.Spec.Networking.Services = ptr.To("10.2.0.0/16")
 
 	return shoot
 }

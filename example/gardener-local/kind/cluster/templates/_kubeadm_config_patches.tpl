@@ -17,6 +17,8 @@
 {{- end }}
     extraArgs:
       authorization-config: /etc/gardener-local/kube-apiserver/authz-config.yaml
+      feature-gates: "MutatingAdmissionPolicy=true"
+      runtime-config: "admissionregistration.k8s.io/v1alpha1=true,admissionregistration.k8s.io/v1beta1=true"
     extraVolumes:
     - name: authz-config
       mountPath: /etc/gardener-local/kube-apiserver/authz-config.yaml
@@ -26,7 +28,7 @@
       hostPath: /etc/gardener-local/kube-apiserver/authz-config-with-seedauthorizer.yaml
     - name: authz-webhook-kubeconfig
       mountPath: /etc/gardener-local/kube-apiserver/authz-webhook-kubeconfig.yaml
-      hostPath: /etc/gardener-local/kube-apiserver/authz-webhook-kubeconfig-{{ if eq .Values.networking.ipFamily "dual" }}ipv6{{ else }}{{ .Values.networking.ipFamily }}{{ end }}.yaml
+      hostPath: /etc/gardener-local/kube-apiserver/authz-webhook-kubeconfig.yaml
       readOnly: true
       pathType: File
 {{- else }}

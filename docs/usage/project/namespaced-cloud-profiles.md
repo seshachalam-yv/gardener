@@ -16,11 +16,7 @@ When creating or updating a `Shoot`, the cloud profile reference can be set to p
 The modification of a `Shoot`'s cloud profile reference is restricted to switching within the same profile hierarchy, i.e. from a `CloudProfile` to a descendant `NamespacedCloudProfile`, from a `NamespacedCloudProfile` to its parent `CloudProfile` and between `NamespacedCloudProfile`s having the same `CloudProfile` parent.
 Changing the reference from one `CloudProfile` or descendant `NamespacedCloudProfile` to another `CloudProfile` or descendant `NamespacedCloudProfile` is not allowed.
 
-The usage of `NamespacedCloudProfile`s is currently subject to a beta feature gate and is enabled by default.
-It requires the enabled provider extensions to support the feature as well.
-The feature gate can be disabled by passing the `--feature-gates=NamespacedCloudProfiles=false` flag to the Gardener API server.
-
-Please see [this](../../../example/35-namespacedcloudprofile.yaml) example manifest and [GEP-25](../../proposals/25-namespaced-cloud-profiles.md) for additional information.
+Please see [this](../../../example/35-namespacedcloudprofile.yaml) example manifest and [GEP-0025](https://github.com/gardener/enhancements/tree/main/geps/0025-namespaced-cloudprofiles) for additional information.
 
 ## Field Modification Restrictions
 
@@ -32,7 +28,6 @@ Changing the following fields require the corresponding custom verbs:
 * For changing the `.spec.kubernetes` field, the custom verb `modify-spec-kubernetes` is required.
 * For changing the `.spec.machineImages` field, the custom verb `modify-spec-machineimages` is required.
 * For changing the `.spec.providerConfig` field, the custom verb `modify-spec-providerconfig` is required.
-* For raising limits in `.spec.limits` field above values in the parent CloudProfile `.spec.limits`, the custom verb `raise-spec-limits` is required.
 
 The assignment of these custom verbs can be achieved by creating a `ClusterRole` and a `RoleBinding` like in the following example:
 

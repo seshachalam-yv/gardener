@@ -10,7 +10,15 @@ The `Seed`s involved in the control plane migration must have backups enabled - 
 
 ## Shoot Control Plane Migration
 
-Triggering the migration is done by changing the `Shoot`'s `.spec.seedName` to a `Seed` that differs from the `.status.seedName`, we call this `Seed` a `"Destination Seed"`. This action can only be performed by an operator (see [Triggering the Migration](#triggering-the-migration)). If the `Destination Seed` does not have a backup and restore configuration, the change to `spec.seedName` is rejected. Additionally, this Seed must not be set for deletion and must be healthy.
+Triggering the migration is done by changing the `Shoot`'s `.spec.seedName` to a `Seed` that differs from the `.status.seedName`, we call this `Seed` a `"Destination Seed"`.
+This action can only be performed by an operator (see [Triggering the Migration](#triggering-the-migration)).
+
+The change to `spec.seedName` is rejected if any of the following is true: 
+- the `Destination Seed` does not have a backup and restore configuration
+- the `Destination Seed` has an internal domain that differs from the internal domain of the original `Seed`
+- the `Destination Seed` has a default domains configuration that cannot handle the default domain used by the `Shoot`
+- the `Destination Seed` is set for deletion
+- the `Destination Seed` is unhealthy
 
 If the `Shoot` has different `.spec.seedName` and `.status.seedName`, a process is started to prepare the Control Plane for migration:
 
@@ -21,6 +29,10 @@ If the `Shoot` has different `.spec.seedName` and `.status.seedName`, a process 
 If the process is successful, we update the status of the `Shoot` by setting the `.status.seedName` to the null value. That way, a restoration is triggered in the `Destination Seed` and `.status.lastOperation` is changed to `Restore`. The control plane migration is completed when the `Restore` operation has completed successfully.
 
 The etcd backups will be copied over to the `BackupBucket` of the `Destination Seed` during control plane migration and any future backups will be uploaded there.
+
+> [!NOTE]
+> During the migration phase, the destination seed's `gardenlet` may already have access to the `Shoot` and its related resources in the garden cluster, while the source seed's `gardenlet` is still responsible for shutting down the control plane and persisting the current state to the `ShootState` resource.
+> This overlap is intentional and simplifies the implementation since the destination seed's `gardenlet` will eventually require access to these resources for control plane restoration anyway.
 
 ## Triggering the Migration
 

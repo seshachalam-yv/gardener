@@ -24,20 +24,25 @@ import (
 // ManagedResourceHealthChecker contains all the information for the ManagedResource HealthCheck
 type ManagedResourceHealthChecker struct {
 	logger              logr.Logger
-	seedClient          client.Client
+	client              client.Client
 	managedResourceName string
 }
 
-// CheckManagedResource is a healthCheck function to check ManagedResources
-func CheckManagedResource(managedResourceName string) healthcheck.HealthCheck {
+var (
+	_ healthcheck.HealthCheck  = (*ManagedResourceHealthChecker)(nil)
+	_ healthcheck.SourceClient = (*ManagedResourceHealthChecker)(nil)
+)
+
+// CheckManagedResource is a healthCheck function to check ManagedResources in the Seed/Source cluster
+func CheckManagedResource(managedResourceName string) *ManagedResourceHealthChecker {
 	return &ManagedResourceHealthChecker{
 		managedResourceName: managedResourceName,
 	}
 }
 
-// InjectSeedClient injects the seed client
-func (healthChecker *ManagedResourceHealthChecker) InjectSeedClient(seedClient client.Client) {
-	healthChecker.seedClient = seedClient
+// InjectSourceClient injects the seed/source client
+func (healthChecker *ManagedResourceHealthChecker) InjectSourceClient(client client.Client) {
+	healthChecker.client = client
 }
 
 // SetLoggerSuffix injects the logger
@@ -45,21 +50,14 @@ func (healthChecker *ManagedResourceHealthChecker) SetLoggerSuffix(provider, ext
 	healthChecker.logger = log.Log.WithName(fmt.Sprintf("%s-%s-healthcheck-managed-resource", provider, extension))
 }
 
-// DeepCopy clones the healthCheck struct by making a copy and returning the pointer to that new copy
-// Actually, it does not perform a *deep* copy.
-func (healthChecker *ManagedResourceHealthChecker) DeepCopy() healthcheck.HealthCheck {
-	shallowCopy := *healthChecker
-	return &shallowCopy
-}
-
 // configurationProblemRegex is used to check if a not healthy managed resource has a configuration problem.
 var configurationProblemRegex = regexp.MustCompile(`(?i)(error during apply of object .* is invalid:)`)
 
 // Check executes the health check
 func (healthChecker *ManagedResourceHealthChecker) Check(ctx context.Context, request types.NamespacedName) (*healthcheck.SingleCheckResult, error) {
-	mcmDeployment := &resourcesv1alpha1.ManagedResource{}
+	managedResource := &resourcesv1alpha1.ManagedResource{}
 
-	if err := healthChecker.seedClient.Get(ctx, client.ObjectKey{Namespace: request.Namespace, Name: healthChecker.managedResourceName}, mcmDeployment); err != nil {
+	if err := healthChecker.client.Get(ctx, client.ObjectKey{Namespace: request.Namespace, Name: healthChecker.managedResourceName}, managedResource); err != nil {
 		if apierrors.IsNotFound(err) {
 			return &healthcheck.SingleCheckResult{
 				Status: gardencorev1beta1.ConditionFalse,
@@ -71,7 +69,7 @@ func (healthChecker *ManagedResourceHealthChecker) Check(ctx context.Context, re
 		healthChecker.logger.Error(err, "Health check failed")
 		return nil, err
 	}
-	if isHealthy, err := managedResourceIsHealthy(mcmDeployment); !isHealthy {
+	if isHealthy, err := managedResourceIsHealthy(managedResource); !isHealthy {
 		healthChecker.logger.Error(err, "Health check failed")
 
 		var errorCodes []gardencorev1beta1.ErrorCode

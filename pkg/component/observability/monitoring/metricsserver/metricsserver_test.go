@@ -44,7 +44,6 @@ var _ = Describe("MetricsServer", func() {
 		serviceYAML = `apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: null
   labels:
     kubernetes.io/name: metrics-server
   name: metrics-server
@@ -62,7 +61,6 @@ status:
 		apiServiceYAML = `apiVersion: apiregistration.k8s.io/v1
 kind: APIService
 metadata:
-  creationTimestamp: null
   name: v1beta1.metrics.k8s.io
 spec:
   group: metrics.k8s.io
@@ -77,28 +75,28 @@ status: {}
 		vpaYAML = `apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  creationTimestamp: null
   name: metrics-server
   namespace: kube-system
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: metrics-server
       controlledValues: RequestsOnly
       minAllowed:
         memory: 60Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: metrics-server
   updatePolicy:
-    updateMode: Auto
+    updateMode: Recreate
 status: {}
 `
 		clusterRoleYAML = `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   name: system:metrics-server
 rules:
 - apiGroups:
@@ -119,7 +117,6 @@ kind: ClusterRoleBinding
 metadata:
   annotations:
     resources.gardener.cloud/delete-on-invalid-update: "true"
-  creationTimestamp: null
   name: system:metrics-server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -135,7 +132,6 @@ kind: ClusterRoleBinding
 metadata:
   annotations:
     resources.gardener.cloud/delete-on-invalid-update: "true"
-  creationTimestamp: null
   name: metrics-server:system:auth-delegator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -151,7 +147,6 @@ kind: RoleBinding
 metadata:
   annotations:
     resources.gardener.cloud/delete-on-invalid-update: "true"
-  creationTimestamp: null
   name: metrics-server-auth-reader
   namespace: kube-system
 roleRef:
@@ -167,7 +162,6 @@ subjects:
 automountServiceAccountToken: false
 kind: ServiceAccount
 metadata:
-  creationTimestamp: null
   name: metrics-server
   namespace: kube-system
 `
@@ -183,7 +177,6 @@ kind: Deployment
 metadata:
   annotations:
     ` + references.AnnotationKey(references.KindSecret, secretName) + `: ` + secretName + `
-  creationTimestamp: null
   labels:
     gardener.cloud/role: system-component
     high-availability-config.resources.gardener.cloud/type: server
@@ -204,7 +197,6 @@ spec:
     metadata:
       annotations:
         ` + references.AnnotationKey(references.KindSecret, secretName) + `: ` + secretName + `
-      creationTimestamp: null
       labels:
         gardener.cloud/role: system-component
         k8s-app: metrics-server
@@ -288,7 +280,6 @@ status: {}
 		pdbYAML = `apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  creationTimestamp: null
   labels:
     k8s-app: metrics-server
   name: metrics-server

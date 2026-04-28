@@ -14,9 +14,10 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 
 	"github.com/gardener/gardener/cmd/utils/initrun"
+	nodeagenthelper "github.com/gardener/gardener/pkg/api/config/nodeagent/v1alpha1/helper"
+	nodeagentvalidation "github.com/gardener/gardener/pkg/api/config/nodeagent/v1alpha1/validation"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	"github.com/gardener/gardener/pkg/features"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
-	nodeagentvalidation "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1/validation"
 )
 
 var configDecoder runtime.Decoder
@@ -28,22 +29,22 @@ func init() {
 }
 
 type options struct {
-	configFile string
-	config     *nodeagentconfigv1alpha1.NodeAgentConfiguration
+	configDir string
+	config    *nodeagentconfigv1alpha1.NodeAgentConfiguration
 }
 
 var _ initrun.Options = &options{}
 
 func (o *options) addFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.configFile, "config", o.configFile, "Path to configuration file.")
+	fs.StringVar(&o.configDir, "config-dir", o.configDir, "Path to the directory containing the configuration file.")
 }
 
 func (o *options) Complete() error {
-	if len(o.configFile) == 0 {
-		return fmt.Errorf("missing config file")
+	if len(o.configDir) == 0 {
+		return fmt.Errorf("missing config dir")
 	}
 
-	data, err := os.ReadFile(o.configFile)
+	data, err := os.ReadFile(nodeagenthelper.GetConfigFilePath(o.configDir))
 	if err != nil {
 		return fmt.Errorf("error reading config file: %w", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"time"
 
@@ -17,23 +18,25 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
 	extensionsbackupentry "github.com/gardener/gardener/pkg/component/extensions/backupentry"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/workloadidentity"
@@ -56,7 +59,7 @@ var RequeueDurationWhenResourceDeletionStillPresent = 5 * time.Second
 type Reconciler struct {
 	GardenClient    client.Client
 	SeedClient      client.Client
-	Recorder        record.EventRecorder
+	Recorder        events.EventRecorder
 	Config          gardenletconfigv1alpha1.BackupEntryControllerConfiguration
 	Clock           clock.Clock
 	SeedName        string
@@ -70,8 +73,7 @@ type Reconciler struct {
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
 
-	gardenCtx, cancel := controllerutils.GetMainReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
-	defer cancel()
+	gardenCtx := ctx
 
 	seedCtx, cancel := controllerutils.GetChildReconciliationContext(ctx, controllerutils.DefaultReconciliationTimeout)
 	defer cancel()
@@ -147,7 +149,7 @@ func (r *Reconciler) reconcileBackupEntry(
 			Description: err.Error(),
 		}
 
-		r.Recorder.Event(backupEntry, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, reconcileErr.Description)
+		r.Recorder.Eventf(backupEntry, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, reconcileErr.Description)
 
 		if updateErr := r.updateBackupEntryStatusError(gardenCtx, backupEntry, operationType, reconcileErr.Description, reconcileErr); updateErr != nil {
 			return fmt.Errorf("could not update status after reconciliation error: %w", updateErr)
@@ -262,7 +264,7 @@ func (r *Reconciler) reconcileBackupEntry(
 			Description: lastObservedError.Error(),
 		}
 
-		r.Recorder.Event(backupEntry, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, reconcileErr.Description)
+		r.Recorder.Eventf(backupEntry, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, reconcileErr.Description)
 
 		if updateErr := r.updateBackupEntryStatusError(gardenCtx, backupEntry, operationType, reconcileErr.Description, reconcileErr); updateErr != nil {
 			return fmt.Errorf("could not update status after reconciliation error: %w", updateErr)
@@ -327,7 +329,7 @@ func (r *Reconciler) deleteBackupEntry(
 				Description: err.Error(),
 			}
 
-			r.Recorder.Event(backupEntry, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, reconcileErr.Description)
+			r.Recorder.Eventf(backupEntry, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionDelete, reconcileErr.Description)
 
 			if updateErr := r.updateBackupEntryStatusError(gardenCtx, backupEntry, operationType, reconcileErr.Description, reconcileErr); updateErr != nil {
 				return reconcile.Result{}, fmt.Errorf("could not update status after reconciliation error: %w", updateErr)
@@ -363,7 +365,7 @@ func (r *Reconciler) deleteBackupEntry(
 			}
 		} else if err == nil {
 			if lastError := extensionBackupEntry.Status.LastError; lastError != nil {
-				r.Recorder.Event(backupEntry, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, lastError.Description)
+				r.Recorder.Eventf(backupEntry, nil, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, gardencorev1beta1.EventActionDelete, lastError.Description)
 
 				if updateErr := r.updateBackupEntryStatusError(gardenCtx, backupEntry, operationType, lastError.Description, lastError); updateErr != nil {
 					return reconcile.Result{}, fmt.Errorf("could not update status after deletion error: %w", updateErr)
@@ -459,7 +461,7 @@ func (r *Reconciler) migrateBackupEntry(
 					Description: lastError.Error(),
 				}
 
-				r.Recorder.Event(backupEntry, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, migrateError.Description)
+				r.Recorder.Eventf(backupEntry, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionMigrate, migrateError.Description)
 
 				description := migrateError.Description
 				if updateErr := r.updateBackupEntryStatusError(gardenCtx, backupEntry, gardencorev1beta1.LastOperationTypeMigrate, description, migrateError); updateErr != nil {
@@ -478,7 +480,7 @@ func (r *Reconciler) migrateBackupEntry(
 			}
 		case gardencorev1beta1.LastOperationTypeDelete:
 			if lastError := extensionBackupEntry.Status.LastError; lastError != nil {
-				r.Recorder.Event(backupEntry, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, lastError.Description)
+				r.Recorder.Eventf(backupEntry, nil, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, gardencorev1beta1.EventActionDelete, lastError.Description)
 
 				if updateErr := r.updateBackupEntryStatusError(gardenCtx, backupEntry, gardencorev1beta1.LastOperationTypeDelete, lastError.Description, lastError); updateErr != nil {
 					return reconcile.Result{}, fmt.Errorf("could not update status after deletion error: %w", updateErr)
@@ -666,24 +668,17 @@ func (r *Reconciler) reconcileBackupEntryExtensionSecret(ctx context.Context, ex
 	switch credentials := backupCredentials.(type) {
 	case *corev1.Secret:
 		_, err := controllerutils.GetAndCreateOrMergePatch(ctx, r.SeedClient, extensionSecret, func() error {
-			metav1.SetMetaDataAnnotation(&extensionSecret.ObjectMeta, v1beta1constants.GardenerTimestamp, now)
+			extensionSecret.Annotations = map[string]string{v1beta1constants.GardenerTimestamp: now}
+			extensionSecret.Labels = nil
 			extensionSecret.Data = credentials.Data
 			return nil
 		})
 		return err
 	case *securityv1alpha1.WorkloadIdentity:
-		s, err := workloadidentity.NewSecret(
-			extensionSecret.Name,
-			extensionSecret.Namespace,
-			workloadidentity.For(credentials.GetName(), credentials.GetNamespace(), credentials.Spec.TargetSystem.Type),
-			workloadidentity.WithProviderConfig(credentials.Spec.TargetSystem.ProviderConfig),
-			workloadidentity.WithContextObject(securityv1alpha1.ContextObject{APIVersion: backupEntry.APIVersion, Kind: backupEntry.Kind, Namespace: ptr.To(backupEntry.GetNamespace()), Name: backupEntry.GetName(), UID: backupEntry.GetUID()}),
-			workloadidentity.WithAnnotations(map[string]string{v1beta1constants.GardenerTimestamp: now}),
+		return workloadidentity.Deploy(
+			ctx, r.SeedClient, credentials, extensionSecret.Name, extensionSecret.Namespace,
+			map[string]string{v1beta1constants.GardenerTimestamp: now}, nil, backupEntry,
 		)
-		if err != nil {
-			return err
-		}
-		return s.Reconcile(ctx, r.SeedClient)
 	default:
 		return fmt.Errorf("unsupported credentials type GVK: %q", backupCredentials.GetObjectKind().GroupVersionKind().String())
 	}
@@ -726,10 +721,8 @@ func computeGracePeriod(deletionGracePeriodHours int, deletionGracePeriodShootPu
 	}
 
 	// Otherwise, the grace period only applies for the purposes in the list.
-	for _, p := range deletionGracePeriodShootPurposes {
-		if p == shootPurpose {
-			return time.Hour * time.Duration(deletionGracePeriodHours)
-		}
+	if slices.Contains(deletionGracePeriodShootPurposes, shootPurpose) {
+		return time.Hour * time.Duration(deletionGracePeriodHours)
 	}
 
 	// If the shoot purpose was not found in the list then the grace period does not apply.
@@ -743,10 +736,14 @@ func removeGardenerOperationAnnotation(ctx context.Context, c client.Client, be 
 }
 
 func workloadIdentitySecretChanged(backupEntry *gardencorev1beta1.BackupEntry, secretToCompareTo *corev1.Secret, workloadIdentity *securityv1alpha1.WorkloadIdentity) (bool, error) {
+	gvk, err := apiutil.GVKForObject(backupEntry, kubernetes.GardenScheme)
+	if err != nil {
+		return false, err
+	}
 	opts := []workloadidentity.SecretOption{
 		workloadidentity.For(workloadIdentity.GetName(), workloadIdentity.GetNamespace(), workloadIdentity.Spec.TargetSystem.Type),
 		workloadidentity.WithProviderConfig(workloadIdentity.Spec.TargetSystem.ProviderConfig),
-		workloadidentity.WithContextObject(securityv1alpha1.ContextObject{APIVersion: backupEntry.APIVersion, Kind: backupEntry.Kind, Namespace: ptr.To(backupEntry.GetNamespace()), Name: backupEntry.GetName(), UID: backupEntry.GetUID()}),
+		workloadidentity.WithContextObject(securityv1alpha1.ContextObject{APIVersion: gvk.GroupVersion().String(), Kind: gvk.Kind, Namespace: ptr.To(backupEntry.GetNamespace()), Name: backupEntry.GetName(), UID: backupEntry.GetUID()}),
 	}
 	if val, ok := secretToCompareTo.Annotations[v1beta1constants.GardenerTimestamp]; ok {
 		opts = append(opts, workloadidentity.WithAnnotations(map[string]string{v1beta1constants.GardenerTimestamp: val}))

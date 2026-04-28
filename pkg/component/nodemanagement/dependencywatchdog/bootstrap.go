@@ -287,13 +287,13 @@ func (b *bootstrapper) getClusterRolePolicyRules() []rbacv1.PolicyRule {
 		return []rbacv1.PolicyRule{
 			{
 				APIGroups: []string{""},
-				Resources: []string{"endpoints"},
-				Verbs:     []string{"get", "list", "watch"},
-			},
-			{
-				APIGroups: []string{""},
 				Resources: []string{"pods"},
 				Verbs:     []string{"get", "list", "watch", "delete"},
+			},
+			{
+				APIGroups: []string{"discovery.k8s.io"},
+				Resources: []string{"endpointslices"},
+				Verbs:     []string{"get", "list", "watch"},
 			},
 		}
 
@@ -408,9 +408,6 @@ func (b *bootstrapper) getDeployment(serviceAccountName string, configMapName st
 								corev1.ResourceCPU:    resource.MustParse("200m"),
 								corev1.ResourceMemory: resource.MustParse("256Mi"),
 							},
-							Limits: corev1.ResourceList{
-								corev1.ResourceMemory: resource.MustParse("512Mi"),
-							},
 						},
 						SecurityContext: &corev1.SecurityContext{
 							AllowPrivilegeEscalation: ptr.To(false),
@@ -461,7 +458,7 @@ func (b *bootstrapper) getPDB(deployment *appsv1.Deployment) *policyv1.PodDisrup
 func (b *bootstrapper) getVPA(deploymentName string) *vpaautoscalingv1.VerticalPodAutoscaler {
 	var (
 		vpaMinAllowedMemory = "25Mi"
-		updateMode          = vpaautoscalingv1.UpdateModeAuto
+		updateMode          = vpaautoscalingv1.UpdateModeRecreate
 	)
 
 	if b.values.Role == RoleProber {
@@ -483,12 +480,18 @@ func (b *bootstrapper) getVPA(deploymentName string) *vpaautoscalingv1.VerticalP
 				UpdateMode: &updateMode,
 			},
 			ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
-				ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
-					MinAllowed: corev1.ResourceList{
-						corev1.ResourceMemory: resource.MustParse(vpaMinAllowedMemory),
+				ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+					{
+						ContainerName: prefixDependencyWatchdog,
+						MinAllowed: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse(vpaMinAllowedMemory),
+						},
 					},
-				}},
+					{
+						ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+						Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+					},
+				},
 			},
 		},
 	}

@@ -15,10 +15,13 @@ import (
 	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 	"k8s.io/utils/ptr"
 
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
@@ -49,7 +52,7 @@ var _ = Describe("Config", func() {
 			RegistryBurst:                    ptr.To[int32](20),
 			KubeReserved:                     map[string]string{"cpu": "123"},
 			MaxPods:                          ptr.To[int32](24),
-			MemorySwap:                       &kubeletconfigv1beta1.MemorySwapConfiguration{SwapBehavior: "UnlimitedSwap"},
+			MemorySwap:                       &kubeletconfigv1beta1.MemorySwapConfiguration{SwapBehavior: "NoSwap"},
 			PodPidsLimit:                     ptr.To[int64](101),
 			SystemReserved:                   map[string]string{"memory": "321"},
 			StreamingConnectionIdleTimeout:   &metav1.Duration{Duration: time.Minute * 12},
@@ -279,8 +282,8 @@ var _ = Describe("Config", func() {
 		},
 
 		Entry(
-			"kubernetes 1.27 w/o defaults",
-			"1.27.1",
+			"kubernetes 1.30 w/o defaults",
+			"1.30.1",
 			clusterDNSAddresses,
 			clusterDomain,
 			components.ConfigurableKubeletConfigParameters{},
@@ -293,8 +296,8 @@ var _ = Describe("Config", func() {
 			},
 		),
 		Entry(
-			"kubernetes 1.27 w/ defaults",
-			"1.27.1",
+			"kubernetes 1.30 w/ defaults",
+			"1.30.1",
 			clusterDNSAddresses,
 			clusterDomain,
 			params,
@@ -304,34 +307,6 @@ var _ = Describe("Config", func() {
 				cfg.VolumePluginDir = "/var/lib/kubelet/volumeplugins"
 			},
 		),
-
-		Entry(
-			"kubernetes 1.28 w/o defaults",
-			"1.28.1",
-			clusterDNSAddresses,
-			clusterDomain,
-			components.ConfigurableKubeletConfigParameters{},
-			kubeletConfigWithDefaults,
-			func(cfg *kubeletconfigv1beta1.KubeletConfiguration) {
-				cfg.RotateCertificates = true
-				cfg.VolumePluginDir = "/var/lib/kubelet/volumeplugins"
-				cfg.ProtectKernelDefaults = true
-				cfg.StreamingConnectionIdleTimeout = metav1.Duration{Duration: time.Minute * 5}
-			},
-		),
-		Entry(
-			"kubernetes 1.28 w/ defaults",
-			"1.28.1",
-			clusterDNSAddresses,
-			clusterDomain,
-			params,
-			kubeletConfigWithParams,
-			func(cfg *kubeletconfigv1beta1.KubeletConfiguration) {
-				cfg.RotateCertificates = true
-				cfg.VolumePluginDir = "/var/lib/kubelet/volumeplugins"
-			},
-		),
-
 		Entry(
 			"kubernetes 1.31 w/o defaults",
 			"1.31.1",
@@ -361,4 +336,32 @@ var _ = Describe("Config", func() {
 			},
 		),
 	)
+
+	It("should use the legacy taint key when NodeReadinessController feature gate is disabled", func() {
+		cfg := kubelet.Config(semver.MustParse("1.30.0"), []string{"10.0.0.10"}, "cluster.local", nil, components.ConfigurableKubeletConfigParameters{})
+
+		Expect(cfg.RegisterWithTaints).To(ContainElement(corev1.Taint{
+			Key:    v1beta1constants.TaintNodeCriticalComponentsNotReady,
+			Effect: corev1.TaintEffectNoSchedule,
+		}))
+		Expect(cfg.RegisterWithTaints).NotTo(ContainElement(corev1.Taint{
+			Key:    v1beta1constants.TaintNodeReadinessControllerNotReady,
+			Effect: corev1.TaintEffectNoSchedule,
+		}))
+	})
+
+	It("should use the NRC taint key when NodeReadinessController feature gate is enabled", func() {
+		DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.NodeReadinessController, true))
+
+		cfg := kubelet.Config(semver.MustParse("1.30.0"), []string{"10.0.0.10"}, "cluster.local", nil, components.ConfigurableKubeletConfigParameters{})
+
+		Expect(cfg.RegisterWithTaints).To(ContainElement(corev1.Taint{
+			Key:    v1beta1constants.TaintNodeReadinessControllerNotReady,
+			Effect: corev1.TaintEffectNoSchedule,
+		}))
+		Expect(cfg.RegisterWithTaints).NotTo(ContainElement(corev1.Taint{
+			Key:    v1beta1constants.TaintNodeCriticalComponentsNotReady,
+			Effect: corev1.TaintEffectNoSchedule,
+		}))
+	})
 })

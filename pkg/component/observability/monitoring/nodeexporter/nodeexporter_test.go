@@ -56,7 +56,7 @@ var _ = Describe("NodeExporter", func() {
 			},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
 				HonorLabels: ptr.To(false),
-				Scheme:      ptr.To("HTTPS"),
+				Scheme:      ptr.To(monitoringv1.SchemeHTTPS),
 				TLSConfig:   &monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)},
 				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
@@ -270,7 +270,6 @@ var _ = Describe("NodeExporter", func() {
 automountServiceAccountToken: false
 kind: ServiceAccount
 metadata:
-  creationTimestamp: null
   labels:
     component: node-exporter
   name: node-exporter
@@ -279,7 +278,6 @@ metadata:
 			serviceYAML = `apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: null
   labels:
     component: node-exporter
   name: node-exporter
@@ -300,7 +298,6 @@ status:
 			daemonSetYAML = `apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  creationTimestamp: null
   labels:
     component: node-exporter
     gardener.cloud/role: monitoring
@@ -314,7 +311,6 @@ spec:
       component: node-exporter
   template:
     metadata:
-      creationTimestamp: null
       labels:
         component: node-exporter
         gardener.cloud/role: monitoring
@@ -368,7 +364,7 @@ spec:
           timeoutSeconds: 5
         resources:
           requests:
-            cpu: 50m
+            cpu: 3m
             memory: 50Mi
         securityContext:
           allowPrivilegeEscalation: false
@@ -411,22 +407,25 @@ status:
 			vpaYAML = `apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
-  creationTimestamp: null
   name: node-exporter
   namespace: kube-system
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: node-exporter
+      controlledResources:
+      - memory
       controlledValues: RequestsOnly
       minAllowed:
         memory: 50Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: DaemonSet
     name: node-exporter
   updatePolicy:
-    updateMode: Auto
+    updateMode: Recreate
 status: {}
 `
 		)

@@ -9,7 +9,6 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/crddeployer"
 )
@@ -37,12 +36,14 @@ var (
 	networkCRD string
 	//go:embed assets/crd-extensions.gardener.cloud_operatingsystemconfigs.yaml
 	operatingSystemConfigCRD string
+	//go:embed assets/crd-extensions.gardener.cloud_selfhostedshootexposures.yaml
+	selfHostedShootExposureCRD string
 	//go:embed assets/crd-extensions.gardener.cloud_workers.yaml
 	workerCRD string
 )
 
 // NewCRD can be used to deploy extensions CRDs.
-func NewCRD(client client.Client, applier kubernetes.Applier, includeGeneralCRDs, includeShootCRDs bool) (component.DeployWaiter, error) {
+func NewCRD(client client.Client, includeGeneralCRDs, includeShootCRDs bool) (component.DeployWaiter, error) {
 	var (
 		crds        []string
 		generalCRDs = []string{
@@ -60,6 +61,7 @@ func NewCRD(client client.Client, applier kubernetes.Applier, includeGeneralCRDs
 			infrastructureCRD,
 			networkCRD,
 			operatingSystemConfigCRD,
+			selfHostedShootExposureCRD,
 			workerCRD,
 		}
 	)
@@ -71,5 +73,5 @@ func NewCRD(client client.Client, applier kubernetes.Applier, includeGeneralCRDs
 		crds = append(crds, shootCRDs...)
 	}
 
-	return crddeployer.New(client, applier, crds, true)
+	return crddeployer.New(client, crds, true)
 }

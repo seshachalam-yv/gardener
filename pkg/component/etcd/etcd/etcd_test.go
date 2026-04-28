@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -79,8 +80,8 @@ var _ = Describe("Etcd", func() {
 
 		secretNameCA         = "ca-etcd"
 		secretNamePeerCA     = "ca-etcd-peer"
-		secretNameServer     = "etcd-server-" + testRole
-		secretNameServerPeer = "etcd-peer-server-" + testRole
+		secretNameServer     string
+		secretNameServerPeer string
 		secretNameClient     = "etcd-client"
 
 		maintenanceTimeWindow = gardencorev1beta1.MaintenanceTimeWindow{
@@ -88,6 +89,8 @@ var _ = Describe("Etcd", func() {
 			End:   "5678",
 		}
 		highAvailabilityEnabled bool
+		staticPodConfig         *StaticPodConfig
+		role                    string
 		caRotationPhase         gardencorev1beta1.CredentialsRotationPhase
 		autoscalingConfig       AutoscalingConfig
 		backupConfig            *BackupConfig
@@ -100,21 +103,26 @@ var _ = Describe("Etcd", func() {
 			Enabled: ptr.To(true),
 			Policy:  &compressionPolicy,
 		}
+		snapshotCompactionSpec = druidcorev1alpha1.SnapshotCompactionSpec{
+			Resources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("600m"),
+					corev1.ResourceMemory: resource.MustParse("3Gi"),
+				},
+			},
+		}
 		backupLeaderElectionEtcdConnectionTimeout = &metav1.Duration{Duration: 10 * time.Second}
 		backupLeaderElectionReelectionPeriod      = &metav1.Duration{Duration: 11 * time.Second}
 
-		vpaUpdateMode       = vpaautoscalingv1.UpdateModeAuto
-		containerPolicyOff  = vpaautoscalingv1.ContainerScalingModeOff
-		containerPolicyAuto = vpaautoscalingv1.ContainerScalingModeAuto
-		controlledValues    = vpaautoscalingv1.ContainerControlledValuesRequestsOnly
-		metricsBasic        = druidcorev1alpha1.Basic
-		metricsExtensive    = druidcorev1alpha1.Extensive
+		metricsBasic     = druidcorev1alpha1.Basic
+		metricsExtensive = druidcorev1alpha1.Extensive
 
-		etcdName = "etcd-" + testRole
-		vpaName  = etcdName
+		etcdName string
+		vpaName  string
 
 		etcdObjFor = func(
 			class Class,
+			role string,
 			replicas int32,
 			backupConfig *BackupConfig,
 			existingDefragmentationSchedule,
@@ -128,6 +136,7 @@ var _ = Describe("Etcd", func() {
 			peerServerSecretName *string,
 			topologyAwareRoutingEnabled bool,
 			runtimeKubernetesVersion *semver.Version,
+			staticPodConfig *StaticPodConfig,
 		) *druidcorev1alpha1.Etcd {
 			defragSchedule := defragmentationSchedule
 			if existingDefragmentationSchedule != "" {
@@ -164,13 +173,6 @@ var _ = Describe("Etcd", func() {
 				resourcesContainerBackupRestore = existingResourcesContainerBackupRestore
 			}
 
-			resourcesContainerCompactionJob := &corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("600m"),
-					corev1.ResourceMemory: resource.MustParse("3Gi"),
-				},
-			}
-
 			clientService := &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
@@ -181,7 +183,9 @@ var _ = Describe("Etcd", func() {
 				},
 			}
 			if topologyAwareRoutingEnabled {
-				if versionutils.ConstraintK8sGreaterEqual132.Check(runtimeKubernetesVersion) {
+				if versionutils.ConstraintK8sGreaterEqual134.Check(runtimeKubernetesVersion) {
+					clientService.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferSameZone)
+				} else if versionutils.ConstraintK8sGreaterEqual132.Check(runtimeKubernetesVersion) {
 					clientService.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferClose)
 				} else if versionutils.ConstraintK8sEqual131.Check(runtimeKubernetesVersion) {
 					clientService.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferClose)
@@ -202,7 +206,7 @@ var _ = Describe("Etcd", func() {
 					},
 					Labels: map[string]string{
 						"gardener.cloud/role": "controlplane",
-						"role":                testRole,
+						"role":                role,
 					},
 				},
 				Spec: druidcorev1alpha1.EtcdSpec{
@@ -210,7 +214,7 @@ var _ = Describe("Etcd", func() {
 					PriorityClassName: &priorityClassName,
 					Labels: map[string]string{
 						"gardener.cloud/role":              "controlplane",
-						"role":                             testRole,
+						"role":                             role,
 						"app":                              "etcd-statefulset",
 						"networking.gardener.cloud/to-dns": "allowed",
 						"networking.gardener.cloud/to-public-networks":   "allowed",
@@ -220,7 +224,7 @@ var _ = Describe("Etcd", func() {
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"gardener.cloud/role": "controlplane",
-							"role":                testRole,
+							"role":                role,
 							"app":                 "etcd-statefulset",
 						},
 					},
@@ -245,6 +249,7 @@ var _ = Describe("Etcd", func() {
 						},
 						ServerPort:              ptr.To[int32](2380),
 						ClientPort:              ptr.To[int32](2379),
+						WrapperPort:             ptr.To[int32](9095),
 						Metrics:                 &metricsBasic,
 						DefragmentationSchedule: &defragSchedule,
 						Quota:                   &quota,
@@ -274,7 +279,7 @@ var _ = Describe("Etcd", func() {
 						},
 						Port:                    ptr.To[int32](8080),
 						Resources:               resourcesContainerBackupRestore,
-						CompactionResources:     resourcesContainerCompactionJob,
+						SnapshotCompaction:      &snapshotCompactionSpec,
 						GarbageCollectionPolicy: &garbageCollectionPolicy,
 						GarbageCollectionPeriod: &garbageCollectionPeriod,
 						SnapshotCompression:     &compressionSpec,
@@ -297,16 +302,16 @@ var _ = Describe("Etcd", func() {
 					},
 				}
 				obj.Spec.Etcd.Metrics = &metricsExtensive
-				obj.Spec.VolumeClaimTemplate = ptr.To(testRole + "-etcd")
+				obj.Spec.VolumeClaimTemplate = ptr.To(role + "-etcd")
 			case ClassNormal:
 				metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "resources.druid.gardener.cloud/allow-unhealthy-pod-eviction", "")
 			}
 
 			if replicas == 3 {
 				obj.Spec.Labels = utils.MergeStringMaps(obj.Spec.Labels, map[string]string{
-					"networking.resources.gardener.cloud/to-etcd-" + testRole + "-client-tcp-2379": "allowed",
-					"networking.resources.gardener.cloud/to-etcd-" + testRole + "-client-tcp-2380": "allowed",
-					"networking.resources.gardener.cloud/to-etcd-" + testRole + "-client-tcp-8080": "allowed",
+					"networking.resources.gardener.cloud/to-etcd-" + role + "-client-tcp-2379": "allowed",
+					"networking.resources.gardener.cloud/to-etcd-" + role + "-client-tcp-2380": "allowed",
+					"networking.resources.gardener.cloud/to-etcd-" + role + "-client-tcp-8080": "allowed",
 				})
 				obj.Spec.Etcd.PeerUrlTLS = &druidcorev1alpha1.TLSConfig{
 					ServerTLSSecretRef: corev1.SecretReference{
@@ -354,7 +359,7 @@ var _ = Describe("Etcd", func() {
 					SecretRef: &corev1.SecretReference{Name: backupConfig.SecretRefName},
 					Container: &backupConfig.Container,
 					Provider:  &provider,
-					Prefix:    backupConfig.Prefix + "/etcd-" + testRole,
+					Prefix:    backupConfig.Prefix + "/etcd-" + role,
 				}
 				obj.Spec.Backup.FullSnapshotSchedule = &fullSnapshotSchedule
 				obj.Spec.Backup.DeltaSnapshotPeriod = &deltaSnapshotPeriod
@@ -369,10 +374,22 @@ var _ = Describe("Etcd", func() {
 				}
 			}
 
+			if staticPodConfig != nil {
+				obj.Annotations["druid.gardener.cloud/disable-etcd-runtime-component-creation"] = ""
+				obj.Spec.RunAsRoot = ptr.To(true)
+
+				if role == "events" {
+					obj.Spec.Backup.Port = ptr.To[int32](8081)
+					obj.Spec.Etcd.ClientPort = ptr.To[int32](2382)
+					obj.Spec.Etcd.ServerPort = ptr.To[int32](2383)
+					obj.Spec.Etcd.WrapperPort = ptr.To[int32](9096)
+				}
+			}
+
 			return obj
 		}
 
-		expectedVPAFor = func(class Class, evictionRequirement string, minAllowed corev1.ResourceList) *vpaautoscalingv1.VerticalPodAutoscaler {
+		expectedVPAFor = func(class Class, role string, evictionRequirement string, minAllowed corev1.ResourceList) *vpaautoscalingv1.VerticalPodAutoscaler {
 			minAllowedConfig := minAllowed
 			if minAllowedConfig == nil {
 				minAllowedConfig = corev1.ResourceList{
@@ -384,7 +401,7 @@ var _ = Describe("Etcd", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      vpaName,
 					Namespace: testNamespace,
-					Labels:    map[string]string{v1beta1constants.LabelRole: "etcd-vpa-main"},
+					Labels:    map[string]string{v1beta1constants.LabelRole: "etcd-vpa-" + role},
 				},
 				Spec: vpaautoscalingv1.VerticalPodAutoscalerSpec{
 					TargetRef: &autoscalingv1.CrossVersionObjectReference{
@@ -393,20 +410,19 @@ var _ = Describe("Etcd", func() {
 						Name:       etcdName,
 					},
 					UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-						UpdateMode: &vpaUpdateMode,
+						UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 					},
 					ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 						ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 							{
 								ContainerName:    "etcd",
 								MinAllowed:       minAllowedConfig,
-								ControlledValues: &controlledValues,
-								Mode:             &containerPolicyAuto,
+								ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+								Mode:             ptr.To(vpaautoscalingv1.ContainerScalingModeAuto),
 							},
 							{
-								ContainerName:    "backup-restore",
-								Mode:             &containerPolicyOff,
-								ControlledValues: &controlledValues,
+								ContainerName: "*",
+								Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 							},
 						},
 					},
@@ -456,18 +472,22 @@ var _ = Describe("Etcd", func() {
 					Endpoints: []monitoringv1.Endpoint{
 						{
 							Port:   "client",
-							Scheme: "https",
-							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
-								InsecureSkipVerify: ptr.To(true),
-								Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
-									Key:                  secretsutils.DataKeyCertificate,
-								}},
-								KeySecret: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
-									Key:                  secretsutils.DataKeyPrivateKey,
+							Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+							HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+								HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+									TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
+										InsecureSkipVerify: ptr.To(true),
+										Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
+											Key:                  secretsutils.DataKeyCertificate,
+										}},
+										KeySecret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
+											Key:                  secretsutils.DataKeyPrivateKey,
+										},
+									}},
 								},
-							}},
+							},
 							RelabelConfigs: []monitoringv1.RelabelConfig{
 								{
 									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_service_label_app_kubernetes_io_part_of"},
@@ -486,18 +506,22 @@ var _ = Describe("Etcd", func() {
 						},
 						{
 							Port:   "backuprestore",
-							Scheme: "https",
-							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
-								InsecureSkipVerify: ptr.To(true),
-								Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
-									Key:                  secretsutils.DataKeyCertificate,
-								}},
-								KeySecret: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
-									Key:                  secretsutils.DataKeyPrivateKey,
+							Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+							HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+								HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+									TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
+										InsecureSkipVerify: ptr.To(true),
+										Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
+											Key:                  secretsutils.DataKeyCertificate,
+										}},
+										KeySecret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
+											Key:                  secretsutils.DataKeyPrivateKey,
+										},
+									}},
 								},
-							}},
+							},
 							RelabelConfigs: []monitoringv1.RelabelConfig{
 								{
 									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_service_label_app_kubernetes_io_part_of"},
@@ -704,6 +728,8 @@ var _ = Describe("Etcd", func() {
 		backupConfig = nil
 		replicas = ptr.To[int32](1)
 		highAvailabilityEnabled = false
+		staticPodConfig = nil
+		role = testRole
 	})
 
 	JustBeforeEach(func() {
@@ -711,10 +737,15 @@ var _ = Describe("Etcd", func() {
 		c = mockclient.NewMockClient(ctrl)
 		log = logr.Discard()
 
+		secretNameServer = "etcd-server-" + role
+		secretNameServerPeer = "etcd-peer-server-" + role
+		etcdName = "etcd-" + role
+		vpaName = etcdName
+
 		By("Create secrets managed outside of this package for whose secretsmanager.Get() will be called")
 		Expect(fakeClient.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ca-etcd", Namespace: testNamespace}})).To(Succeed())
 		etcd = New(log, c, testNamespace, sm, Values{
-			Role:                    testRole,
+			Role:                    role,
 			Class:                   class,
 			Replicas:                replicas,
 			Autoscaling:             autoscalingConfig,
@@ -726,6 +757,7 @@ var _ = Describe("Etcd", func() {
 			MaintenanceTimeWindow:   maintenanceTimeWindow,
 			HighAvailabilityEnabled: highAvailabilityEnabled,
 			BackupConfig:            backupConfig,
+			StaticPodConfig:         staticPodConfig,
 		})
 	})
 
@@ -761,6 +793,7 @@ var _ = Describe("Etcd", func() {
 				c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
 					Expect(obj).To(DeepEqual(etcdObjFor(
 						class,
+						role,
 						1,
 						nil,
 						"",
@@ -773,11 +806,13 @@ var _ = Describe("Etcd", func() {
 						nil,
 						nil,
 						false,
-						nil)))
+						nil,
+						staticPodConfig,
+					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-					Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+					Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 				c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -833,6 +868,7 @@ var _ = Describe("Etcd", func() {
 
 					Expect(obj).To(DeepEqual(etcdObjFor(
 						class,
+						role,
 						existingReplicas,
 						nil,
 						"",
@@ -845,11 +881,13 @@ var _ = Describe("Etcd", func() {
 						nil,
 						nil,
 						false,
-						nil)))
+						nil,
+						staticPodConfig,
+					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-					Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+					Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 				c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -910,6 +948,7 @@ var _ = Describe("Etcd", func() {
 
 					Expect(obj).To(DeepEqual(etcdObjFor(
 						class,
+						role,
 						existingReplicas,
 						nil,
 						"",
@@ -922,11 +961,13 @@ var _ = Describe("Etcd", func() {
 						nil,
 						nil,
 						false,
-						nil)))
+						nil,
+						staticPodConfig,
+					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-					Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+					Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 				c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -971,6 +1012,7 @@ var _ = Describe("Etcd", func() {
 
 					expectedObj := etcdObjFor(
 						class,
+						role,
 						1,
 						nil,
 						"",
@@ -983,7 +1025,9 @@ var _ = Describe("Etcd", func() {
 						nil,
 						nil,
 						false,
-						nil)
+						nil,
+						staticPodConfig,
+					)
 					expectedObj.Annotations = utils.MergeStringMaps(expectedObj.Annotations, map[string]string{
 						"foo": "bar",
 					})
@@ -992,7 +1036,7 @@ var _ = Describe("Etcd", func() {
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-					Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+					Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 				c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1041,6 +1085,7 @@ var _ = Describe("Etcd", func() {
 
 					Expect(obj).To(DeepEqual(etcdObjFor(
 						class,
+						role,
 						1,
 						nil,
 						existingDefragmentationSchedule,
@@ -1053,11 +1098,13 @@ var _ = Describe("Etcd", func() {
 						nil,
 						nil,
 						false,
-						nil)))
+						nil,
+						staticPodConfig,
+					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-					Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+					Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 				c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1083,6 +1130,7 @@ var _ = Describe("Etcd", func() {
 				c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
 					Expect(obj).To(DeepEqual(etcdObjFor(
 						class,
+						role,
 						1,
 						nil,
 						"",
@@ -1095,11 +1143,13 @@ var _ = Describe("Etcd", func() {
 						nil,
 						nil,
 						false,
-						nil)))
+						nil,
+						staticPodConfig,
+					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-					Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+					Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 				c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1148,6 +1198,7 @@ var _ = Describe("Etcd", func() {
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
 						Expect(obj).To(DeepEqual(etcdObjFor(
 							class,
+							role,
 							1,
 							nil,
 							"",
@@ -1160,11 +1211,13 @@ var _ = Describe("Etcd", func() {
 							nil,
 							nil,
 							false,
-							nil)))
+							nil,
+							staticPodConfig,
+						)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 					c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-						Expect(obj).To(DeepEqual(expectedVPAFor(class, evictionRequirement, nil)))
+						Expect(obj).To(DeepEqual(expectedVPAFor(class, role, evictionRequirement, nil)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1205,6 +1258,7 @@ var _ = Describe("Etcd", func() {
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
 						Expect(obj).To(DeepEqual(etcdObjFor(
 							class,
+							role,
 							1,
 							backupConfig,
 							"",
@@ -1217,11 +1271,13 @@ var _ = Describe("Etcd", func() {
 							nil,
 							nil,
 							false,
-							nil)))
+							nil,
+							staticPodConfig,
+						)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 					c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-						Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+						Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1267,6 +1323,7 @@ var _ = Describe("Etcd", func() {
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
 						expobj := etcdObjFor(
 							class,
+							role,
 							1,
 							backupConfig,
 							"",
@@ -1279,14 +1336,16 @@ var _ = Describe("Etcd", func() {
 							nil,
 							nil,
 							false,
-							nil)
+							nil,
+							staticPodConfig,
+						)
 						expobj.Status.Etcd = &druidcorev1alpha1.CrossVersionObjectReference{}
 
 						Expect(obj).To(DeepEqual(expobj))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 					c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-						Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+						Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1299,6 +1358,105 @@ var _ = Describe("Etcd", func() {
 				)
 
 				Expect(etcd.Deploy(ctx)).To(Succeed())
+			})
+		})
+
+		When("etcd should run as static pod", func() {
+			BeforeEach(func() {
+				staticPodConfig = &StaticPodConfig{}
+			})
+
+			Describe("main etcd", func() {
+				It("should successfully deploy the etcd", func() {
+					DeferCleanup(test.WithVar(&TimeNow, func() time.Time { return now }))
+
+					gomock.InOrder(
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: etcdName}, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: etcdName}, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{})),
+						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
+							Expect(obj).To(DeepEqual(etcdObjFor(
+								class,
+								role,
+								1,
+								backupConfig,
+								"",
+								"",
+								nil,
+								nil,
+								secretNameCA,
+								secretNameClient,
+								secretNameServer,
+								nil,
+								nil,
+								false,
+								nil,
+								staticPodConfig,
+							)))
+						}),
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
+						c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
+							Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
+						}),
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
+						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
+							Expect(obj).To(DeepEqual(serviceMonitor("shoot", "etcd-client")))
+						}),
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.PrometheusRule{})),
+						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.PrometheusRule{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
+							Expect(obj).To(DeepEqual(prometheusRule("shoot", class, *replicas, false)))
+						}),
+					)
+
+					Expect(etcd.Deploy(ctx)).To(Succeed())
+				})
+			})
+
+			Describe("events etcd", func() {
+				BeforeEach(func() {
+					class = ClassNormal
+					role = "events"
+
+					DeferCleanup(test.WithVar(&vpaName, "etcd-"+role))
+				})
+
+				It("should successfully deploy the etcd", func() {
+					DeferCleanup(test.WithVar(&TimeNow, func() time.Time { return now }))
+
+					gomock.InOrder(
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: etcdName}, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: etcdName}, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{})),
+						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
+							Expect(obj).To(DeepEqual(etcdObjFor(
+								class,
+								role,
+								1,
+								backupConfig,
+								"",
+								"",
+								nil,
+								nil,
+								secretNameCA,
+								secretNameClient,
+								secretNameServer,
+								nil,
+								nil,
+								false,
+								nil,
+								staticPodConfig,
+							)))
+						}),
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
+						c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
+							Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
+						}),
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + role}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
+						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()),
+						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + role}, gomock.AssignableToTypeOf(&monitoringv1.PrometheusRule{})),
+						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.PrometheusRule{}), gomock.Any()),
+					)
+
+					Expect(etcd.Deploy(ctx)).To(Succeed())
+				})
 			})
 		})
 
@@ -1327,6 +1485,7 @@ var _ = Describe("Etcd", func() {
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
 						Expect(obj).To(DeepEqual(etcdObjFor(
 							class,
+							role,
 							3,
 							nil,
 							"",
@@ -1340,11 +1499,12 @@ var _ = Describe("Etcd", func() {
 							&peerServerSecretName,
 							false,
 							nil,
+							staticPodConfig,
 						)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 					c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-						Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+						Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1376,11 +1536,10 @@ var _ = Describe("Etcd", func() {
 						logr.New(logf.NullLogSink{}),
 						testclock.NewFakeClock(time.Now()),
 						fakeClient,
-						testNamespace,
 						"",
-						secretsmanager.Config{
-							SecretNamesToTimes: secretNamesToTimes,
-						})
+						secretsmanager.WithSecretNamesToTimes(secretNamesToTimes),
+						secretsmanager.WithNamespaces(testNamespace),
+					)
 					Expect(err).ToNot(HaveOccurred())
 
 					// Create new etcd CA
@@ -1432,6 +1591,7 @@ var _ = Describe("Etcd", func() {
 							"*.etcd-" + testRole + "-peer.shoot--test--test.svc",
 							"*.etcd-" + testRole + "-peer.shoot--test--test.svc.cluster.local",
 						},
+						IPAddresses:                 []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 						CertType:                    secretsutils.ServerClientCert,
 						SkipPublishingCACertificate: true,
 					}, secretsmanager.SignedByCA(v1beta1constants.SecretNameCAETCDPeer, secretsmanager.UseCurrentCA), secretsmanager.Rotate(secretsmanager.InPlace))
@@ -1459,6 +1619,7 @@ var _ = Describe("Etcd", func() {
 							"*.etcd-" + testRole + "-peer.shoot--test--test.svc",
 							"*.etcd-" + testRole + "-peer.shoot--test--test.svc.cluster.local",
 						},
+						IPAddresses:                 []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 						CertType:                    secretsutils.ServerClientCert,
 						SkipPublishingCACertificate: true,
 					}, secretsmanager.SignedByCA(v1beta1constants.SecretNameCAETCD), secretsmanager.Rotate(secretsmanager.InPlace))
@@ -1483,11 +1644,10 @@ var _ = Describe("Etcd", func() {
 					logr.New(logf.NullLogSink{}),
 					testclock.NewFakeClock(time.Now()),
 					fakeClient,
-					testNamespace,
 					"",
-					secretsmanager.Config{
-						SecretNamesToTimes: secretNamesToTimes,
-					})
+					secretsmanager.WithSecretNamesToTimes(secretNamesToTimes),
+					secretsmanager.WithNamespaces(testNamespace),
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Create new etcd CA
@@ -1545,7 +1705,7 @@ var _ = Describe("Etcd", func() {
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 						c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-							Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+							Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1596,7 +1756,7 @@ var _ = Describe("Etcd", func() {
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 						c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-							Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+							Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1644,6 +1804,7 @@ var _ = Describe("Etcd", func() {
 						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
 							Expect(obj).To(DeepEqual(etcdObjFor(
 								class,
+								role,
 								1,
 								nil,
 								"",
@@ -1656,11 +1817,13 @@ var _ = Describe("Etcd", func() {
 								nil,
 								nil,
 								true,
-								runtimeKubernetesVersion)))
+								runtimeKubernetesVersion,
+								staticPodConfig,
+							)))
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 						c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-							Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+							Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1674,7 +1837,8 @@ var _ = Describe("Etcd", func() {
 					Expect(etcd.Deploy(ctx)).To(Succeed())
 				},
 
-				Entry("when runtime Kubernetes version is >= 1.32", semver.MustParse("1.32.1")),
+				Entry("when runtime Kubernetes version is >= 1.34", semver.MustParse("1.34.0")),
+				Entry("when runtime Kubernetes version is >= 1.32, < 1.34", semver.MustParse("1.32.1")),
 				Entry("when runtime Kubernetes version is 1.31", semver.MustParse("1.31.2")),
 				Entry("when runtime Kubernetes version is < 1.31", semver.MustParse("1.30.3")),
 			)
@@ -1707,6 +1871,7 @@ var _ = Describe("Etcd", func() {
 
 				etcdObj := etcdObjFor(
 					class,
+					role,
 					1,
 					nil,
 					"",
@@ -1720,6 +1885,7 @@ var _ = Describe("Etcd", func() {
 					nil,
 					false,
 					nil,
+					staticPodConfig,
 				)
 				etcdObj.Name = etcdName
 				etcdObj.Spec.VolumeClaimTemplate = ptr.To(testRole + "-virtual-garden-etcd")
@@ -1736,7 +1902,7 @@ var _ = Describe("Etcd", func() {
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 					c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-						Expect(obj).To(DeepEqual(expectedVPAFor(class, "", nil)))
+						Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", nil)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "garden-virtual-garden-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -1771,6 +1937,7 @@ var _ = Describe("Etcd", func() {
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&druidcorev1alpha1.Etcd{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
 						Expect(obj).To(DeepEqual(etcdObjFor(
 							class,
+							role,
 							1,
 							nil,
 							"",
@@ -1788,11 +1955,13 @@ var _ = Describe("Etcd", func() {
 							nil,
 							nil,
 							false,
-							nil)))
+							nil,
+							staticPodConfig,
+						)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
 					c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ ...client.CreateOption) {
-						Expect(obj).To(DeepEqual(expectedVPAFor(class, "", minAllowed)))
+						Expect(obj).To(DeepEqual(expectedVPAFor(class, role, "", minAllowed)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: "shoot-etcd-" + testRole}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {

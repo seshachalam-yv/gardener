@@ -11,12 +11,14 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.uber.org/mock/gomock"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	mockclient "github.com/gardener/gardener/third_party/mock/controller-runtime/client"
@@ -31,9 +33,11 @@ var _ = Describe("secretref", func() {
 
 		secretRef               *corev1.SecretReference
 		secret                  *corev1.Secret
+		internalSecret          *gardencorev1beta1.InternalSecret
 		workloadIdentity        *securityv1alpha1.WorkloadIdentity
 		objectRef               *corev1.ObjectReference
 		secretPartialObjectMeta *metav1.PartialObjectMetadata
+		crossVersionRef         *autoscalingv1.CrossVersionObjectReference
 	)
 
 	BeforeEach(func() {
@@ -72,6 +76,26 @@ var _ = Describe("secretref", func() {
 			},
 			Type: corev1.SecretTypeOpaque,
 		}
+		internalSecret = &gardencorev1beta1.InternalSecret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         "core.gardener.cloud/v1beta1",
+						Kind:               "Shoot",
+						Name:               name,
+						UID:                "uid",
+						Controller:         ptr.To(true),
+						BlockOwnerDeletion: ptr.To(true),
+					},
+				},
+			},
+			Data: map[string][]byte{
+				"bar": []byte("foo"),
+			},
+			Type: corev1.SecretTypeOpaque,
+		}
 		workloadIdentity = &securityv1alpha1.WorkloadIdentity{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
@@ -90,6 +114,11 @@ var _ = Describe("secretref", func() {
 				APIVersion: "v1",
 			},
 			ObjectMeta: *secret.ObjectMeta.DeepCopy(),
+		}
+		crossVersionRef = &autoscalingv1.CrossVersionObjectReference{
+			APIVersion: "v1",
+			Kind:       "Secret",
+			Name:       name,
 		}
 	})
 
@@ -199,6 +228,39 @@ var _ = Describe("secretref", func() {
 			Expect(result).To(BeNil())
 		})
 
+		It("should get referenced InternalSecret", func() {
+			c.EXPECT().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, gomock.AssignableToTypeOf(&gardencorev1beta1.InternalSecret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, i *gardencorev1beta1.InternalSecret, _ ...client.GetOption) error {
+				*i = *internalSecret
+				return nil
+			})
+
+			objectRef = &corev1.ObjectReference{
+				APIVersion: "core.gardener.cloud/v1beta1",
+				Kind:       "InternalSecret",
+				Namespace:  namespace,
+				Name:       name,
+			}
+
+			result, err := kubernetesutils.GetCredentialsByObjectReference(ctx, c, *objectRef)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(internalSecret))
+		})
+
+		It("should fail to get referenced InternalSecret if reading it fails", func() {
+			c.EXPECT().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, gomock.AssignableToTypeOf(&gardencorev1beta1.InternalSecret{})).Return(fmt.Errorf("error"))
+
+			objectRef = &corev1.ObjectReference{
+				APIVersion: "core.gardener.cloud/v1beta1",
+				Kind:       "InternalSecret",
+				Namespace:  namespace,
+				Name:       name,
+			}
+
+			result, err := kubernetesutils.GetCredentialsByObjectReference(ctx, c, *objectRef)
+			Expect(err).To(HaveOccurred())
+			Expect(result).To(BeNil())
+		})
+
 		It("should get referenced WorkloadIdentity", func() {
 			c.EXPECT().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, gomock.AssignableToTypeOf(&securityv1alpha1.WorkloadIdentity{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, wi *securityv1alpha1.WorkloadIdentity, _ ...client.GetOption) error {
 				*wi = *workloadIdentity
@@ -232,7 +294,7 @@ var _ = Describe("secretref", func() {
 			Expect(result).To(BeNil())
 		})
 
-		It("should fail if object reference does not refer to a secret", func() {
+		It("should fail if object reference does not refer to a supported object", func() {
 			ref := &corev1.ObjectReference{
 				APIVersion: "foo.bar/v1alpha1",
 				Kind:       "Baz",
@@ -326,6 +388,83 @@ var _ = Describe("secretref", func() {
 			err := kubernetesutils.DeleteSecretByObjectReference(ctx, c, ref)
 			Expect(err).To(HaveOccurred())
 			Expect(err).To(MatchError("objectRef does not refer to secret"))
+		})
+	})
+
+	Describe("#GetCredentialsByCrossVersionObjectReference", func() {
+		It("should get referenced Secret", func() {
+			c.EXPECT().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, s *corev1.Secret, _ ...client.GetOption) error {
+				*s = *secret
+				return nil
+			})
+
+			result, err := kubernetesutils.GetCredentialsByCrossVersionObjectReference(ctx, c, *crossVersionRef, namespace)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(Equal(secret))
+		})
+
+		It("should fail to get referenced Secret if reading it fails", func() {
+			c.EXPECT().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, gomock.AssignableToTypeOf(&corev1.Secret{})).Return(fmt.Errorf("error"))
+
+			result, err := kubernetesutils.GetCredentialsByCrossVersionObjectReference(ctx, c, *crossVersionRef, namespace)
+			Expect(err).To(HaveOccurred())
+			Expect(result).To(BeNil())
+		})
+
+		It("should get referenced WorkloadIdentity", func() {
+			ref := autoscalingv1.CrossVersionObjectReference{
+				APIVersion: "security.gardener.cloud/v1alpha1",
+				Kind:       "WorkloadIdentity",
+				Name:       name,
+			}
+
+			c.EXPECT().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, gomock.AssignableToTypeOf(&securityv1alpha1.WorkloadIdentity{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, wi *securityv1alpha1.WorkloadIdentity, _ ...client.GetOption) error {
+				*wi = *workloadIdentity
+				return nil
+			})
+
+			result, err := kubernetesutils.GetCredentialsByCrossVersionObjectReference(ctx, c, ref, namespace)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result).To(Equal(workloadIdentity))
+		})
+
+		It("should fail to get referenced WorkloadIdentity if reading it fails", func() {
+			ref := autoscalingv1.CrossVersionObjectReference{
+				APIVersion: "security.gardener.cloud/v1alpha1",
+				Kind:       "WorkloadIdentity",
+				Name:       name,
+			}
+
+			c.EXPECT().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, gomock.AssignableToTypeOf(&securityv1alpha1.WorkloadIdentity{})).Return(fmt.Errorf("error"))
+
+			result, err := kubernetesutils.GetCredentialsByCrossVersionObjectReference(ctx, c, ref, namespace)
+			Expect(err).To(HaveOccurred())
+			Expect(result).To(BeNil())
+		})
+
+		It("should fail if cross version reference does not refer to supported credentials", func() {
+			ref := autoscalingv1.CrossVersionObjectReference{
+				APIVersion: "foo.bar/v1alpha1",
+				Kind:       "Baz",
+				Name:       name,
+			}
+
+			_, err := kubernetesutils.GetCredentialsByCrossVersionObjectReference(ctx, c, ref, namespace)
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError("unsupported credentials reference: garden/foo, foo.bar/v1alpha1, Kind=Baz"))
+		})
+
+		It("should use the provided namespace parameter", func() {
+			differentNamespace := "different-namespace"
+			secret.Namespace = differentNamespace
+			c.EXPECT().Get(ctx, client.ObjectKey{Namespace: differentNamespace, Name: name}, gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, s *corev1.Secret, _ ...client.GetOption) error {
+				*s = *secret
+				return nil
+			})
+
+			result, err := kubernetesutils.GetCredentialsByCrossVersionObjectReference(ctx, c, *crossVersionRef, differentNamespace)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.GetNamespace()).To(Equal(differentNamespace))
 		})
 	})
 })
