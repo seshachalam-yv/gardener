@@ -1021,6 +1021,7 @@ func (r *Reconciler) newNginxIngressController(seed *seedpkg.Seed, istioDefaultL
 		[]string{seed.GetIngressFQDN("*")},
 		istioDefaultLabels,
 		seedIsGarden,
+		features.DefaultFeatureGate.Enabled(features.DisableNginxIngressInSeed),
 	)
 }
 

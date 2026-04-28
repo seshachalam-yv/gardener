@@ -113,6 +113,27 @@ const (
 	// owner: @rrhubenov
 	// alpha: v1.140.0
 	RemoveVali featuregate.Feature = "RemoveVali"
+
+	// DisableNginxIngressInGarden disables the deployment of the nginx ingress controller in the Garden runtime cluster
+	// and removes the nginx ingress controller (if existing) from the Garden runtime cluster.
+	// owner: @ScheererJ
+	// alpha: v1.142.0
+	DisableNginxIngressInGarden featuregate.Feature = "DisableNginxIngressInGarden"
+
+	// DisableNginxIngressInSeed disables the deployment of the nginx ingress controller in the Seed cluster
+	// and removes the nginx ingress controller (if existing) from the Seed cluster.
+	// owner: @ScheererJ
+	// alpha: v1.142.0
+	DisableNginxIngressInSeed featuregate.Feature = "DisableNginxIngressInSeed"
+
+	// DisableNginxIngressInShoot disables the deployment of the nginx ingress controller in the Shoot cluster
+	// and removes the nginx ingress controller (if existing) from the Shoot cluster.
+	// If set for the gardener-apiserver, the creation of new Shoot clusters with the addon enabled is blocked.
+	// Existing Shoot clusters can only disable the addon, but not enable it anymore.
+	// If set for the gardener-controller-manager, the maintenance controller will disable the addon during the next maintenance operation.
+	// owner: @ScheererJ
+	// alpha: v1.142.0
+	DisableNginxIngressInShoot featuregate.Feature = "DisableNginxIngressInShoot"
 )
 
 // DefaultFeatureGate is the central feature gate map used by all gardener components.
@@ -155,6 +176,9 @@ var AllFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	PrometheusHealthChecks:         {Default: false, PreRelease: featuregate.Alpha},
 	VersionClassificationLifecycle: {Default: false, PreRelease: featuregate.Alpha},
 	RemoveVali:                     {Default: false, PreRelease: featuregate.Alpha},
+	DisableNginxIngressInGarden:    {Default: false, PreRelease: featuregate.Alpha},
+	DisableNginxIngressInSeed:      {Default: false, PreRelease: featuregate.Alpha},
+	DisableNginxIngressInShoot:     {Default: false, PreRelease: featuregate.Alpha},
 }
 
 // GetFeatures returns a feature gate map with the respective specifications. Non-existing feature gates are ignored.

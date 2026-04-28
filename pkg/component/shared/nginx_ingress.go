@@ -32,6 +32,7 @@ func NewNginxIngress(
 	domains []string,
 	istioIngressGatewayLabels map[string]string,
 	seedIsGarden bool,
+	disabled bool,
 ) (
 	component.DeployWaiter,
 	error,
@@ -62,5 +63,10 @@ func NewNginxIngress(
 		SeedIsGarden:              seedIsGarden,
 	}
 
-	return nginxingress.New(c, namespaceName, values), nil
+	nginx := nginxingress.New(c, namespaceName, values)
+	if disabled {
+		nginx = component.OpDestroyWithoutWait(nginx)
+	}
+
+	return nginx, nil
 }

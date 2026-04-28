@@ -31,6 +31,7 @@ import (
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/shoot/maintenance/helper"
 	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/features"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	admissionpluginsvalidation "github.com/gardener/gardener/pkg/utils/validation/admissionplugins"
 	featuresvalidation "github.com/gardener/gardener/pkg/utils/validation/features"
@@ -305,6 +306,8 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 		operations = append(operations, fmt.Sprintf("Added %q operation annotation", operation))
 	}
 
+	operations = append(operations, maintainAddons(maintainedShoot)...)
+
 	requirePatch := len(operations) > 0 || kubernetesControlPlaneUpdate != nil || len(workerToKubernetesUpdate) > 0 || len(workerToMachineImageUpdate) > 0 || len(credentialsToRotationUpdate) > 0
 	if requirePatch {
 		patch := client.MergeFrom(shoot.DeepCopy())
@@ -521,6 +524,15 @@ func maintainOperation(shoot *gardencorev1beta1.Shoot, credentialsToRotationUpda
 	}
 
 	return operation
+}
+
+func maintainAddons(shoot *gardencorev1beta1.Shoot) []string {
+	if !features.DefaultFeatureGate.Enabled(features.DisableNginxIngressInShoot) || !v1beta1helper.NginxIngressEnabled(shoot.Spec.Addons) {
+		return nil
+	}
+
+	shoot.Spec.Addons.NginxIngress.Enabled = false
+	return []string{".spec.addons.nginxIngress was disabled. Reason: nginx ingress addon disallowed by landscape operator"}
 }
 
 func maintainTasks(shoot *gardencorev1beta1.Shoot, config controllermanagerconfigv1alpha1.ShootMaintenanceControllerConfiguration) {
