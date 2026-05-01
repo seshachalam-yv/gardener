@@ -12,6 +12,13 @@ VALID_COMMANDS=("up" "down")
 SCENARIO="${SCENARIO:-unmanaged-infra}"
 VALID_SCENARIOS=("unmanaged-infra" "managed-infra" "connect" "connect-kind")
 
+# For unmanaged-infra and connect scenarios, there is no cluster to detect the node platform from.
+# Default to the local machine's architecture.
+if [[ "$SCENARIO" == "unmanaged-infra" || "$SCENARIO" == "connect" ]]; then
+  export SKAFFOLD_PLATFORM="${SKAFFOLD_PLATFORM:-linux/$(go env GOARCH)}"
+  export SKAFFOLD_CHECK_CLUSTER_NODE_PLATFORMS=false
+fi
+
 valid_scenario=false
 for scenario in "${VALID_SCENARIOS[@]}"; do
   if [[ "$SCENARIO" == "$scenario" ]]; then
@@ -27,7 +34,7 @@ fi
 garden_runtime_cluster_kubeconfig="$KUBECONFIG_RUNTIME_CLUSTER"
 if [[ "$SCENARIO" == "connect" ]]; then
   garden_runtime_cluster_kubeconfig="$KUBECONFIG_SELFHOSTEDSHOOT_CLUSTER"
-  ./hack/usage/generate-kubeconfig.sh self-hosted-shoot > "$garden_runtime_cluster_kubeconfig"
+  ./hack/usage/generate-kubeconfig.sh self-hosted-shoot --docker gind-machine-0 > "$garden_runtime_cluster_kubeconfig"
 fi
 
 case "$COMMAND" in
@@ -48,13 +55,6 @@ case "$COMMAND" in
         --build-artifacts \
         -
 
-      if [[ "$SCENARIO" == "unmanaged-infra" ]]; then
-        skaffold run \
-          -p "$SCENARIO" \
-          -n gardenadm-unmanaged-infra \
-          -m provider-local,machine
-      fi
-
       # Export global resources for `gardenadm connect` scenario in case they will be needed later
       mkdir -p "$(dirname "$0")/gardenadm/resources/generated/connect"
       # We don't need to export Controller{Registration,Deployment}s since they already get registered by
@@ -66,25 +66,6 @@ case "$COMMAND" in
       if [[ ! -f "$(dirname "$0")/gardenadm/resources/generated/connect/manifests.yaml" ]]; then
         echo "Error: Must run 'make gardenadm-up' first." >&2
         exit 1
-      fi
-
-      if [[ "$SCENARIO" == "connect" ]]; then
-        # Used to talk to the virtual-garden API server from the host machine via the following network path:
-        # Host:172.18.255.3:443
-        #   → Docker (hostPort 443 → containerPort 31443)
-        #     → KinD node, NodePort 31443 (service gardenadm-unmanaged-infra/control-plane-machine)
-        #       → machine-0 pod IP 10.0.212.0:31443
-        #         → istio-ingressgateway pod exposed via NodePort 31443 in the machine-0 node (patched by MutatingAdmissionPolicy loadbalancer-services)
-        # In the 'connect-kind' scenario, the istio-ingressgateway runs directly on the KinD cluster and gets exposed
-        # via a dynamic load balancer provisioned by cloud-controller-manager-local, hence, no need to patch this
-        # Service in this scenario.
-        kubectl --kubeconfig "$garden_runtime_cluster_kubeconfig" apply -k "$(dirname "$0")/gardenadm/loadbalancer-services" --server-side
-        if ! kubectl --kubeconfig "$KUBECONFIG" -n gardenadm-unmanaged-infra get service control-plane-machine \
-          -o jsonpath='{.spec.ports[*].name}' | grep -qw virtual-garden-apiserver; then
-          kubectl --kubeconfig "$KUBECONFIG" -n gardenadm-unmanaged-infra patch service control-plane-machine \
-            --type=json \
-            -p '[{"op":"add","path":"/spec/ports/-","value":{"name":"virtual-garden-apiserver","port":31443,"targetPort":31443,"nodePort":31443}}]'
-        fi
       fi
 
       make operator-up garden-up \
