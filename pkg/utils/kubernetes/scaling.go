@@ -105,5 +105,5 @@ func ScaleStatefulSetAndWaitUntilScaled(ctx context.Context, c client.Client, ke
 	if err := ScaleStatefulSet(ctx, c, key, replicas); err != nil {
 		return err
 	}
-	return WaitUntilStatefulSetScaledToDesiredReplicas(ctx, c, key, replicas)
+	return WaitUntilStatefulSetScaled(ctx, c, key, replicas)
 }
