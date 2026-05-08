@@ -9,13 +9,17 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/afero"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
 	nodeagentcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/nodeagent"
+	"github.com/gardener/gardener/pkg/nodeagent"
 	"github.com/gardener/gardener/pkg/nodeagent/dbus"
 )
 
@@ -72,8 +76,49 @@ func Bootstrap(
 		return fmt.Errorf("unable to disable system unit %q: %w", nodeagentconfigv1alpha1.InitUnitName, err)
 	}
 
+	log.Info("Testing API server connectivity")
+	if err := testAPIServerConnectivity(log, fs); err != nil {
+		log.Error(err, "API server connectivity test failed")
+		fmt.Printf("WARNING: API server connectivity test failed: %v\n", err)
+		fmt.Println("Node may fail to join the cluster - check network configuration and API server endpoint")
+		// Don't return error - let gardener-node-agent continue and retry with backoff
+	}
+
 	// After this line, the execution of the gardener-node-agent bootstrap command terminates. It is not possible to
 	// perform any logic after this line.
 	log.Info("Bootstrap procedure finished, terminating")
+	return nil
+}
+
+// testAPIServerConnectivity performs a connectivity test to the Kubernetes API server during bootstrap.
+// This provides early feedback on network issues before the bootstrap phase completes.
+func testAPIServerConnectivity(log logr.Logger, fs afero.Afero) error {
+	// Read API server config from the gardener-node-agent configuration
+	apiServerConfig, err := nodeagent.GetAPIServerConfig(fs, nodeagentconfigv1alpha1.BaseDir)
+	if err != nil {
+		return fmt.Errorf("failed reading API server config: %w", err)
+	}
+
+	// Create REST config with bootstrap token and short timeout
+	restConfig := &rest.Config{
+		Host:            apiServerConfig.Server,
+		TLSClientConfig: rest.TLSClientConfig{CAData: apiServerConfig.CABundle},
+		BearerTokenFile: nodeagentconfigv1alpha1.BootstrapTokenFilePath,
+		Timeout:         10 * time.Second,
+	}
+
+	client, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("failed creating kubernetes client: %w", err)
+	}
+
+	// Simple connectivity test - try to discover server version
+	log.Info("Attempting to connect to API server", "server", apiServerConfig.Server)
+	_, err = client.Discovery().ServerVersion()
+	if err != nil {
+		return fmt.Errorf("API server unreachable at %s: %w", apiServerConfig.Server, err)
+	}
+
+	log.Info("Successfully connected to API server", "server", apiServerConfig.Server)
 	return nil
 }
