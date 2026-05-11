@@ -147,6 +147,7 @@ func run(ctx context.Context, opts *Options) error {
 
 	var (
 		g                       = flow.NewGraph("join")
+		reporter                = flow.NewCommandLineProgressReporter(opts.ErrOut)
 		gardenerNodeAgentSecret *corev1.Secret
 		etcdRoleToTLSSecretsMap = make(etcdRoleToTLSSecrets, 2)
 
@@ -269,7 +270,8 @@ func run(ctx context.Context, opts *Options) error {
 	)
 
 	if err := g.Compile().Run(ctx, flow.Opts{
-		Log: opts.Log,
+		Log:              opts.Log,
+		ProgressReporter: reporter,
 	}); err != nil {
 		return flow.Errors(err)
 	}

@@ -97,7 +97,8 @@ func run(ctx context.Context, opts *Options) error {
 	}
 
 	var (
-		g = flow.NewGraph("bootstrap")
+		g        = flow.NewGraph("bootstrap")
+		reporter = flow.NewCommandLineProgressReporter(opts.ErrOut)
 
 		deployNamespace = g.Add(flow.Task{
 			Name: "Deploying control plane namespace",
@@ -309,12 +310,14 @@ func run(ctx context.Context, opts *Options) error {
 		bootstrapControlPlane = g.Add(flow.Task{
 			Name: "Bootstrapping control plane on the first control plane machine",
 			Fn: flow.TaskFn(func(ctx context.Context) error {
-				return b.SSHConnection().RunWithStreams(ctx, nil, opts.Out, opts.ErrOut,
-					fmt.Sprintf("%s%s init -d %q --log-level=%s",
-						botanist.ImageVectorOverrideEnv(),
-						nodeinit.GardenadmBinaryPath, botanist.ManifestsDir, opts.LogLevel,
-					),
-				)
+				return b.SSHConnection().
+					WithSignalProcess(nodeinit.GardenadmBinaryName).
+					RunWithStreams(ctx, nil, opts.Out, opts.ErrOut,
+						fmt.Sprintf("%s%s init -d %q --log-level=%s",
+							botanist.ImageVectorOverrideEnv(),
+							nodeinit.GardenadmBinaryPath, botanist.ManifestsDir, opts.LogLevel,
+						),
+					)
 			}).Timeout(30 * time.Minute),
 			Dependencies: flow.NewTaskIDs(downloadGardenadm),
 		})
@@ -337,7 +340,8 @@ func run(ctx context.Context, opts *Options) error {
 	)
 
 	if err := g.Compile().Run(ctx, flow.Opts{
-		Log: opts.Log,
+		Log:              opts.Log,
+		ProgressReporter: reporter,
 	}); err != nil {
 		return flow.Errors(err)
 	}
