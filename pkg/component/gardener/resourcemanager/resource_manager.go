@@ -379,17 +379,15 @@ func (r *resourceManager) Deploy(ctx context.Context) error {
 		},
 		r.ensureRBAC,
 		r.ensureService,
-		func(ctx context.Context) error { return r.ensureDeployment(ctx, configMap) },
+		func(ctx context.Context) error {
+			return r.ensureDeployment(ctx, configMap)
+		},
+		// Webhook configs must be applied directly after the deployment to avoid a situation where the GRM deployment
+		// is rolled out after a certificate (CA) rotation but the webhook configurations are not yet updated.
+		r.ensureWebhookConfiguration,
 		r.ensurePodDisruptionBudget,
 		r.ensureVPA,
 		r.ensureServiceMonitor,
-	}
-
-	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
-		fns = append(fns, r.ensureShootResources)
-	} else {
-		fns = append(fns, r.ensureMutatingWebhookConfiguration)
-		fns = append(fns, r.ensureValidatingWebhookConfiguration)
 	}
 
 	return flow.Sequential(fns...)(ctx)
@@ -1205,6 +1203,17 @@ func (r *resourceManager) ensureServiceMonitor(ctx context.Context) error {
 
 func (r *resourceManager) emptyServiceMonitor() *monitoringv1.ServiceMonitor {
 	return &monitoringv1.ServiceMonitor{ObjectMeta: monitoringutils.ConfigObjectMeta(r.values.NamePrefix+"gardener-resource-manager", r.namespace, r.getPrometheusLabel())}
+}
+
+func (r *resourceManager) ensureWebhookConfiguration(ctx context.Context) error {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
+		return r.ensureShootResources(ctx)
+	}
+
+	if err := r.ensureMutatingWebhookConfiguration(ctx); err != nil {
+		return err
+	}
+	return r.ensureValidatingWebhookConfiguration(ctx)
 }
 
 func (r *resourceManager) ensureMutatingWebhookConfiguration(ctx context.Context) error {
