@@ -247,6 +247,9 @@ const (
 	// GardenerOperationMigrate is a constant for the value of the operation annotation describing a migration
 	// operation.
 	GardenerOperationMigrate = "migrate"
+	// GardenerOperationLiveMigrate is a constant for the value of the operation annotation describing a live
+	// control plane migration operation.
+	GardenerOperationLiveMigrate = "live-migrate"
 	// GardenerOperationRestore is a constant for the value of the operation annotation describing a restoration
 	// operation.
 	GardenerOperationRestore = "restore"
@@ -365,6 +368,11 @@ const (
 	// ShootAlphaControlPlaneVPNVPAUpdateDisabled is a constant for an annotation on the Shoot resource to enforce
 	// disabling the vertical pod autoscaler update resources related to the VPN connection.
 	ShootAlphaControlPlaneVPNVPAUpdateDisabled = "alpha.control-plane.shoot.gardener.cloud/vpn-vpa-update-disabled"
+	// ShootAlphaControlPlaneVPNAutoMTU is a constant for an annotation on the Shoot resource to enable
+	// automatic MTU configuration for the VPN connection.
+	// Note that this annotation is alpha and can be removed anytime without further notice. Only use it if you know
+	// what you do.
+	ShootAlphaControlPlaneVPNAutoMTU = "alpha.control-plane.shoot.gardener.cloud/vpn-auto-mtu"
 	// ShootExpirationTimestamp is an annotation on a Shoot resource whose value represents the time when the Shoot lifetime
 	// is expired. The lifetime can be extended, but at most by the minimal value of the 'clusterLifetimeDays' property
 	// of referenced quotas.
@@ -734,6 +742,15 @@ const (
 	// AnnotationSchedulingCloudProfiles is a constant for an annotation key on a configmap which denotes
 	// the linked cloudprofiles containing the region distances.
 	AnnotationSchedulingCloudProfiles = "scheduling.gardener.cloud/cloudprofiles"
+
+	// AnnotationMigrationInterRegionDistanceThreshold is a constant for an annotation key on the scheduler region ConfigMap
+	// that defines the maximum allowed inter-region distance for live control plane migration.
+	// The distances in the region ConfigMap may represent latency or other metrics; if the weights are not latency-based,
+	// this threshold should be adjusted accordingly.
+	AnnotationMigrationInterRegionDistanceThreshold = "migration.gardener.cloud/inter-region-distance-threshold"
+	// AnnotationMigrationAllowDistantRegions is a constant for an annotation key on a Shoot resource whose value must be
+	// set to "true" to allow live control plane migration between seeds in distant regions despite exceeding the distance threshold.
+	AnnotationMigrationAllowDistantRegions = "migration.gardener.cloud/allow-distant-regions"
 
 	// AnnotationConfirmationForceDeletion is a constant for an annotation on a Shoot resource whose value must be set to "true" in order to
 	// trigger force-deletion of the cluster. It can only be set if the Shoot has a deletion timestamp and contains an ErrorCode in the Shoot Status.

@@ -99,7 +99,7 @@ images:
   - name: ingress-default-backend
     sourceRepository: github.com/gardener/ingress-default-backend
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/ingress-default-backend
-    tag: "0.25.0"
+    tag: "0.26.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -162,7 +162,7 @@ images:
   - name: vpn-server
     sourceRepository: github.com/gardener/vpn2
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/vpn-server
-    tag: "0.48.0"
+    tag: "0.49.0"
   # OpenTelemetry
   - name: opentelemetry-operator
     sourceRepository: github.com/open-telemetry/opentelemetry-operator
@@ -348,7 +348,7 @@ images:
   - name: plutono-data-refresher
     sourceRepository: github.com/kiwigrid/k8s-sidecar
     repository: quay.io/kiwigrid/k8s-sidecar
-    tag: "2.7.1"
+    tag: "2.7.3"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -452,7 +452,7 @@ images:
   - name: vpn-client
     sourceRepository: github.com/gardener/vpn2
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/vpn-client
-    tag: "0.48.0"
+    tag: "0.49.0"
   - name: coredns
     sourceRepository: github.com/coredns/coredns
     repository: registry.k8s.io/coredns/coredns

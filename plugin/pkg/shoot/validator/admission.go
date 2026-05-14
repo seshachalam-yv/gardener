@@ -42,6 +42,7 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	securityinformers "github.com/gardener/gardener/pkg/client/security/informers/externalversions"
 	securityv1alpha1listers "github.com/gardener/gardener/pkg/client/security/listers/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/features"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	cidrvalidation "github.com/gardener/gardener/pkg/utils/validation/cidr"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
@@ -63,6 +64,7 @@ type ValidateShoot struct {
 	*admission.Handler
 
 	authorizer                   authorizer.Authorizer
+	configMapLister              kubecorev1listers.ConfigMapLister
 	secretLister                 kubecorev1listers.SecretLister
 	cloudProfileLister           gardencorev1beta1listers.CloudProfileLister
 	namespacedCloudProfileLister gardencorev1beta1listers.NamespacedCloudProfileLister
@@ -142,16 +144,22 @@ func (v *ValidateShoot) SetSecurityInformerFactory(f securityinformers.SharedInf
 
 // SetKubeInformerFactory gets Lister from SharedInformerFactory.
 func (v *ValidateShoot) SetKubeInformerFactory(f kubeinformers.SharedInformerFactory) {
+	configMapInformer := f.Core().V1().ConfigMaps()
+	v.configMapLister = configMapInformer.Lister()
+
 	secretInformer := f.Core().V1().Secrets()
 	v.secretLister = secretInformer.Lister()
 
-	readyFuncs = append(readyFuncs, secretInformer.Informer().HasSynced)
+	readyFuncs = append(readyFuncs, configMapInformer.Informer().HasSynced, secretInformer.Informer().HasSynced)
 }
 
 // ValidateInitialization checks whether the plugin was correctly initialized.
 func (v *ValidateShoot) ValidateInitialization() error {
 	if v.authorizer == nil {
 		return errors.New("missing authorizer")
+	}
+	if v.configMapLister == nil {
+		return errors.New("missing configMap lister")
 	}
 	if v.secretLister == nil {
 		return errors.New("missing secret lister")
@@ -327,6 +335,9 @@ func (v *ValidateShoot) Validate(ctx context.Context, a admission.Attributes, _ 
 		return err
 	}
 	if err := validationContext.validateScheduling(ctx, a, v.authorizer, v.shootLister, v.seedLister); err != nil {
+		return err
+	}
+	if err := validationContext.validateLiveMigrationPrerequisites(a, v.seedLister, v.configMapLister); err != nil {
 		return err
 	}
 	if err := validationContext.validateDeletion(a); err != nil {
@@ -1862,4 +1873,152 @@ func getDefaultDomainsForSeed(seed *gardencorev1beta1.Seed) []string {
 	}
 
 	return defaultDomains
+}
+
+func (c *validationContext) validateLiveMigrationPrerequisites(
+	a admission.Attributes,
+	seedLister gardencorev1beta1listers.SeedLister,
+	configMapLister kubecorev1listers.ConfigMapLister,
+) error {
+	if a.GetOperation() != admission.Update {
+		return nil
+	}
+
+	operations := v1beta1helper.GetShootGardenerOperations(c.shoot.Annotations)
+	if !slices.Contains(operations, v1beta1constants.GardenerOperationLiveMigrate) {
+		return nil
+	}
+
+	if !features.DefaultFeatureGate.Enabled(features.LiveControlPlaneMigration) {
+		return admission.NewForbidden(a, fmt.Errorf("cannot set operation annotation %q because the %s feature gate is disabled", v1beta1constants.GardenerOperationLiveMigrate, features.LiveControlPlaneMigration))
+	}
+
+	if c.shoot.Spec.ControlPlane == nil || c.shoot.Spec.ControlPlane.HighAvailability == nil {
+		return admission.NewForbidden(a, fmt.Errorf("cannot trigger live migration for a non-HA shoot; the shoot control plane must be configured for high availability"))
+	}
+
+	isHibernated := ptr.Deref(ptr.Deref(c.shoot.Spec.Hibernation, core.Hibernation{}).Enabled, false)
+	if isHibernated {
+		return admission.NewForbidden(a, fmt.Errorf("cannot trigger live migration for a hibernated shoot; use normal control plane migration instead"))
+	}
+
+	if c.oldShoot.Spec.SeedName == nil || c.shoot.Spec.SeedName == nil || *c.shoot.Spec.SeedName == *c.oldShoot.Spec.SeedName {
+		return nil
+	}
+
+	oldSeed, err := seedLister.Get(*c.oldShoot.Spec.SeedName)
+	if err != nil {
+		return apierrors.NewInternalError(fmt.Errorf("could not find source seed: %w", err))
+	}
+
+	newSeed, err := seedLister.Get(*c.shoot.Spec.SeedName)
+	if err != nil {
+		return apierrors.NewInternalError(fmt.Errorf("could not find destination seed: %w", err))
+	}
+
+	if oldSeed.Spec.Provider.Type != newSeed.Spec.Provider.Type {
+		return admission.NewForbidden(a, fmt.Errorf("cannot perform live migration between seeds of different provider types (%s -> %s)", oldSeed.Spec.Provider.Type, newSeed.Spec.Provider.Type))
+	}
+
+	if err := validateGardenletVersions(a, oldSeed, newSeed); err != nil {
+		return err
+	}
+
+	if c.shoot.Annotations[v1beta1constants.AnnotationMigrationAllowDistantRegions] == "true" {
+		return nil
+	}
+
+	return c.validateInterRegionDistance(a, oldSeed, newSeed, configMapLister)
+}
+
+func validateGardenletVersions(a admission.Attributes, oldSeed, newSeed *gardencorev1beta1.Seed) error {
+	oldVersion := ""
+	if oldSeed.Status.Gardener != nil {
+		oldVersion = oldSeed.Status.Gardener.Version
+	}
+
+	newVersion := ""
+	if newSeed.Status.Gardener != nil {
+		newVersion = newSeed.Status.Gardener.Version
+	}
+
+	if oldVersion == "" || newVersion == "" {
+		return admission.NewForbidden(a, fmt.Errorf("cannot perform live migration: gardenlet version not reported for seed %q or %q", oldSeed.Name, newSeed.Name))
+	}
+
+	if oldVersion != newVersion {
+		return admission.NewForbidden(a, fmt.Errorf("cannot perform live migration between seeds with different gardenlet versions (%s: %s, %s: %s)", oldSeed.Name, oldVersion, newSeed.Name, newVersion))
+	}
+
+	return nil
+}
+
+func (c *validationContext) validateInterRegionDistance(
+	a admission.Attributes,
+	oldSeed, newSeed *gardencorev1beta1.Seed,
+	configMapLister kubecorev1listers.ConfigMapLister,
+) error {
+	sourceRegion := oldSeed.Spec.Provider.Region
+	destRegion := newSeed.Spec.Provider.Region
+
+	if sourceRegion == destRegion {
+		return nil
+	}
+
+	regionConfigMap, cloudProfileName, err := c.findRegionConfigMap(configMapLister)
+	if err != nil {
+		return err
+	}
+	if regionConfigMap == nil {
+		return admission.NewForbidden(a, fmt.Errorf("cannot perform live migration between seeds in different regions (%s -> %s): no scheduler region ConfigMap found for cloud profile %q",
+			sourceRegion, destRegion, cloudProfileName))
+	}
+
+	threshold, err := gardenerutils.GetDistanceThreshold(regionConfigMap)
+	if err != nil {
+		return apierrors.NewInternalError(err)
+	}
+
+	dist, found, err := gardenerutils.GetRegionDistance(regionConfigMap, sourceRegion)
+	if err != nil {
+		return apierrors.NewInternalError(err)
+	}
+
+	if !found {
+		return admission.NewForbidden(a, fmt.Errorf("cannot perform live migration between seeds in different regions (%s -> %s): source region not configured in ConfigMap %q",
+			sourceRegion, destRegion, regionConfigMap.Name))
+	}
+
+	distance, ok := dist[destRegion]
+	if !ok {
+		return admission.NewForbidden(a, fmt.Errorf("cannot perform live migration between seeds in different regions (%s -> %s): distance to destination region not configured in ConfigMap %q",
+			sourceRegion, destRegion, regionConfigMap.Name))
+	}
+
+	if distance > threshold {
+		return admission.NewForbidden(a, fmt.Errorf("cannot perform live migration between seeds in distant regions (%s -> %s): distance %d exceeds threshold %d",
+			sourceRegion, destRegion, distance, threshold))
+	}
+
+	return nil
+}
+
+func (c *validationContext) findRegionConfigMap(configMapLister kubecorev1listers.ConfigMapLister) (*corev1.ConfigMap, string, error) {
+	regionConfigMaps, err := configMapLister.ConfigMaps(v1beta1constants.GardenNamespace).List(labels.SelectorFromSet(labels.Set{
+		v1beta1constants.SchedulingPurpose: v1beta1constants.SchedulingPurposeRegionConfig,
+	}))
+	if err != nil {
+		return nil, "", apierrors.NewInternalError(fmt.Errorf("could not list region config ConfigMaps: %w", err))
+	}
+
+	cloudProfileName := ""
+	if ref := gardenerutils.BuildCoreCloudProfileReference(c.shoot); ref != nil {
+		cloudProfileName = ref.Name
+	}
+	if cloudProfileName == "" {
+		return nil, "", apierrors.NewInternalError(fmt.Errorf("could not determine cloud profile name for shoot %s/%s", c.shoot.Namespace, c.shoot.Name))
+	}
+
+	cm := gardenerutils.FindRegionConfigMap(regionConfigMaps, cloudProfileName)
+	return cm, cloudProfileName, nil
 }
